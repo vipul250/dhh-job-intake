@@ -119,11 +119,18 @@ const PRIORITY_COLORS = {
 };
 const SHIFT_OPTIONS = ["08:00-17:00", "09:00-18:00", "10:00-19:00", "12:00-21:00", "14:00-23:00", "Custom"];
 
-const todayISO = () => new Date().toISOString().slice(0, 10);
+const todayISO = () => {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+};
 const addDaysISO = (iso, n) => {
-  const d = new Date(iso + "T00:00:00");
-  d.setDate(d.getDate() + n);
-  return d.toISOString().slice(0, 10);
+  const [y, m, d] = iso.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + n);
+  return dt.toISOString().slice(0, 10);
 };
 const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
 const norm = (s) => (s || "").trim().toLowerCase().replace(/\s+/g, " ");
@@ -851,9 +858,6 @@ function JobCard({ job, onEdit, onSetStatus, onLogActualTime, onDelete }) {
           </select>
           <button onClick={() => onEdit(job)} title="Edit" className="p-1.5 rounded-md border bg-white border-slate-300 text-slate-500 hover:bg-slate-50">
             <Edit3 size={14} />
-          </button>
-          <button onClick={() => onDelete(job)} title="Delete" className="p-1.5 rounded-md border bg-white border-slate-300 text-red-500 hover:bg-red-50">
-            <Trash2 size={14} />
           </button>
         </div>
       </div>
