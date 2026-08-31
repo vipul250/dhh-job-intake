@@ -3,13 +3,14 @@ import {
   Plus, Check, AlertTriangle, Trash2, Copy, Download, X,
   ClipboardList, LayoutGrid, Database, BarChart3, Loader2,
   ChevronDown, ChevronRight, ChevronLeft, RefreshCw, Edit3, UploadCloud, TrendingUp, Briefcase, Clock, Building2, Printer,
-  Table2, Radio
+  Table2, Radio, Users
 } from "lucide-react";
 import { storageGet, storageSet, storageList } from "./lib/storage.js";
 import Dashboard from "./views/Dashboard.jsx";
 import SheetImport from "./views/SheetImport.jsx";
 import LiveBoard from "./views/LiveBoard.jsx";
 import Projects from "./views/Projects.jsx";
+import Roster from "./views/Roster.jsx";
 import { mutateDay } from "./lib/jobStore.js";
 import { newJob } from "./lib/job.js";
 import { needsGuestConfirmation, squash } from "./lib/normalize.js";
@@ -767,6 +768,9 @@ export default function App() {
         {activeTab === "properties" && (
           <PropertiesView propertyMaster={propertyMaster} onAdd={addProperty} />
         )}
+        {activeTab === "roster" && (
+          <Roster selectedDate={selectedDate} setSelectedDate={setSelectedDate} showToast={showToast} />
+        )}
         {activeTab === "dashboard" && (
           <Dashboard
             selectedDate={selectedDate}
@@ -838,6 +842,7 @@ function Header({ selectedDate, setSelectedDate, knownDates, activeTab, setActiv
      reference table, so it leads and the rest follow. */
   const tabs = [
     { id: "live", label: "Live Board", icon: Radio },
+    { id: "roster", label: "Roster", icon: Users },
     { id: "dashboard", label: "Dashboard", icon: TrendingUp },
     { id: "sheetimport", label: "Import Sheet", icon: Table2 },
     { id: "jobcards", label: "Projects", icon: Briefcase },
