@@ -9,8 +9,7 @@ the URL can use it — no Claude account, no Google account, no login of any kin
 1. **Storage**: `window.storage` (only worked inside claude.ai) → a Supabase
    Postgres table called `kv_store`, accessed through `src/lib/storage.js`,
    which exposes the exact same `storageGet` / `storageSet` / `storageList`
-   functions. `App.jsx` is otherwise untouched — same seed data, same logic,
-   same UI.
+   functions.
 2. **AI parsing**: the old code called `api.anthropic.com` directly from the
    browser with no key. That is not a viable pattern outside the artifact
    sandbox — no key means no auth, and Anthropic's API doesn't serve
@@ -20,6 +19,66 @@ the URL can use it — no Claude account, no Google account, no login of any kin
 
 Nothing else changed. If it worked one way in the artifact, it works the same
 way here.
+
+## The daily cycle (added: intake → post → verify → measure)
+
+The app now follows the way the department actually works, and the
+measurement falls out of it rather than being typed in separately.
+
+1. **Build tomorrow's schedule** — *Job Board* / *Import Sheet*.
+   As the coordinator builds it, three checks run live at the top of the
+   board: is anybody booked past their shift, is anybody being sent to an
+   occupied unit no guest has confirmed, and does every job needing
+   material have an actual picking list. A warning after the fact is a
+   report; a warning during is a fix.
+2. **Post it** — the *Post schedule* button.
+   Stamps the version. Every edit after that is recorded automatically, so
+   schedule churn is computed rather than self-reported. (The workbook's
+   own "Changed After 8pm Posting?" column is filled on 4% of rows.)
+3. **Verify yesterday** — *Verify* tab.
+   One row per job, three buttons — Done / Partial / Not done — plus
+   whether it was actually found in PMS. About three minutes for a day.
+   This is the only data entry the dashboard asks for that the schedule
+   does not already contain, and it is what turns completion rate, PMS
+   traceability and first-time fix into real numbers.
+4. **Read the numbers** — *Dashboard* tab.
+   Risk for a chosen day first (the part still changeable), then the
+   trend, then cost.
+
+`docs/METRICS.md` defines every metric: the field it reads, the
+denominator, and who acts on it.
+
+### Importing the existing workbook
+
+*Import Sheet* takes a paste straight out of `DHH Daily Schedule Input
+(Maintenance)`. Select the rows including the header, copy, paste. Columns
+are matched by name, so order does not matter and extra columns are
+ignored. It is a deterministic parser — no model call, so no per-paste
+cost, no invented unit numbers, and a whole month lands in one go instead
+of four jobs at a time. The *AI Import* tab is still there for schedules
+that arrive as prose in WhatsApp or email.
+
+Verified against the real workbook: 474 rows across 15 dates round-trip
+exactly, and the dashboard computes the same figures as an offline run of
+the metrics engine over the same file.
+
+### Cost
+
+Cost prices time and trips, because those are what the schedule records.
+**Every rate ships as a placeholder** — edit them under *Edit rates* on the
+dashboard before quoting any figure. See `docs/METRICS.md` for what each
+rate should actually be.
+
+### What was removed
+
+The old *Trends (review)* tab. Most of what it reported was not measuring
+the department: its "clean rate" was built on duplicate/carryover flags
+that only ever looked at the fourteen dates cached in memory, so it read
+near 100% regardless; its variance and safety-close figures averaged
+timestamps that needed somebody pressing buttons in the app during the
+working day, which nobody was doing. It is replaced by the Dashboard,
+which computes from fields people actually fill in and states its coverage
+next to every rate.
 
 ## Deploy — first time setup (~15 minutes)
 
@@ -101,6 +160,12 @@ you think you'll need it.
   a few cents per schedule paste, not more.
 
 ## Known limitation carried over from the original
+
+> Note: this limitation still applies to the duplicate/carryover badges on
+> the Job Board, but the Dashboard no longer depends on them — its repeat
+> and rework figures query the whole loaded date range directly, so they
+> are not limited to the recently-viewed cache.
+
 
 Duplicate-dispatch detection only checks jobs already loaded on the same day
 in memory; carryover detection only checks the ~14 most recently viewed

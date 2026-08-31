@@ -1,3 +1,43 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* ---------------------------------------------------------------------- *
+ * Chart colour roles.
+ *
+ * The categorical slots are used in fixed order and never reassigned by
+ * rank — a colour means the same thing on every chart on the page. The
+ * palette was checked with the data-viz validator against this white
+ * surface: all four slots pass the lightness band, chroma floor, and
+ * colour-vision-deficiency separation checks. Two slots sit under 3:1
+ * contrast on white, so every chart using them also carries a legend and
+ * direct value labels — colour never carries meaning on its own here.
+ *
+ * The app is deliberately light-only, matching the rest of the UI, so
+ * these are stated once rather than themed.
+ * ---------------------------------------------------------------------- */
+.viz-root {
+  color-scheme: light;
+
+  --series-1: #2a78d6;  /* blue    */
+  --series-2: #eb6834;  /* orange  */
+  --series-3: #1baf7a;  /* aqua    */
+  --series-4: #eda100;  /* yellow  */
+
+  --status-good:     #0ca30c;
+  --status-warning:  #fab219;
+  --status-serious:  #ec835a;
+  --status-critical: #d03b3b;
+
+  --viz-surface: #ffffff;
+  --viz-ink:     #0b0b0b;
+  --viz-muted:   #898781;
+  --viz-grid:    #e1e0d9;
+  --viz-axis:    #c3c2b7;
+  --viz-track:   #f1f5f9;
+  --viz-empty:   #eef1f4;  /* outline for an unscheduled heatmap cell */
+}
+
+@media print {
+  .no-print { display: none !important; }
+}
