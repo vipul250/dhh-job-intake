@@ -16,15 +16,19 @@ import { parseWorkReport, fmtMin } from "../lib/workReport.js";
 import { checkAgainstSchedule } from "../lib/roster.js";
 import { storageGet } from "../lib/storage.js";
 import { staffIndex, seedStaff, TRADE_LABEL } from "../lib/staff.js";
+import {
+  seedCatalogue, matchCatalogue, applyCatalogue, newCatalogueEntry,
+} from "../lib/catalogue.js";
+import { storageSet } from "../lib/storage.js";
 import { jobRequirement, checkCrew, checkDayCrewing } from "../lib/crewing.js";
 import { RETURN_REASONS, FAMILY_LABEL } from "../lib/faultFamily.js";
 import {
-  readDay, mutateDay, upsert, removeJob, migrateDay, needsMigration,
+  readDay, readDayResult, mutateDay, upsert, removeJob, migrateDay, needsMigration,
   createDayWatcher,
 } from "../lib/jobStore.js";
 import {
   splitCrew, parseShiftMinutes, formatMinutes, canonPriority, squash,
-  canonProperty, displayProperty,
+  canonProperty, displayProperty, canonKey,
 } from "../lib/normalize.js";
 import { planDay, fmtClock, suggestTechnician } from "../lib/schedule.js";
 
@@ -99,46 +103,96 @@ export default function LiveBoard({
   const [closeOutFor, setCloseOutFor] = useState(null);
   const [nightLog, setNightLog] = useState(false);
   const [roster, setRoster] = useState(null);
+  const [loadError, setLoadError] = useState("");
   const [staff, setStaff] = useState(null);
+  const [catalogue, setCatalogue] = useState(null);
   const watcher = useRef(null);
 
   const jobs = useMemo(() => (rows ? liveJobs(rows) : []), [rows]);
   const tombs = useMemo(() => (rows ? tombstones(rows) : []), [rows]);
 
-  /* ------------------------------ load ------------------------------- */
+  /* ------------------------------ load ------------------------------- *
+   * Four things went wrong here, and together they are why the board
+   * sometimes came up empty and stayed that way through a refresh:
+   *
+   * 1. A failed read was indistinguishable from an empty day, so a network
+   *    blink rendered "Nothing scheduled" — the jobs appeared to be gone.
+   * 2. setLoading(false) was not in a finally, so anything that threw
+   *    (a write conflict during migration, a dropped request) left the
+   *    board on "Loading…" permanently.
+   * 3. Nothing cancelled a superseded load, so a slow response for an
+   *    earlier date could land after a newer one and paint the wrong day.
+   * 4. The migration wrote a snapshot taken before the re-read, ignoring
+   *    the rows the mutator was handed — the exact mistake the mutator
+   *    contract warns about, made in the one place that runs on every
+   *    single day open.
+   * ------------------------------------------------------------------ */
+  const loadToken = useRef(0);
+
   const load = useCallback(async (date) => {
+    const token = ++loadToken.current;
+    const current = () => token === loadToken.current;
     setLoading(true);
-    let day = await readDay(date);
-    if (needsMigration(day)) {
-      // Lazy upgrade: old rows get identity the first time their day is
-      // opened, so nothing has to be migrated up front.
-      day = migrateDay(day, date);
-      await mutateDay(date, () => day);
+    setLoadError("");
+    try {
+      const { rows: stored, failed } = await readDayResult(date);
+      if (!current()) return;
+      if (failed) {
+        // Say so, and leave whatever is on screen alone. An empty board is
+        // a claim about the schedule; this is a claim about the network.
+        setLoadError(
+          `Could not read the schedule for ${date}. This is a connection problem, not an empty day — nothing has been lost.`
+        );
+        return;
+      }
+
+      let day = stored;
+      if (needsMigration(day)) {
+        try {
+          day = await mutateDay(date, (cur) => migrateDay(cur, date));
+        } catch {
+          // Saving the upgrade failed. Show the day anyway, upgraded in
+          // memory only — a read problem must not become a blank board.
+          day = migrateDay(stored, date);
+        }
+      }
+      if (!current()) return;
+      setRows(day);
+      watcher.current?.noteLocalWrite(day);
+    } catch (e) {
+      if (current()) {
+        setLoadError(
+          `Could not load ${date}: ${e.message || e}. Nothing has been lost — try again.`
+        );
+      }
+    } finally {
+      if (current()) setLoading(false);
     }
-    setRows(day);
-    setLoading(false);
+  }, []);
 
-    /* Anything left open on an earlier day is the thing that used to
-       silently vanish. Two details matter here:
-
-       - It only prompts when you are looking at today or a future day.
-         Scrolling back through last month's boards to check something
-         should not nag about decisions that are long past.
-       - It looks back several days, not one. A Friday-to-Monday gap would
-         otherwise strand the whole weekend, which is exactly the case
-         where jobs go missing today. */
+  /* The rollover prompt is deliberately outside the load path. It reads up
+     to five more days, and a failure there used to take the whole board
+     down with it. */
+  const loadRollover = useCallback(async (date) => {
     if (date < isoToday()) { setRollover(null); return; }
-    const lookback = [1, 2, 3, 4, 5].map((n) => addDays(date, -n));
-    const stranded = [];
-    let oldest = null;
-    for (const d of lookback) {
-      const rows = liveJobs(migrateDay(await readDay(d), d)).filter(isOpen);
-      if (rows.length) { stranded.push(...rows); oldest = d; }
+    try {
+      const days = [1, 2, 3, 4, 5].map((n) => addDays(date, -n));
+      const results = await Promise.all(days.map((d) => readDayResult(d)));
+      const stranded = [];
+      let oldest = null;
+      days.forEach((d, i) => {
+        if (results[i].failed) return;
+        const open = liveJobs(migrateDay(results[i].rows, d)).filter(isOpen);
+        if (open.length) { stranded.push(...open); oldest = d; }
+      });
+      setRollover(stranded.length ? { date: oldest, jobs: stranded, days } : null);
+    } catch {
+      setRollover(null);
     }
-    setRollover(stranded.length ? { date: oldest, jobs: stranded, days: lookback } : null);
   }, []);
 
   useEffect(() => { load(selectedDate); }, [selectedDate, load]);
+  useEffect(() => { loadRollover(selectedDate); }, [selectedDate, loadRollover]);
 
   // The day's roster, so the board can say when work is assigned to
   // somebody who is not there.
@@ -158,9 +212,28 @@ export default function LiveBoard({
       const raw = await storageGet("staff");
       if (cancelled) return;
       try { setStaff(raw ? JSON.parse(raw) : seedStaff()); } catch { setStaff(seedStaff()); }
+
+      const catRaw = await storageGet("task-catalogue");
+      if (cancelled) return;
+      let cat = null;
+      try { cat = catRaw ? JSON.parse(catRaw) : null; } catch { cat = null; }
+      if (!cat || !cat.length) {
+        cat = seedCatalogue();
+        await storageSet("task-catalogue", JSON.stringify(cat));
+      }
+      setCatalogue(cat);
     })();
     return () => { cancelled = true; };
   }, []);
+
+  async function addCatalogueEntry(label) {
+    const entry = newCatalogueEntry(label, { by: who });
+    const next = [...(catalogue || []), entry];
+    setCatalogue(next);
+    await storageSet("task-catalogue", JSON.stringify(next));
+    showToast(`"${entry.label}" saved as a standard task.`, "ok");
+    return entry;
+  }
 
   const rosterCheck = useMemo(
     () => (roster ? checkAgainstSchedule(roster, jobs) : null),
@@ -187,11 +260,14 @@ export default function LiveBoard({
   useEffect(() => {
     if (!watcher.current) watcher.current = createDayWatcher({});
     const w = watcher.current;
+    /* No seed: `rows` here is the PREVIOUS day's data, because load is
+       still in flight when this runs. load() hands the watcher the right
+       baseline as soon as it has one. */
     w.watch(selectedDate, (fresh) => {
       setRows(fresh);
       setLiveNote(`Updated by someone else at ${clock(Date.now())}`);
       setTimeout(() => setLiveNote(""), 6000);
-    }, rows);
+    }, null);
     return () => w.stop();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedDate]);
@@ -442,7 +518,9 @@ export default function LiveBoard({
       <QuickAdd
         knownProps={knownProps}
         knownTechs={knownTechNames}
+        catalogue={catalogue}
         onAdd={addJobs}
+        onSaveStandard={addCatalogueEntry}
         busy={busy}
       />
 
@@ -465,13 +543,28 @@ export default function LiveBoard({
         />
       )}
 
+      {loadError && (
+        <div className="rounded-lg border border-red-300 bg-red-50 p-3">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 text-red-700 mt-0.5 shrink-0" />
+            <div className="text-sm text-red-900">
+              <p className="font-medium">{loadError}</p>
+              <button onClick={() => load(selectedDate)}
+                      className="mt-1.5 text-xs bg-red-700 text-white rounded-md px-2.5 py-1">
+                Try again
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {loading && (
         <div className="flex items-center gap-2 text-sm text-slate-500 py-8 justify-center">
           <Loader2 className="w-4 h-4 animate-spin" /> Loading {selectedDate}…
         </div>
       )}
 
-      {!loading && jobs.length === 0 && tombs.length === 0 && (
+      {!loading && !loadError && jobs.length === 0 && tombs.length === 0 && (
         <div className="rounded-lg border border-dashed border-slate-300 bg-white p-8 text-center">
           <p className="text-sm text-slate-600">Nothing scheduled for {selectedDate} yet.</p>
           <p className="text-xs text-slate-400 mt-1">
@@ -682,18 +775,33 @@ function RolloverBanner({ rollover, today, onMoveAll, onDismiss, onOpenDay }) {
 
 /* ========================= quick add ========================= */
 
-function QuickAdd({ knownProps, knownTechs, onAdd, busy }) {
+function QuickAdd({ knownProps, knownTechs, catalogue, onAdd, onSaveStandard, busy }) {
   const [text, setText] = useState("");
+  const [showCat, setShowCat] = useState(false);
+  const [catSearch, setCatSearch] = useState("");
   const inputRef = useRef(null);
   const multi = text.includes("\n");
 
+  /* Each line is parsed, then snapped to a standard task where one clearly
+     matches. Snapping is what makes two coordinators enter the same job the
+     same way — and it costs no extra typing, because it works on the words
+     they were going to use anyway. */
   const preview = useMemo(() => {
     if (!text.trim()) return null;
-    const lines = splitQuickAddLines(text);
-    return lines.map((l) => parseQuickAdd(l, { properties: knownProps, techs: knownTechs }));
-  }, [text, knownProps, knownTechs]);
+    return splitQuickAddLines(text).map((l) => {
+      const parsed = parseQuickAdd(l, { properties: knownProps, techs: knownTechs });
+      const m = catalogue ? matchCatalogue(parsed.fields.description, catalogue) : null;
+      return {
+        raw: l,
+        fields: m ? applyCatalogue(parsed.fields, m.entry) : parsed.fields,
+        typed: parsed.fields.description,
+        match: m,
+      };
+    });
+  }, [text, knownProps, knownTechs, catalogue]);
 
   const valid = preview ? preview.filter((p) => squash(p.fields.property) || squash(p.fields.description)) : [];
+  const unmatched = valid.filter((p) => !p.match && squash(p.typed).length > 6);
 
   async function commit() {
     if (!valid.length) return;
@@ -701,6 +809,29 @@ function QuickAdd({ knownProps, knownTechs, onAdd, busy }) {
     setText("");
     inputRef.current?.focus();
   }
+
+  function insertTask(entry) {
+    // Keep whatever building/unit they already typed; replace the task part.
+    const parsed = text.trim()
+      ? parseQuickAdd(text, { properties: knownProps, techs: knownTechs })
+      : null;
+    const prefix = parsed
+      ? [parsed.fields.property, parsed.fields.unit].filter(Boolean).join(" ")
+      : "";
+    setText(`${prefix} ${entry.label}`.trim() + " ");
+    setShowCat(false);
+    inputRef.current?.focus();
+  }
+
+  const catList = useMemo(() => {
+    if (!catalogue) return [];
+    const q = canonKey(catSearch);
+    const list = catalogue.filter((c) => c.active !== false);
+    if (!q) return list;
+    return list.filter((c) =>
+      canonKey(c.label).includes(q) || (c.aliases || []).some((a) => canonKey(a).includes(q))
+    );
+  }, [catalogue, catSearch]);
 
   return (
     <div className="rounded-lg border border-slate-300 bg-white p-3">
@@ -720,8 +851,12 @@ function QuickAdd({ knownProps, knownTechs, onAdd, busy }) {
             className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm resize-y"
           />
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1.5 text-[11px] text-slate-400">
+            <button onClick={() => setShowCat((v) => !v)}
+                    className="text-slate-600 underline hover:text-slate-900">
+              {showCat ? "hide" : "pick from"} standard tasks
+            </button>
             <span>Type it how you say it — order does not matter.</span>
-            <span>Enter to add{multi ? " (⌘/Ctrl+Enter for a block)" : ""}. Paste several lines to add several jobs.</span>
+            <span>Enter to add{multi ? " (⌘/Ctrl+Enter for a block)" : ""}.</span>
           </div>
         </div>
         <button onClick={commit} disabled={!valid.length || busy}
@@ -730,13 +865,61 @@ function QuickAdd({ knownProps, knownTechs, onAdd, busy }) {
         </button>
       </div>
 
+      {showCat && (
+        <div className="mt-2 pt-2 border-t border-slate-100">
+          <input value={catSearch} onChange={(e) => setCatSearch(e.target.value)} autoFocus
+                 placeholder="search standard tasks…"
+                 className="w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm mb-2" />
+          <div className="flex flex-wrap gap-1 max-h-44 overflow-y-auto">
+            {catList.map((c) => (
+              <button key={c.id} onClick={() => insertTask(c)}
+                      title={`${c.minutes} min · ${c.people} ${c.people === 1 ? "person" : "people"}${c.material ? ` · ${c.material}` : ""}`}
+                      className="text-[11px] border border-slate-300 rounded px-2 py-1 hover:bg-slate-50 text-slate-700">
+                {c.label}
+                <span className="text-slate-400"> · {c.minutes >= 60 ? `${Math.round(c.minutes / 60)}h` : `${c.minutes}m`}</span>
+                {c.people > 1 && <span className="text-violet-700"> · {c.people}p</span>}
+              </button>
+            ))}
+            {catList.length === 0 && <span className="text-xs text-slate-400">Nothing matches that.</span>}
+          </div>
+          <p className="text-[10px] text-slate-400 mt-1.5">
+            Picking one keeps the building and unit you have already typed. The duration, crew size
+            and material come with it.
+          </p>
+        </div>
+      )}
+
       {preview && valid.length > 0 && (
         <div className="mt-2 pt-2 border-t border-slate-100 space-y-1.5">
           <p className="text-[11px] text-slate-500">
-            Read as — check it before adding, anything wrong is editable on the card afterwards:
+            Read as — anything wrong is editable on the card afterwards:
           </p>
-          {valid.slice(0, 6).map((p, i) => <ParsePreview key={i} fields={p.fields} />)}
+          {valid.slice(0, 6).map((p, i) => (
+            <div key={i}>
+              {p.match && (
+                <div className="text-[11px] text-emerald-700 mb-0.5">
+                  standard task: <span className="font-medium">{p.match.entry.label}</span>
+                  {squash(p.typed).toLowerCase() !== p.match.entry.label.toLowerCase() && (
+                    <span className="text-slate-400"> (you typed “{p.typed}”)</span>
+                  )}
+                </div>
+              )}
+              <ParsePreview fields={p.fields} />
+            </div>
+          ))}
           {valid.length > 6 && <p className="text-[11px] text-slate-400">+{valid.length - 6} more lines</p>}
+
+          {unmatched.length > 0 && onSaveStandard && (
+            <div className="text-[11px] text-slate-500 pt-1">
+              {unmatched.length === 1 ? "This wording is not" : "These are not"} a standard task yet.
+              {unmatched.slice(0, 2).map((p, i) => (
+                <button key={i} onClick={() => onSaveStandard(p.typed)}
+                        className="ml-1.5 underline text-slate-700 hover:text-slate-900">
+                  save “{p.typed.slice(0, 40)}” as one
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -754,6 +937,8 @@ function ParsePreview({ fields }) {
     ["Priority", fields.priority, "bg-red-50 text-red-800 border-red-200"],
     ["Visit", fields.timeOfVisit, "bg-amber-50 text-amber-800 border-amber-200"],
     ["Guest", fields.guestConfirmed === "Y" ? "confirmed" : "", "bg-emerald-50 text-emerald-800 border-emerald-200"],
+    ["People", fields.crewNeeded > 1 ? `${fields.crewNeeded} needed` : "", "bg-violet-50 text-violet-800 border-violet-200"],
+    ["Material", fields.materialDetails, "bg-slate-100 text-slate-700 border-slate-200"],
   ].filter(([, v]) => squash(v));
   const missing = [];
   if (!squash(fields.team)) missing.push("technician");
@@ -1357,11 +1542,20 @@ function JobRow({ job, me, onAdvance, onEdit, onTogglePms, onMove, onOutcome, on
                 Open full form
               </button>
             )}
-            {job.state !== "cancelled" && (
+            {/* Cancelling is only available before the visit happens. Once a
+                technician has been and an outcome is recorded, that is a fact
+                about the day and there is no route in the app that removes it —
+                the whole point of the design is that nothing disappears. */}
+            {job.state !== "cancelled" && !isResolved(job.state) && (
               <button onClick={() => onOutcome({ job, kind: "cancel" })}
                       className="text-xs text-red-700 border border-red-200 rounded-md px-2 py-1 hover:bg-red-50 flex items-center gap-1">
                 <Trash2 className="w-3 h-3" /> Cancel this job
               </button>
+            )}
+            {isResolved(job.state) && (
+              <span className="text-[11px] text-slate-400 self-center">
+                Closed out — it stays on the record. Reopen it from the history if it was a mistake.
+              </span>
             )}
           </div>
         </div>
