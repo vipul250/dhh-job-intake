@@ -8,6 +8,7 @@ import { parseDay, migrateDay } from "../lib/jobStore.js";
 import { liveJobs } from "../lib/job.js";
 import { computeCost, computeCostSeries, DEFAULT_RATES } from "../lib/cost.js";
 import { computeAll, DEFAULTS } from "../lib/metrics.js";
+import { FAMILY_LABEL } from "../lib/faultFamily.js";
 import {
   splitCrew, canonPriority, workType, WORK_TYPE_LABEL, formatMinutes, parseDurationMinutes,
 } from "../lib/normalize.js";
@@ -118,6 +119,12 @@ export default function Dashboard({ selectedDate, knownDates, onOpenDate }) {
           calculated from — if a field is only filled half the time, the metric says so instead
           of pretending.
         </p>
+        <p className="text-xs text-slate-500 mt-1.5 max-w-3xl">
+          <span className="font-medium text-slate-700">This page is daily field operations only.</span>{" "}
+          Quoted projects have their own costs, durations and margins and are measured on the
+          Projects tab — a project's labour appears here as the daily jobs that made it up, but its
+          quoted amount and materials do not.
+        </p>
       </div>
 
       <div className="flex flex-wrap items-end gap-3 rounded-lg border border-slate-200 bg-white p-3">
@@ -174,6 +181,8 @@ export default function Dashboard({ selectedDate, knownDates, onOpenDate }) {
             availableDates={m.series.map((s) => s.date)} onOpenDate={onOpenDate}
           />
           <Movement m={m} onOpenDate={onOpenDate} />
+          <WhyWeGoBack m={m} />
+          <TechTimes m={m} />
           <Trends m={m} />
           <CostSection m={m} jobs={loaded} rates={rates} onSaveRates={saveRates} ratesLoaded={ratesLoaded} />
           <WhereWorkGoes m={m} />
@@ -523,6 +532,233 @@ function Movement({ m, onOpenDate }) {
           )}
         </>
       )}
+    </div>
+  );
+}
+
+/* ====================== why we go back ====================== */
+
+function WhyWeGoBack({ m }) {
+  const rr = m.returnReasons;
+  if (!rr) return null;
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-4">
+      <h2 className="text-sm font-semibold text-slate-900">Why we keep going back</h2>
+      <p className="text-xs text-slate-500 mt-0.5 mb-3 max-w-3xl">
+        A repeat visit count on its own cannot be acted on. A fix that did not hold is our cost to
+        design out; a guest breaking the same thing twice is not. The kind of work is inferred from
+        the task; the reason is answered by whoever schedules the return, because it cannot be
+        inferred from anything the schedule records.
+      </p>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+        <Tile label="Return visits" value={rr.totalReturns}
+              sub="a unit revisited after a gap"
+              coverage="next-day continuations excluded" />
+        <Tile label="Reason recorded" value={rr.coverage.pct == null ? "0%" : `${rr.coverage.pct}%`}
+              sub={`${rr.answered} of ${rr.totalReturns} returns`}
+              coverage="asked on the board when a repeat is spotted"
+              tone={rr.coverage.pct >= 70 ? "good" : rr.coverage.pct >= 30 ? "warn" : "bad"} />
+        <Tile label="Ours to fix" value={rr.ourFault}
+              sub={rr.ourFaultPct == null ? "no reasons recorded yet" : `${rr.ourFaultPct}% of answered returns`}
+              coverage="failed fix, wrong diagnosis, missing part"
+              tone={rr.ourFaultPct > 40 ? "bad" : rr.ourFaultPct != null ? "warn" : "neutral"} />
+        <Tile label="Trades pulling us back" value={rr.byFamily.length}
+              sub={rr.byFamily[0] ? `most: ${rr.byFamily[0].label}` : ""}
+              coverage="classified from the task text" />
+      </div>
+
+      <div className="grid lg:grid-cols-2 gap-4">
+        <div>
+          <h3 className="text-xs font-medium text-slate-700 mb-1.5">By kind of work</h3>
+          <HBars items={rr.byFamily.slice(0, 10).map((f) => ({
+            label: f.label, value: f.returns,
+            display: f.ourFault ? `${f.returns}  (${f.ourFault} ours)` : String(f.returns),
+          }))} />
+        </div>
+        <div>
+          <h3 className="text-xs font-medium text-slate-700 mb-1.5">By reason</h3>
+          {rr.byReason.length === 0 ? (
+            <p className="text-xs text-slate-400 py-4">
+              No reasons recorded yet. The board asks the coordinator the moment it spots a unit
+              coming back, so this fills in from the next return onwards — historical rows imported
+              from the workbook have nothing to report here.
+            </p>
+          ) : (
+            <HBars
+              items={rr.byReason.map((r) => ({ label: r.label, value: r.count, display: String(r.count), ours: r.ours }))}
+              colorFor={(it) => (it.ours ? C.critical : C.s1)}
+            />
+          )}
+        </div>
+      </div>
+
+      {rr.byProperty.length > 0 && (
+        <div className="mt-4">
+          <h3 className="text-xs font-medium text-slate-700 mb-1.5">Buildings we return to most</h3>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-slate-500 border-b border-slate-200">
+                  <th className="text-left font-medium py-1.5">Building</th>
+                  <th className="text-right font-medium py-1.5">Returns</th>
+                  <th className="text-left font-medium py-1.5 pl-4">Mostly for</th>
+                  <th className="text-right font-medium py-1.5">Ours to fix</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rr.byProperty.map((p) => (
+                  <tr key={p.key} className="border-b border-slate-100">
+                    <td className="py-1.5 text-slate-800">{p.label}</td>
+                    <td className="py-1.5 text-right tabular-nums">{p.returns}</td>
+                    <td className="py-1.5 pl-4 text-slate-500">
+                      {p.topFamily ? `${FAMILY_LABEL[p.topFamily[0]]} (${p.topFamily[1]})` : "—"}
+                    </td>
+                    <td className={`py-1.5 text-right tabular-nums ${p.ourFault ? "text-red-700 font-medium" : "text-slate-400"}`}>
+                      {p.ourFault || "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ====================== how long jobs take ====================== */
+
+function TechTimes({ m }) {
+  const tt = m.techTimes;
+  if (!tt) return null;
+  const none = tt.measuredJobs === 0;
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-4">
+      <h2 className="text-sm font-semibold text-slate-900">How long jobs actually take</h2>
+      <p className="text-xs text-slate-500 mt-0.5 mb-3 max-w-3xl">
+        Measured from Start to Done on the board — nobody types a duration. Medians, not averages,
+        so one job left open over lunch does not move a technician's figure, and every row states
+        how many jobs it was measured from.
+      </p>
+
+      {none ? (
+        <p className="text-xs text-slate-400 py-4">
+          No measured times in this range yet. Every job where a technician's Start and Done are
+          both recorded produces one, so this fills in as the board is used. Rows imported from the
+          workbook have no timestamps and contribute nothing.
+        </p>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-4">
+            <Tile label="Jobs with measured time" value={tt.measuredJobs}
+                  sub={`${tt.coverage.pct ?? 0}% of ${tt.coverage.total}`}
+                  coverage="needs both Start and Done"
+                  tone={tt.coverage.pct >= 70 ? "good" : "warn"} />
+            <Tile label="Kinds of work measured" value={tt.byFamily.length}
+                  sub={tt.byFamily[0] ? `most: ${tt.byFamily[0].label}` : ""}
+                  coverage="" />
+            <Tile label="Technicians measured" value={tt.byTech.length} sub="" coverage="" />
+          </div>
+
+          <div className="grid lg:grid-cols-2 gap-4">
+            <div>
+              <h3 className="text-xs font-medium text-slate-700 mb-1.5">By kind of work</h3>
+              <TimeTable rows={tt.byFamily.map((f) => ({ name: f.label, ...f }))} />
+            </div>
+            <div>
+              <h3 className="text-xs font-medium text-slate-700 mb-1.5">By technician</h3>
+              <TimeTable rows={tt.byTech.map((t) => ({ name: t.tech, ...t }))} />
+            </div>
+          </div>
+
+          {tt.byTechFamily.length > 0 && (
+            <div className="mt-4">
+              <h3 className="text-xs font-medium text-slate-700 mb-1.5">
+                Technician × kind of work
+                <span className="font-normal text-slate-400"> — only where there are at least {tt.minSample} jobs to measure from</span>
+              </h3>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-slate-500 border-b border-slate-200">
+                      <th className="text-left font-medium py-1.5">Technician</th>
+                      <th className="text-left font-medium py-1.5">Work</th>
+                      <th className="text-right font-medium py-1.5">Jobs</th>
+                      <th className="text-right font-medium py-1.5">Median</th>
+                      <th className="text-right font-medium py-1.5">Range</th>
+                      <th className="text-right font-medium py-1.5">vs estimate</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {tt.byTechFamily.slice(0, 25).map((r, i) => (
+                      <tr key={i} className="border-b border-slate-100">
+                        <td className="py-1.5 text-slate-800">{r.tech}</td>
+                        <td className="py-1.5 text-slate-600">{r.label}</td>
+                        <td className="py-1.5 text-right tabular-nums">{r.jobs}</td>
+                        <td className="py-1.5 text-right tabular-nums">{formatMinutes(r.medianMinutes)}</td>
+                        <td className="py-1.5 text-right tabular-nums text-slate-400">
+                          {formatMinutes(r.minMinutes)}–{formatMinutes(r.maxMinutes)}
+                        </td>
+                        <td className={`py-1.5 text-right tabular-nums ${
+                          r.estimateRatioPct == null ? "text-slate-300"
+                          : r.estimateRatioPct > 125 ? "text-red-700"
+                          : r.estimateRatioPct < 75 ? "text-amber-700" : "text-emerald-700"}`}>
+                          {r.estimateRatioPct == null ? "—" : `${r.estimateRatioPct}%`}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="text-[11px] text-slate-400 mt-1.5">
+                "vs estimate" over 100% means the work reliably takes longer than the schedule
+                allows for — which is a capacity problem before it is a performance one.
+              </p>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function TimeTable({ rows }) {
+  if (!rows.length) return <p className="text-xs text-slate-400">Nothing measured yet.</p>;
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="text-slate-500 border-b border-slate-200">
+            <th className="text-left font-medium py-1.5"> </th>
+            <th className="text-right font-medium py-1.5">Jobs</th>
+            <th className="text-right font-medium py-1.5">Median</th>
+            <th className="text-right font-medium py-1.5">Range</th>
+            <th className="text-right font-medium py-1.5">vs est.</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.slice(0, 12).map((r) => (
+            <tr key={r.name} className="border-b border-slate-100">
+              <td className="py-1.5 text-slate-800">{r.name}</td>
+              <td className="py-1.5 text-right tabular-nums">{r.jobs}</td>
+              <td className="py-1.5 text-right tabular-nums">{formatMinutes(r.medianMinutes)}</td>
+              <td className="py-1.5 text-right tabular-nums text-slate-400">
+                {formatMinutes(r.minMinutes)}–{formatMinutes(r.maxMinutes)}
+              </td>
+              <td className={`py-1.5 text-right tabular-nums ${
+                r.estimateRatioPct == null ? "text-slate-300"
+                : r.estimateRatioPct > 125 ? "text-red-700"
+                : r.estimateRatioPct < 75 ? "text-amber-700" : "text-emerald-700"}`}>
+                {r.estimateRatioPct == null ? "—" : `${r.estimateRatioPct}%`}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

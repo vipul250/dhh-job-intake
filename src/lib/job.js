@@ -28,7 +28,9 @@
 import {
   squash, canonKey, canonProperty, canonUnit, canonTech, splitCrew,
   parseDurationMinutes, canonPriority, occupancyClass, TECH_ALIASES,
+  assetKey, daysBetween,
 } from "./normalize.js";
+import { faultFamily } from "./faultFamily.js";
 
 export const JOB_STATES = ["scheduled", "in_progress", "done", "not_done", "cancelled"];
 
@@ -123,6 +125,15 @@ export function newJob(fields, date, by) {
     outcomeReason: "",
     actualMinutes: null,
 
+    // Set when the board spots this unit was visited recently for similar
+    // work. The reason is asked for, never guessed — see faultFamily.js.
+    returnOf: null,
+    returnReason: "",
+
+    // Links this job to a project, so its labour rolls into that project's
+    // self-cost. Empty for ordinary daily work.
+    projectId: "",
+
     events: [makeEvent("created", by)],
     ...fields,
   };
@@ -208,6 +219,82 @@ export function applyEdit(job, patch, by) {
   if (!changes.length) return next;
   const kind = changes.length === 1 && changes[0].field === "team" ? "assigned" : "edited";
   return withEvent(next, kind, by, { changes });
+}
+
+/* ----------------------- how long it actually took --------------------- *
+ * Nobody is going to type a duration for thirty jobs a day, and a field
+ * that only gets filled sometimes produces an average of the jobs somebody
+ * felt like recording — which is worse than no number.
+ *
+ * But the board already has Start and Done as buttons, and both are
+ * timestamped events. So the real duration is free: it is the gap between
+ * them. A manually entered value still wins when there is one, because
+ * somebody typing it is making a correction.
+ *
+ * The 12-hour ceiling exists because the common failure is a technician
+ * who starts a job and marks it done the next morning. That is a missing
+ * Done click, not an eleven-hour job, and averaging it in would quietly
+ * wreck every estimate the app produces.
+ * -------------------------------------------------------------------- */
+export const MAX_PLAUSIBLE_JOB_MINUTES = 12 * 60;
+
+export function actualDuration(job) {
+  const entered = job.actualMinutes != null ? Number(job.actualMinutes) : null;
+  if (Number.isFinite(entered) && entered > 0) {
+    return { minutes: Math.round(entered), source: "entered" };
+  }
+  const events = job.events || [];
+  const started = [...events].reverse().find((e) => e.kind === "started");
+  const finished = [...events].reverse().find((e) => e.kind === "done");
+  if (!started || !finished || finished.at <= started.at) return { minutes: null, source: null };
+  const mins = Math.round((finished.at - started.at) / 60000);
+  if (mins > MAX_PLAUSIBLE_JOB_MINUTES) {
+    return { minutes: null, source: null, discarded: mins, reason: "over 12h — almost certainly a missed Done click" };
+  }
+  if (mins < 1) return { minutes: null, source: null };
+  return { minutes: mins, source: "measured" };
+}
+
+export function jobFamily(job) {
+  return faultFamily(job.description, job.faultCode);
+}
+
+/* ------------------------ spotting a return --------------------------- *
+ * A unit visited again soon after a similar job. Used to ask the
+ * coordinator why it is back — the one thing that cannot be inferred.
+ * -------------------------------------------------------------------- */
+function tokens(s) {
+  return new Set(canonKey(s).replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter((w) => w.length > 3));
+}
+function looksSimilar(a, b) {
+  const A = tokens(a), B = tokens(b);
+  if (!A.size || !B.size) return false;
+  let hit = 0;
+  A.forEach((w) => { if (B.has(w)) hit++; });
+  return hit / Math.min(A.size, B.size) >= 0.4;
+}
+
+/**
+ * @param {object} job          the newly added job
+ * @param {Array<{date:string, rows:Array}>} history  earlier days, newest first
+ * @returns {{prior:object, date:string, gapDays:number, sameFamily:boolean}|null}
+ */
+export function findReturn(job, history) {
+  const key = assetKey(job.property, job.unit);
+  if (!key) return null;
+  const fam = jobFamily(job);
+  for (const { date, rows } of history) {
+    for (const prior of rows) {
+      if (!prior || prior._tomb || prior.id === job.id) continue;
+      if (assetKey(prior.property, prior.unit) !== key) continue;
+      const sameFamily = jobFamily(prior) === fam;
+      if (!sameFamily && !looksSimilar(prior.description, job.description)) continue;
+      const gap = daysBetween(date, job.scheduledDate);
+      if (gap == null || gap < 0) continue;
+      return { prior, date, gapDays: gap, sameFamily };
+    }
+  }
+  return null;
 }
 
 /* ------------------------- derived properties ------------------------- */

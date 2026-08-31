@@ -208,3 +208,86 @@ every field the metrics depend on, and every tile states what it was
 calculated from. A completion rate over 40% of the rows and one over 95% of
 them are different kinds of fact, and the difference should not be
 invisible.
+
+---
+
+## Added later: why we go back, how long things take, and projects
+
+### Why we keep going back (rework, categorised)
+
+A repeat-visit count cannot be acted on by itself. A fix that did not hold
+is our cost to design out; a guest breaking the same thing twice is not.
+So returns are cut two ways.
+
+**By kind of work** — inferred from the task text into families (AC/HVAC,
+plumbing, electrical, door and lock hardware, appliance, paint and finish,
+pool, furniture, inspection, logistics). Over the real workbook this puts
+Palm Villa's 14 returns where they belong: pool, i.e. the PPM cycle working
+correctly, not rework.
+
+**By reason** — this one cannot be inferred, so it is asked. When a job is
+added to a unit that had similar work in the previous 21 days, the board
+says so and offers one click:
+
+| Reason | Ours? |
+|---|---|
+| First fix did not hold | yes |
+| Wrong diagnosis first time | yes |
+| Right part was not on the van | yes |
+| No access on the earlier visit | no |
+| Planned continuation of the same job | no |
+| Underlying issue — needs contractor | no |
+| Different fault, same unit | no |
+| Recurring service (PPM) | no |
+| New damage / guest misuse | no |
+
+The three marked "ours" are the ones that cost money and can be removed by
+changing how the work is done. The dashboard reports them separately and
+states what share of returns actually carry a reason.
+
+### How long jobs actually take
+
+**Nobody types a duration.** The board already has Start and Done as
+buttons, and both are timestamped, so the real duration is the gap between
+them. A manually entered figure still wins where there is one.
+
+A gap over 12 hours is discarded rather than counted: the common failure is
+a technician who starts a job and marks it done the next morning, and
+averaging that in would wreck every estimate the app produces.
+
+Reported as medians — one job left open over lunch should not move a
+technician's figure — broken down by technician, by kind of work, and by
+technician × kind of work (only where there are at least three jobs to
+measure from). The "vs estimate" column over 100% means the work reliably
+takes longer than the schedule allows, which is a capacity problem before
+it is a performance one.
+
+### Projects — quoted work and what it cost
+
+Daily field tasks and projects are different animals, and until now the
+metrics measured only the first. **The Dashboard is daily operations
+only**; projects have their own tab.
+
+    margin = approved amount − (labour hours × rate + material cost)
+
+**Labour is not entered twice.** The daily jobs linked to a project already
+carry their hours — measured where the board has them, estimated where it
+does not — and roll up automatically. Quotation references appear inside
+task descriptions (`Approved - PC-2026-08-28 - arrange material`), so the
+app suggests which daily jobs belong to a project rather than making anyone
+hunt for them.
+
+A margin resting mostly on estimated hours is labelled a forecast on the
+card, because that is what it is.
+
+**The material price book** is the memory. Every material line teaches it:
+item, quantity, unit cost. After three observations of the same item the
+cost is filled in automatically from the median and the coordinator can
+correct it. Matching is on words rather than exact strings, so "Honeywell
+Ac thermostat 220v" finds "Honeywell thermostat" — nobody retypes an item
+the same way twice.
+
+The approved quotation is stored as a **link**, not an uploaded file: the
+app has no file storage configured. A link to wherever the PDF already
+lives serves the same purpose for pulling the figure out. Real uploads
+would need a Supabase Storage bucket — a small follow-on, not a rewrite.
