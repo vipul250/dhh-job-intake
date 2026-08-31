@@ -121,13 +121,70 @@ is opened on the board. A sensible order:
 2. Coordinator captures on the board, still copying into PMS with the button.
 3. Stop maintaining the sheet; keep the export for anyone who wants a printout.
 
-## Known gap
+## The scheduling method
 
-**There is still no agreed method for building the schedule.** Each
-coordinator does it their own way, and confirmed appointments and confirmed
-guest complaints are honoured. The board now makes the *consequences*
-visible — who is over capacity, which occupied units are unconfirmed, what
-is being pushed repeatedly — but it does not yet propose an ordering or
-suggest which technician should take a job. That is the obvious next piece,
-and it needs a decision from the department about what actually takes
-precedence.
+Previously each coordinator built the day their own way, so two people given
+the same jobs produced different days and neither could say why. The agreed
+precedence is now written down and applied:
+
+> **1. confirmed appointment  →  2. P1  →  3. batch by building**
+
+Those three do different kinds of work, and the planner treats them
+accordingly:
+
+- **A confirmed appointment is fixed, not first.** A guest who agreed to
+  3–4pm is not served by a technician arriving at 9am. Appointments are
+  anchors that pin the timeline; everything else fills around them.
+- **P1 is a true priority** — it takes the earliest time still free.
+- **Batching orders everything left** so the day stays in one building
+  while there is work in it, then moves to whichever building has the most
+  outstanding, because that is the trip worth taking.
+
+A fourth consideration sits *below* all three and is not part of the rule:
+a job with a stated time whose guest has **not** confirmed. Ignoring it
+would schedule a job at 09:00 that somebody asked to have at 16:00, so it
+is honoured where a gap allows — after P1, never over an appointment — and
+is labelled differently everywhere it appears so it is never mistaken for a
+real commitment.
+
+**Order of work** on each technician's row shows the resulting timeline
+with a reason on every line, so a coordinator can see why the order is what
+it is and overrule it knowingly.
+
+### When it does not fit
+
+The panel lists what will not fit **in the order the rule says to shed it**
+— batched work first, then requested times, then P1 last. Within a tier, a
+job that has already been pushed is placed at the *bottom*: pushing it again
+is how jobs used to disappear, so the plan does not casually nominate it.
+One button moves the overflow to tomorrow, and every day they leave keeps
+its record.
+
+### Conflicts it will tell you about
+
+- Two confirmed appointments that collide.
+- An appointment promised for a time outside the technician's shift — for
+  example a guest confirmed for 8am on a 9am–6pm shift. Either the guest or
+  the roster has to give, and previously nobody found out until the morning.
+
+### Suggesting a technician
+
+The same precedence applied at the moment of assignment rather than
+ordering. Unassigned jobs offer a ranked suggestion — who is already going
+to that building today, who has room left in the shift, whose shift covers
+the requested time — each with its reason shown, because a suggestion a
+coordinator cannot interrogate is one they will ignore.
+
+Reading the clock is its own small problem: the workbook contains 97
+distinct spellings of a visit time (`3-4pm`, `4 - 5 Pm`, `12.30pm`,
+`16:00:00`, `Sharp 12.00`, `1.30-2.30pm`, `Before 2.00 Pm`, `after 2pm`,
+`Not Confirmed`, `Onb`). All of them parse. Where an hour is written
+without am/pm and lands outside the shift, it is nudged by twelve hours if
+that puts it inside, and the line says the assumption was made.
+
+### What it was checked against
+
+Run over all 123 technician-days in the real workbook: every job is either
+placed or listed as overflow (none silently lost), no two placed jobs
+overlap, nothing unanchored is scheduled past the end of a shift, and no P1
+is shed while there is room in the shift to hold it.

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import {
   Plus, Play, Check, X, ArrowRight, Clipboard, History, AlertTriangle,
   Loader2, RefreshCw, ChevronDown, ChevronRight, Users, CircleDot, Trash2,
+  CalendarClock, Wand2, Pin,
 } from "lucide-react";
 import {
   newJob, moveJob, setState as setJobState, applyEdit, withEvent,
@@ -15,8 +16,9 @@ import {
 } from "../lib/jobStore.js";
 import {
   splitCrew, parseShiftMinutes, formatMinutes, canonPriority, squash,
-  canonProperty,
+  canonProperty, displayProperty,
 } from "../lib/normalize.js";
+import { planDay, fmtClock, suggestTechnician } from "../lib/schedule.js";
 
 /* ---------------------------------------------------------------------- *
  * LiveBoard.jsx — the one place both roles work.
@@ -213,8 +215,19 @@ export default function LiveBoard({
       landing.push(...pairs.map((p) => p.moved));
     }
     const landed = await mutateDay(toDate, (cur) => [...cur, ...landing]);
-    setRows(landed);
-    watcher.current?.noteLocalWrite(landed);
+
+    /* Only adopt the result into the view when it IS the day being viewed.
+       Setting it unconditionally showed the destination day's jobs under
+       the current day's date — which, on a board whose whole purpose is
+       knowing where jobs are, is the worst possible thing to get wrong. */
+    if (toDate === selectedDate) {
+      setRows(landed);
+      watcher.current?.noteLocalWrite(landed);
+    } else if (byDay.has(selectedDate)) {
+      const refreshed = await readDay(selectedDate);
+      setRows(refreshed);
+      watcher.current?.noteLocalWrite(refreshed);
+    }
     showToast(`Moved ${jobsToMove.length} job(s) to ${toDate}. Every day they left keeps a record.`, "ok");
   }
 
@@ -310,10 +323,11 @@ export default function LiveBoard({
 
       {!loading && groups.map((g) => (
         <TeamGroup
-          key={g.team} group={g} me={me}
+          key={g.team} group={g} me={me} allJobs={jobs} selectedDate={selectedDate}
           onAdvance={advance} onEdit={edit} onTogglePms={togglePms}
           onMove={setMoveFor} onOutcome={setOutcomeFor} onTrail={setTrailFor}
           onEditFull={onEditFull} showToast={showToast}
+          onMoveMany={(list, reason) => moveStranded(list, addDays(selectedDate, 1), reason)}
         />
       ))}
 
@@ -585,9 +599,14 @@ function ParsePreview({ fields }) {
 
 /* ========================= team group ========================= */
 
-function TeamGroup({ group, me, onAdvance, onEdit, onTogglePms, onMove, onOutcome, onTrail, onEditFull, showToast }) {
+function TeamGroup({ group, me, allJobs, selectedDate, onAdvance, onEdit, onTogglePms, onMove, onOutcome, onTrail, onEditFull, showToast, onMoveMany }) {
   const [open, setOpen] = useState(true);
+  const [showPlan, setShowPlan] = useState(false);
   const g = group;
+  const plan = useMemo(
+    () => (g.team === "Unassigned" ? null : planDay(g.list)),
+    [g.list, g.team]
+  );
   const tone = g.loadPct > 100 ? "bad" : g.loadPct > 85 ? "warn" : "ok";
   const barCls = { ok: "bg-blue-500", warn: "bg-amber-500", bad: "bg-red-500" }[tone];
 
@@ -624,11 +643,28 @@ function TeamGroup({ group, me, onAdvance, onEdit, onTogglePms, onMove, onOutcom
           {g.noEstimate > 0 && ` · ${g.noEstimate} with no estimate`}
         </span>
 
-        <button onClick={copyAllForPms} title="Copy this technician's jobs formatted for PMS"
-                className="ml-auto flex items-center gap-1 text-xs border border-slate-300 rounded-md px-2 py-1 hover:bg-slate-50">
-          <Clipboard className="w-3 h-3" /> Copy for PMS
-        </button>
+        <div className="ml-auto flex items-center gap-1.5">
+          {plan && (
+            <button onClick={() => setShowPlan((v) => !v)}
+                    title="Order the day by the agreed rule: confirmed appointment, then P1, then batch by building"
+                    className={`flex items-center gap-1 text-xs rounded-md px-2 py-1 border ${
+                      showPlan ? "bg-slate-900 text-white border-slate-900" : "border-slate-300 hover:bg-slate-50"}`}>
+              <CalendarClock className="w-3 h-3" /> Order of work
+              {plan.overflow.length > 0 && (
+                <span className="ml-0.5 rounded-full bg-red-600 text-white px-1.5">{plan.overflow.length}</span>
+              )}
+            </button>
+          )}
+          <button onClick={copyAllForPms} title="Copy this technician's jobs formatted for PMS"
+                  className="flex items-center gap-1 text-xs border border-slate-300 rounded-md px-2 py-1 hover:bg-slate-50">
+            <Clipboard className="w-3 h-3" /> Copy for PMS
+          </button>
+        </div>
       </div>
+
+      {showPlan && plan && (
+        <DayPlan plan={plan} team={g.team} onMoveMany={onMoveMany} onTrail={onTrail} />
+      )}
 
       {open && (
         <div className="divide-y divide-slate-100">
@@ -638,8 +674,105 @@ function TeamGroup({ group, me, onAdvance, onEdit, onTogglePms, onMove, onOutcom
               onAdvance={onAdvance} onEdit={onEdit} onTogglePms={onTogglePms}
               onMove={onMove} onOutcome={onOutcome} onTrail={onTrail}
               onEditFull={onEditFull} showToast={showToast}
+              suggestFrom={g.team === "Unassigned" ? allJobs : null}
             />
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ========================= the day plan ========================= *
+ * The scheduling rule made visible: confirmed appointment, then P1, then
+ * batch by building. Each line says why it sits where it does, because a
+ * plan a coordinator cannot interrogate is one they will quietly ignore.
+ * ============================================================== */
+
+function DayPlan({ plan, team, onMoveMany, onTrail }) {
+  const [moving, setMoving] = useState(false);
+  const over = plan.overflow;
+
+  return (
+    <div className="border-b border-slate-100 bg-slate-50 px-3 py-3">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 mb-2">
+        <h4 className="text-xs font-semibold text-slate-700">Order of work — {team}</h4>
+        <span className="text-[11px] text-slate-500">
+          {fmtClock(plan.shiftStart)}–{fmtClock(plan.shiftEnd)} · finishes {fmtClock(plan.finishAt)} ·{" "}
+          {plan.buildingSwitches} building move{plan.buildingSwitches === 1 ? "" : "s"} ·{" "}
+          {formatMinutes(plan.travelMinutes)} travelling
+        </span>
+      </div>
+
+      {plan.conflicts.length > 0 && (
+        <div className="mb-2 space-y-1">
+          {plan.conflicts.map((c, i) => (
+            <div key={i} className="flex items-start gap-1.5 text-[11px] text-red-800 bg-red-50 border border-red-200 rounded px-2 py-1">
+              <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" />
+              <span><span className="font-medium">{c.job.property} {c.job.unit}</span> — {c.message}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <ol className="space-y-0.5">
+        {plan.items.map((it, i) => (
+          <li key={it.job.id} className="flex items-baseline gap-2 text-xs">
+            <span className="tabular-nums text-slate-500 w-28 shrink-0">
+              {fmtClock(it.start)}–{fmtClock(it.end)}
+            </span>
+            {it.anchored
+              ? <Pin className="w-3 h-3 text-blue-600 shrink-0" title="Fixed by a confirmed appointment" />
+              : <span className="w-3 shrink-0" />}
+            <span className="text-slate-800 truncate max-w-[260px]">
+              {displayProperty(it.job.property)} {it.job.unit}
+            </span>
+            <span className="text-slate-400 truncate flex-1">{it.reason}</span>
+            {it.travelBefore > 0 && (
+              <span className="text-[10px] text-amber-700 shrink-0">+{it.travelBefore}m travel</span>
+            )}
+            {!it.estimated && <span className="text-[10px] text-amber-600 shrink-0">assumed 1h</span>}
+          </li>
+        ))}
+        {plan.items.length === 0 && <li className="text-xs text-slate-400">Nothing could be placed in this shift.</li>}
+      </ol>
+
+      {over.length > 0 && (
+        <div className="mt-3 rounded-md border border-red-200 bg-red-50 p-2">
+          <h5 className="text-xs font-medium text-red-900">
+            {over.length} job{over.length === 1 ? "" : "s"} will not fit in this shift
+          </h5>
+          <p className="text-[11px] text-red-800 mt-0.5 mb-1.5">
+            Listed in the order the rule says to shed them — batched work first, then requested
+            times, then P1 last. A job that has already been pushed is placed at the bottom of its
+            tier, because pushing it again is how jobs used to disappear.
+          </p>
+          <ul className="space-y-0.5 text-xs">
+            {over.map((x) => (
+              <li key={x.job.id} className="flex items-baseline gap-2">
+                <span className="text-red-900 truncate flex-1">
+                  {displayProperty(x.job.property)} {x.job.unit} — {x.job.description}
+                </span>
+                <span className="text-red-700 shrink-0">{formatMinutes(x.minutes)}</span>
+                {(x.job.pushCount || 0) > 0 && (
+                  <button onClick={() => onTrail(x.job)} className="text-[10px] text-red-800 underline shrink-0">
+                    pushed {x.job.pushCount}×
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+          <button
+            disabled={moving}
+            onClick={async () => {
+              setMoving(true);
+              await onMoveMany(over.map((x) => x.job), "Ran out of time");
+              setMoving(false);
+            }}
+            className="mt-2 flex items-center gap-1 text-xs bg-red-700 text-white rounded-md px-2.5 py-1 disabled:opacity-50">
+            {moving ? <Loader2 className="w-3 h-3 animate-spin" /> : <ArrowRight className="w-3 h-3" />}
+            Move these {over.length} to tomorrow
+          </button>
         </div>
       )}
     </div>
@@ -656,8 +789,9 @@ const STATE_CHIP = {
   cancelled: "bg-slate-100 text-slate-400 line-through",
 };
 
-function JobRow({ job, me, onAdvance, onEdit, onTogglePms, onMove, onOutcome, onTrail, onEditFull, showToast }) {
+function JobRow({ job, me, onAdvance, onEdit, onTogglePms, onMove, onOutcome, onTrail, onEditFull, showToast, suggestFrom }) {
   const [expanded, setExpanded] = useState(false);
+  const [suggestions, setSuggestions] = useState(null);
   const mins = jobMinutes(job);
   const pushed = job.pushCount || 0;
   const sev = pushSeverity(job);
@@ -731,6 +865,13 @@ function JobRow({ job, me, onAdvance, onEdit, onTogglePms, onMove, onOutcome, on
               </IconBtn>
             </>
           )}
+          {suggestFrom && (
+            <IconBtn title="Suggest a technician using the scheduling rule"
+                     onClick={() => setSuggestions(suggestions ? null : suggestTechnician(job, suggestFrom))}
+                     tone="slate">
+              <Wand2 className="w-3.5 h-3.5" />
+            </IconBtn>
+          )}
           <IconBtn title="Copy for PMS" onClick={copyPms} tone="slate"><Clipboard className="w-3.5 h-3.5" /></IconBtn>
           <button onClick={() => onTogglePms(job)}
                   title="Is this job recorded in PMS?"
@@ -742,6 +883,28 @@ function JobRow({ job, me, onAdvance, onEdit, onTogglePms, onMove, onOutcome, on
           </button>
         </div>
       </div>
+
+      {suggestions && (
+        <div className="mt-2 pt-2 border-t border-slate-100">
+          <p className="text-[11px] text-slate-500 mb-1">
+            By the rule — already going to that building, then room in the shift, then whether the
+            shift covers the requested time:
+          </p>
+          {suggestions.length === 0 && <p className="text-xs text-slate-400">Nobody is scheduled today yet.</p>}
+          <div className="space-y-1">
+            {suggestions.slice(0, 3).map((s) => (
+              <div key={s.tech} className="flex items-center gap-2 text-xs">
+                <button onClick={() => { onEdit(job, { team: s.tech }); setSuggestions(null); }}
+                        className="border border-slate-300 rounded px-2 py-0.5 hover:bg-slate-50 font-medium shrink-0">
+                  {s.tech}
+                </button>
+                <span className={s.loadPct > 100 ? "text-red-600" : "text-slate-500"}>{s.loadPct}%</span>
+                <span className="text-slate-500 truncate">{s.why.join(" · ")}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {expanded && (
         <div className="mt-2 pt-2 border-t border-slate-100 grid sm:grid-cols-2 lg:grid-cols-4 gap-2">
