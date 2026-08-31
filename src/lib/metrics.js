@@ -27,6 +27,7 @@ import {
 import { faultFamily, FAMILY_LABEL, RETURN_REASON_LABEL, isOurFault } from "./faultFamily.js";
 import {
   actualDuration, isResolved, needsFollowUp, SOURCE_LABEL, JOB_SOURCES, REACTIVE_SOURCES,
+  MOVE_REASON_LABEL, moveReasonDisplaces,
 } from "./job.js";
 
 export const DEFAULTS = {
@@ -374,6 +375,19 @@ export function computeMovement(jobs, opts = {}) {
   const cancelled = jobs.filter((j) => j.state === "cancelled");
   const stillOpen = jobs.filter((j) => j.state === "scheduled" || j.state === "in_progress");
 
+  /* A job marked not done is now always asked when it happens instead. The
+     three answers are different outcomes and are counted separately: booked
+     for a day, deliberately not rebooked, or — for rows closed out before
+     the question existed — never answered at all. */
+  const notDone = jobs.filter((j) => j.state === "not_done");
+  const rebookAnswer = (j) => {
+    const e = [...(j.events || [])].reverse().find((x) => x.rebook !== undefined);
+    return e ? e.rebook : null;
+  };
+  const rebooked = notDone.filter((j) => { const a = rebookAnswer(j); return a && a !== "none"; });
+  const droppedOnPurpose = notDone.filter((j) => rebookAnswer(j) === "none");
+  const unanswered = notDone.filter((j) => rebookAnswer(j) == null);
+
   // Jobs with no recorded outcome on a day that has already passed: nobody
   // said done, not done, moved or cancelled. These are the disappearances.
   const today = opts.asOfDate || "";
@@ -390,6 +404,12 @@ export function computeMovement(jobs, opts = {}) {
     maxAgeDays: ages.length ? Math.max(...ages) : 0,
     reasons: Object.entries(reasons).sort((a, b) => b[1] - a[1]),
     cancelled: cancelled.length,
+    notDone: notDone.length,
+    rebooked: rebooked.length,
+    rebookedPct: pct(rebooked.length, notDone.length),
+    droppedOnPurpose: droppedOnPurpose.length,
+    droppedJobs: droppedOnPurpose.slice(0, 15),
+    rebookUnanswered: unanswered.length,
     lost: lost.length,
     lostJobs: lost.slice(0, 25),
     // How much of the log is actually being written — a job created before
@@ -775,6 +795,138 @@ export function computeDemand(jobs) {
   };
 }
 
+/* ------------ 14. Displacement — the coordinator's calls -------------- *
+ * When one job is moved so another can have its slot, somebody made a
+ * judgement: this work matters more than that work, today. Those calls are
+ * the substance of what a coordinator does, and until both halves were
+ * recorded the app could only see that a job moved — never what beat it,
+ * so never whether the call was sound.
+ *
+ * Three things are worth knowing, and all of them need time to mean
+ * anything:
+ *
+ *   - how often each coordinator displaces work, and for what
+ *   - whether they displace higher-priority work for lower-priority work
+ *   - what happens to the job that lost: does it get done, or pushed again
+ *
+ * The third is the real test. Bumping a P3 for an emergency is correct;
+ * bumping the same P3 four times running is a decision nobody is making.
+ * -------------------------------------------------------------------- */
+export function computeDisplacement(jobs, opts = {}) {
+  const byId = new Map(jobs.map((j) => [j.id, j]));
+  const events = [];
+
+  jobs.forEach((j) => {
+    if (!j.displacedBy) return;
+    const winner = j.displacedBy.jobId ? byId.get(j.displacedBy.jobId) : null;
+    const loserPri = canonPriority(j.priority);
+    const winnerPri = winner ? canonPriority(winner.priority) : "";
+    // PRI-1 sorts before PRI-4 as a string, so a smaller string is more urgent.
+    const questionable = !!(loserPri && winnerPri && loserPri < winnerPri);
+    events.push({
+      loser: j,
+      winner,
+      winnerLabel: squash(j.displacedBy.label),
+      by: squash(j.displacedBy.by) || "unknown",
+      at: j.displacedBy.at,
+      date: j.displacedBy.date,
+      loserPri, winnerPri, questionable,
+      // Did the displaced job actually get done afterwards?
+      settled: isResolved(j.state),
+      pushCount: j.pushCount || 0,
+    });
+  });
+
+  const byCoordinator = {};
+  events.forEach((e) => {
+    if (!byCoordinator[e.by]) {
+      byCoordinator[e.by] = { by: e.by, calls: 0, questionable: 0, loserDone: 0, loserPushedAgain: 0 };
+    }
+    const c = byCoordinator[e.by];
+    c.calls++;
+    if (e.questionable) c.questionable++;
+    if (e.settled) c.loserDone++;
+    if (e.pushCount > 1) c.loserPushedAgain++;
+  });
+
+  const reasons = {};
+  jobs.forEach((j) => {
+    (j.events || []).forEach((ev) => {
+      if (ev.kind !== "moved_in" || !moveReasonDisplaces(ev.reason)) return;
+      const label = MOVE_REASON_LABEL[ev.reason] || ev.reason;
+      reasons[label] = (reasons[label] || 0) + 1;
+    });
+  });
+
+  // A job bumped more than once is the one to look at: each individual
+  // call may have been fine and the cumulative effect still wrong.
+  const repeatedlyBumped = jobs
+    .filter((j) => j.displacedBy && (j.pushCount || 0) >= 2)
+    .sort((a, b) => (b.pushCount || 0) - (a.pushCount || 0))
+    .slice(0, 12);
+
+  return {
+    total: events.length,
+    linkedToAJob: events.filter((e) => e.winner).length,
+    questionable: events.filter((e) => e.questionable).length,
+    questionablePct: pct(events.filter((e) => e.questionable).length, events.length),
+    loserSettled: events.filter((e) => e.settled).length,
+    loserSettledPct: pct(events.filter((e) => e.settled).length, events.length),
+    byCoordinator: Object.values(byCoordinator).sort((a, b) => b.calls - a.calls),
+    reasons: Object.entries(reasons).sort((a, b) => b[1] - a[1]),
+    repeatedlyBumped,
+    events: events.sort((a, b) => (b.at || 0) - (a.at || 0)).slice(0, 25),
+    coverage: coverage(events.length, jobs.filter((j) => (j.pushCount || 0) > 0).length),
+  };
+}
+
+/* --------------- 15. Churn against the posted schedule ---------------- *
+ * A change before the schedule is published is drafting. A change after it
+ * is churn: the field team has already planned around the version they
+ * were given, and guests have been told times.
+ * -------------------------------------------------------------------- */
+/* Different kinds of change carry their reason in different places: an
+   edit is asked for one outright, a move already has a move-reason id, and
+   an addition or a cancellation is self-describing. Reading them into one
+   vocabulary is what makes the breakdown countable. */
+function churnReason(e) {
+  if (e.kind === "added_late") return "Job added after posting";
+  if (e.kind === "cancelled") return `Cancelled${e.reason ? ` — ${squash(e.reason)}` : ""}`;
+  if (e.kind === "moved_in" || e.kind === "moved_out") {
+    const label = MOVE_REASON_LABEL[e.reason] || squash(e.reason) || "no reason given";
+    return `Moved to another day — ${label}`;
+  }
+  return squash(e.reason) || "(no reason given)";
+}
+
+export function computeChurn(jobs) {
+  let changesAfterPost = 0, jobsChanged = 0;
+  const reasons = {};
+  const byPerson = {};
+
+  jobs.forEach((j) => {
+    const after = (j.events || []).filter((e) => e.lock === "posted" || e.lock === "past");
+    if (!after.length) return;
+    jobsChanged++;
+    after.forEach((e) => {
+      changesAfterPost++;
+      const r = churnReason(e);
+      reasons[r] = (reasons[r] || 0) + 1;
+      const who = squash(e.by) || "unknown";
+      if (!byPerson[who]) byPerson[who] = { by: who, changes: 0 };
+      byPerson[who].changes++;
+    });
+  });
+
+  return {
+    jobsChanged,
+    changesAfterPost,
+    churnRatePct: pct(jobsChanged, jobs.length),
+    reasons: Object.entries(reasons).sort((a, b) => b[1] - a[1]),
+    byPerson: Object.values(byPerson).sort((a, b) => b.changes - a.changes),
+  };
+}
+
 /* ====================================================================== *
  * Mix, concentration, and the daily series behind the charts
  * ====================================================================== */
@@ -936,6 +1088,8 @@ export function computeAll(jobs, opts = {}) {
     returnReasons: computeReturnReasons(jobs, computeRepeatVisits(jobs, opts)),
     containment: computeContainment(jobs, { ...opts, asOfDate: asOf }),
     demand: computeDemand(jobs),
+    displacement: computeDisplacement(jobs, opts),
+    churn: computeChurn(jobs),
     techTimes: computeTechTimes(jobs, opts),
     series: computeDailySeries(jobs, opts),
     quality: computeDataQuality(jobs),

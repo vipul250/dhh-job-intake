@@ -135,16 +135,38 @@ export const NOT_DONE_REASONS = [
   "Other",
 ];
 
+/* `displaces: true` means something else took this job's place. Those are
+   the coordinator's judgement calls — a decision to prefer one piece of
+   work over another — and until now the app recorded only that the job
+   moved, never what beat it. Without the other half you cannot ask whether
+   the call was right, and "was the call right" is the whole point of
+   watching a coordinator's decisions over time. */
 export const MOVE_REASONS = [
-  "New guest complaint took the slot",
-  "New appointment took the slot",
-  "Guest rescheduled",
-  "No access today",
-  "Material not ready",
-  "Technician unavailable",
-  "Ran out of time",
-  "Other",
+  { id: "guest-complaint", label: "New guest complaint took the slot", displaces: true },
+  { id: "new-appointment", label: "New appointment took the slot", displaces: true },
+  { id: "emergency", label: "An emergency took the slot", displaces: true },
+  { id: "project", label: "Project work took the slot", displaces: true },
+  { id: "guest-resched", label: "Guest rescheduled", displaces: false },
+  { id: "no-access", label: "No access today", displaces: false },
+  { id: "material", label: "Material not ready", displaces: false },
+  { id: "tech-unavailable", label: "Technician unavailable", displaces: false },
+  { id: "out-of-time", label: "Ran out of time", displaces: false },
+  { id: "other", label: "Other", displaces: false },
 ];
+
+export const MOVE_REASON_LABEL = Object.fromEntries(MOVE_REASONS.map((r) => [r.id, r.label]));
+export const moveReasonDisplaces = (id) =>
+  !!(MOVE_REASONS.find((r) => r.id === id) || {}).displaces;
+
+/* Legacy rows stored the label rather than the id. */
+export function normaliseMoveReason(reason) {
+  const r = squash(reason);
+  if (!r) return "";
+  const byId = MOVE_REASONS.find((x) => x.id === r);
+  if (byId) return byId.id;
+  const byLabel = MOVE_REASONS.find((x) => canonKey(x.label) === canonKey(r));
+  return byLabel ? byLabel.id : r;
+}
 
 export const CANCEL_REASONS = [
   "Duplicate of another job",
@@ -175,6 +197,7 @@ export const EVENT_LABEL = {
   reopened: "Reopened",
   pms: "PMS record",
   assigned: "Reassigned",
+  added_late: "Added after the day was posted",
 };
 
 /* ------------------------------ the job ------------------------------- */
@@ -226,6 +249,11 @@ export function newJob(fields, date, by) {
     followUpJobId: "",
     followUpOf: null,      // { jobId, date } on the job that finishes the work
 
+    // What took this job's slot when it was moved for something else, and
+    // what this job displaced when it took somebody else's.
+    displacedBy: null,     // { jobId, label, date, by, at }
+    displaced: [],         // ids of jobs this one pushed out
+
     // True for anything added after the day was posted — an emergency, a
     // new complaint, a job squeezed in. Planned volume and arriving volume
     // are different things and were previously indistinguishable.
@@ -239,7 +267,13 @@ export function newJob(fields, date, by) {
 /* A tombstone is what a day keeps when a job leaves it. It is deliberately
    a snapshot, not a reference: the day should still be able to show what
    left it even if the job is later cancelled or moved on again. */
-export function makeTombstone(job, toDate, by, reason) {
+/* "posted" and "past" are the two states in which a day is no longer the
+   coordinator's to rewrite freely. Carrying the kind onto the event is what
+   later lets the dashboard separate a schedule that was rewritten after it
+   was published from one that simply ran. */
+const lockKind = (l) => (l === "posted" || l === "past" ? l : undefined);
+
+export function makeTombstone(job, toDate, by, reason, displacedBy, lock) {
   return {
     _tomb: true,
     id: `tomb-${job.id}-${Date.now()}`,
@@ -248,6 +282,8 @@ export function makeTombstone(job, toDate, by, reason) {
     at: Date.now(),
     by: squash(by) || "unknown",
     reason: squash(reason),
+    lock: lockKind(lock),
+    displacedBy: displacedBy || null,
     snapshot: {
       property: job.property, unit: job.unit, description: job.description,
       team: job.team, priority: job.priority, estimatedTime: job.estimatedTime,
@@ -291,19 +327,34 @@ export function setState(job, state, by, extra = {}) {
 /* Moving is the operation the whole design exists for. It returns both
    halves: the job as it should appear on the destination day, and the
    tombstone the source day keeps. */
-export function moveJob(job, toDate, by, reason) {
+/**
+ * @param {object} displacedBy  optional { jobId, label } — what took the slot
+ */
+export function moveJob(job, toDate, by, reason, displacedBy, lock) {
+  const reasonId = normaliseMoveReason(reason);
+  const link = displacedBy && (displacedBy.jobId || squash(displacedBy.label))
+    ? {
+        jobId: displacedBy.jobId || "",
+        label: squash(displacedBy.label),
+        date: job.scheduledDate,
+        by: squash(by) || "unknown",
+        at: Date.now(),
+      }
+    : null;
+
   const moved = withEvent(
     {
       ...job,
       scheduledDate: toDate,
       state: "scheduled",
       pushCount: (job.pushCount || 0) + 1,
+      displacedBy: link || job.displacedBy || null,
     },
     "moved_in",
     by,
-    { from: job.scheduledDate, to: toDate, reason: squash(reason) }
+    { from: job.scheduledDate, to: toDate, reason: reasonId, displacedBy: link, lock: lockKind(lock) }
   );
-  return { moved, tomb: makeTombstone(job, toDate, by, reason) };
+  return { moved, tomb: makeTombstone(job, toDate, by, reasonId, link, lock) };
 }
 
 /* Which fields, when changed, are worth a line in the history. Changing a

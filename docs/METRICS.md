@@ -291,3 +291,55 @@ The approved quotation is stored as a **link**, not an uploaded file: the
 app has no file storage configured. A link to wherever the PDF already
 lives serves the same purpose for pulling the figure out. Real uploads
 would need a Supabase Storage bucket — a small follow-on, not a rewrite.
+
+## 16. The coordinator's calls
+
+**Slots given away** — jobs moved with a reason that means something else
+took their place: a new guest complaint, a confirmed appointment, an
+emergency, project work. Counted separately from moves for no access, no
+material or an unavailable technician, which are constraints rather than
+choices.
+
+**Higher priority displaced** — of those calls, how often the job that moved
+outranked the job that took its slot. A P1 moved for a P3 is not
+automatically wrong, but it should be rare and it should be visible.
+
+**Displaced work finished** — of the jobs that gave up their slot, how many
+were actually done afterwards. This is the test the other two cannot give
+you: a call that pushed work into a day where it also did not happen was not
+a prioritisation, it was a deferral.
+
+**Bumped more than once** — jobs displaced repeatedly. Each individual call
+may have been defensible; the cumulative effect is a job nobody is choosing
+to do and nobody is choosing to drop.
+
+Denominator: jobs with a recorded move. Jobs imported from the workbook
+predate the board and have no move history, so they are excluded rather than
+counted as clean.
+
+## 17. Changed after posting
+
+Counts every change made to a day after the coordinator pressed Post: edits,
+moves, cancellations, and jobs added late. Each carries the reason given at
+the time and the name of whoever made it.
+
+Before posting, a change is drafting and is not counted. The distinction is
+the point — the field team has planned around the posted version, and guests
+have been told times against it.
+
+Reported as a rate over the jobs in range, broken down by reason and by
+person. A high rate is not by itself a fault; a maintenance department in
+Dubai in August will have its schedule overtaken by events. What it does say
+is how much of the day's plan survives contact, which is a different
+question from how many jobs got done.
+
+## 18. Not done, booked again
+
+Of the jobs closed out as not done, the share that have a date to happen on.
+The remainder splits into work deliberately not rebooked — a recorded
+decision — and, for rows closed before the app asked the question, no answer
+at all.
+
+This is a coverage measure of the close-out itself rather than of the field
+work. A department losing jobs here is losing them in the last ten seconds
+of the day, not on site.

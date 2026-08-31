@@ -506,3 +506,64 @@ Matching is deliberately conservative — two thirds of the standard wording
 has to be present. Silently rewriting a coordinator's words into the wrong
 task is worse than not matching at all: they would stop trusting the box,
 and a wrong canonical label corrupts every metric built on it.
+
+## Posting the day, and what happens to it afterwards
+
+The evening coordinator finishes scraping PMS and presses **Post**. Until
+then the day is a draft and can be changed freely — that is what drafting
+is. From the moment it is posted, three things become true.
+
+**The day is locked, and changes are logged.** Editing anything on a posted
+day asks why first. The answer is stored on the job, with a name and a
+timestamp, and every one of them is counted on the dashboard under *changed
+after posting*. Nothing is forbidden — a maintenance department cannot work
+under a schedule it is not allowed to change — but a change is now a
+decision somebody made rather than an edit nobody sees.
+
+That covers all four ways a posted schedule actually moves: an edit, a job
+moved to another day, a job cancelled, and a job added after the fact. All
+four are the same thing from the field's point of view — the plan they were
+given is not the plan any more — so all four are counted the same way.
+
+**A day that has already happened is locked for the same reason and says
+so.** Before this, yesterday's schedule could be quietly rewritten, which
+made every measurement of yesterday unreliable. Editing a past day is still
+possible, because corrections are real, but it now announces what it is and
+asks for a reason.
+
+**A move asks what took the slot.** This is the change that matters most.
+When a job is moved because something else came in — a new guest complaint,
+a confirmed appointment, an emergency, project work — the app asks which
+job took its place and records the link on both ends. The job that moved
+knows what beat it; the job that stayed knows what it displaced.
+
+That link is what makes a coordinator's judgement readable. One P3 moved
+for a P1 water leak is the right call. The same P3 moved four days running,
+each time for something plausible, is a decision nobody is making. Only the
+second one was invisible before, and only because nothing recorded the pair.
+
+The dashboard reads it back under **the coordinator's calls**: how many
+slots were given away, how often higher-priority work was moved for lower,
+whether the displaced job ever got done afterwards, and the same figures per
+coordinator. It is deliberately unimpressive after a week. Read it after a
+month.
+
+## A job that was not done is not finished with
+
+Marking a job *not done* used to end there: a reason, and a job sitting on a
+day that had already passed with nobody booked to go back. That is the same
+disappearance the whole system exists to stop, arriving by a different door.
+
+So the close-out now asks one more question — **when does it happen
+instead?** — and will not save until it is answered. Three answers:
+
+- **Book it for tomorrow**, or **for another day** — creates the linked job
+  on that day, carrying the property, unit, priority and materials across,
+  with the original marked as what it is following up on.
+- **Not rebooking it** — a legitimate answer, and now a recorded one. It
+  shows on the dashboard as work that was dropped on purpose rather than
+  work that quietly stopped existing.
+
+The dashboard tile *not done, booked again* is the coverage: of the jobs
+that were missed, how many have a date. A department where that number sits
+low is not losing jobs to bad luck; it is losing them at close-out.
