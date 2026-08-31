@@ -25,7 +25,9 @@ import {
   materialReadiness, daysBetween, workType, WORK_TYPES,
 } from "./normalize.js";
 import { faultFamily, FAMILY_LABEL, RETURN_REASON_LABEL, isOurFault } from "./faultFamily.js";
-import { actualDuration } from "./job.js";
+import {
+  actualDuration, isResolved, needsFollowUp, SOURCE_LABEL, JOB_SOURCES, REACTIVE_SOURCES,
+} from "./job.js";
 
 export const DEFAULTS = {
   shiftMinutes: 540,        // 09:00-18:00, the dominant shift in the workbook
@@ -425,7 +427,10 @@ export const NOT_DONE_REASONS = [
    rows recorded under it are not lost, but nothing writes it any more. */
 function outcomeOf(job) {
   if (job.state) {
-    if (job.state === "done") return "done";
+    // A visit that ended counts as settled however it ended. "Made safe"
+    // and "diagnosed" are NOT completions — see computeContainment.
+    if (job.state === "fixed" || job.state === "done") return "done";
+    if (job.state === "made_safe" || job.state === "diagnosed") return "partial";
     if (job.state === "not_done") return "not-done";
     return null;                       // scheduled / in progress / cancelled
   }
@@ -440,10 +445,11 @@ const pmsOf = (j) => (j.inPms !== undefined && j.inPms !== null ? j.inPms : (j.v
 export function computeVerification(jobs) {
   const settled = jobs.filter((j) => outcomeOf(j) !== null);
   const done = settled.filter((j) => outcomeOf(j) === "done");
+  const partial = settled.filter((j) => outcomeOf(j) === "partial");
   const notDone = settled.filter((j) => outcomeOf(j) === "not-done");
 
   const reasons = {};
-  notDone.forEach((j) => {
+  notDone.concat(partial).forEach((j) => {
     const r = reasonOf(j) || "(no reason given)";
     reasons[r] = (reasons[r] || 0) + 1;
   });
@@ -461,10 +467,12 @@ export function computeVerification(jobs) {
     verifiedCount: settled.length,
     coverage: coverage(settled.length, jobs.length),
     done: done.length,
-    partial: 0,
+    partial: partial.length,
     notDone: notDone.length,
+    // Completion means FIXED. A contained fault is not a completed one, and
+    // counting it as such is what made the old number flattering.
     completionRatePct: pct(done.length, settled.length),
-    effectiveRatePct: pct(done.length, settled.length),
+    effectiveRatePct: pct(done.length + partial.length * 0.5, settled.length),
     notDoneReasons: Object.entries(reasons).sort((a, b) => b[1] - a[1]),
     pmsCoveragePct: pct(inPms.length, done.length),
     missingInPms: missingInPms.length,
@@ -672,6 +680,101 @@ export function computeTechTimes(jobs, opts = {}) {
   };
 }
 
+/* ------------- 12. Containment — stopped, not finished ---------------- *
+ * The failure this exists to surface: a technician closes a valve on a P1
+ * leak, writes what he needs to finish it, and the task is marked Done in
+ * PMS. The leak has stopped. The unit still has a broken water heater and
+ * a stained ceiling, and whether anybody comes back depends on somebody
+ * reading a comment thread.
+ *
+ * `openContainments` is the number to watch. Every one of them is a unit
+ * running on a temporary measure with nothing booked to finish it.
+ * -------------------------------------------------------------------- */
+export function computeContainment(jobs, opts = {}) {
+  const asOf = opts.asOfDate || "";
+  const resolved = jobs.filter((j) => isResolved(j.state));
+  const contained = jobs.filter((j) => needsFollowUp(j.state));
+  const fixed = jobs.filter((j) => j.state === "fixed" || j.state === "done");
+
+  const withFollowUp = contained.filter((j) => j.followUpJobId);
+  const open = contained.filter((j) => !j.followUpJobId);
+
+  // How long the return actually took to happen, where we can see both ends.
+  const gaps = [];
+  const byId = new Map(jobs.map((j) => [j.id, j]));
+  contained.forEach((j) => {
+    if (!j.followUpJobId) return;
+    const child = byId.get(j.followUpJobId);
+    if (!child) return;
+    const g = daysBetween(j.scheduledDate, child.scheduledDate);
+    if (g != null && g >= 0) gaps.push(g);
+  });
+
+  const p1Open = open.filter((j) => canonPriority(j.priority) === "PRI-1");
+  const aged = open.map((j) => ({
+    ...j,
+    _ageDays: asOf ? Math.max(0, daysBetween(j.scheduledDate, asOf) ?? 0) : 0,
+  })).sort((a, b) => b._ageDays - a._ageDays);
+
+  return {
+    resolvedCount: resolved.length,
+    fixed: fixed.length,
+    contained: contained.length,
+    // Of the visits that ended, how many actually finished the work.
+    firstVisitFixPct: pct(fixed.length, resolved.length),
+    containedPct: pct(contained.length, resolved.length),
+    withFollowUp: withFollowUp.length,
+    followUpBookedPct: pct(withFollowUp.length, contained.length),
+    openContainments: open.length,
+    openP1: p1Open.length,
+    medianReturnGapDays: median(gaps),
+    oldestOpenDays: aged.length ? aged[0]._ageDays : 0,
+    openList: aged.slice(0, 20),
+  };
+}
+
+/* ------------------- 13. Where the work comes from -------------------- *
+ * Nobody can judge what the field team is being asked to do while every
+ * job looks the same on arrival. Splitting demand by its route answers
+ * questions the department has never been able to ask: how much of the day
+ * is guest complaints versus things our own people spotted, how much
+ * arrives after the schedule is posted, and how much of a technician's
+ * booked time is an inspection filling an idle slot.
+ * -------------------------------------------------------------------- */
+export function computeDemand(jobs) {
+  const bySource = {};
+  JOB_SOURCES.forEach((s) => { bySource[s.id] = { id: s.id, label: s.label, jobs: 0, minutes: 0 }; });
+  let unattributed = 0, unplanned = 0, unplannedMinutes = 0, fillerMinutes = 0;
+
+  jobs.forEach((j) => {
+    const mins = parseDurationMinutes(j.estimatedTime) || 0;
+    const src = squash(j.source);
+    if (!src || !bySource[src]) { unattributed++; }
+    else { bySource[src].jobs++; bySource[src].minutes += mins; }
+    if (j.unplanned) { unplanned++; unplannedMinutes += mins; }
+    if (src === "filler") fillerMinutes += mins;
+  });
+
+  const attributed = jobs.length - unattributed;
+  const reactive = REACTIVE_SOURCES.reduce((n, id) => n + (bySource[id] ? bySource[id].jobs : 0), 0);
+
+  return {
+    total: jobs.length,
+    bySource: Object.values(bySource).filter((s) => s.jobs > 0).sort((a, b) => b.jobs - a.jobs),
+    unattributed,
+    coverage: coverage(attributed, jobs.length),
+    reactive,
+    reactivePct: pct(reactive, attributed),
+    unplanned,
+    unplannedPct: pct(unplanned, jobs.length),
+    unplannedHours: Math.round((unplannedMinutes / 60) * 10) / 10,
+    // Inspections used to fill idle time are real hours that look like
+    // demand on every capacity chart until they are named.
+    fillerHours: Math.round((fillerMinutes / 60) * 10) / 10,
+    fillerJobs: bySource.filler ? bySource.filler.jobs : 0,
+  };
+}
+
 /* ====================================================================== *
  * Mix, concentration, and the daily series behind the charts
  * ====================================================================== */
@@ -783,6 +886,7 @@ export const QUALITY_FIELDS = [
   { key: "materialNeeded", label: "Material needed", why: "Van readiness", tier: "A" },
   { key: "pending", label: "Pending flag", why: "Backlog & ageing", tier: "A" },
   { key: "unit", label: "Unit number", why: "Repeat visits, rework", tier: "A" },
+  { key: "source", label: "Where it came from", why: "Demand mix, unplanned volume", tier: "A" },
 ];
 
 export function computeDataQuality(jobs) {
@@ -795,6 +899,7 @@ export function computeDataQuality(jobs) {
       if (f.key === "guestConfirmed" || f.key === "materialNeeded" || f.key === "pending") {
         if (parseYN(v) !== null) answered++; return;
       }
+      if (f.key === "source") { if (squash(v)) answered++; return; }
       if (f.key === "timeOfVisit") {
         const t = canonKey(v);
         if (t && !/not confirmed|tbc|tbd/.test(t)) answered++; return;
@@ -829,6 +934,8 @@ export function computeAll(jobs, opts = {}) {
     firstTimeFix: computeFirstTimeFix(jobs, opts),
     mix: computeMix(jobs),
     returnReasons: computeReturnReasons(jobs, computeRepeatVisits(jobs, opts)),
+    containment: computeContainment(jobs, { ...opts, asOfDate: asOf }),
+    demand: computeDemand(jobs),
     techTimes: computeTechTimes(jobs, opts),
     series: computeDailySeries(jobs, opts),
     quality: computeDataQuality(jobs),

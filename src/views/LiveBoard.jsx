@@ -2,15 +2,17 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import {
   Plus, Play, Check, X, ArrowRight, Clipboard, History, AlertTriangle,
   Loader2, RefreshCw, ChevronDown, ChevronRight, Users, CircleDot, Trash2,
-  CalendarClock, Wand2, Pin,
+  CalendarClock, Wand2, Pin, Moon, ShieldAlert, CornerDownRight, FileText,
 } from "lucide-react";
 import {
   newJob, moveJob, setState as setJobState, applyEdit, withEvent,
   isTombstone, liveJobs, tombstones, jobMinutes, isOpen, pushSeverity,
   needsGuestConfirm, pmsText, parseQuickAdd, splitQuickAddLines, findReturn,
-  actualDuration,
+  actualDuration, makeFollowUp, needsFollowUp, isResolved,
   STATE_META, NOT_DONE_REASONS, MOVE_REASONS, CANCEL_REASONS, EVENT_LABEL,
+  OUTCOME_OPTIONS, JOB_SOURCES, SOURCE_LABEL, HOW_REPORTED,
 } from "../lib/job.js";
+import { parseWorkReport, fmtMin } from "../lib/workReport.js";
 import { RETURN_REASONS, FAMILY_LABEL } from "../lib/faultFamily.js";
 import {
   readDay, mutateDay, upsert, removeJob, migrateDay, needsMigration,
@@ -90,6 +92,8 @@ export default function LiveBoard({
   const [outcomeFor, setOutcomeFor] = useState(null);
   const [liveNote, setLiveNote] = useState("");
   const [returnPrompts, setReturnPrompts] = useState([]);
+  const [closeOutFor, setCloseOutFor] = useState(null);
+  const [nightLog, setNightLog] = useState(false);
   const watcher = useRef(null);
 
   const jobs = useMemo(() => (rows ? liveJobs(rows) : []), [rows]);
@@ -199,6 +203,62 @@ export default function LiveBoard({
 
   async function advance(job, state, extra) {
     await change(selectedDate, (cur) => upsert(cur, setJobState(job, state, who, extra)));
+  }
+
+  /* Closing a job out. The two outcomes that are not endings — made safe
+     and diagnosed — create the job that finishes the work, on the spot.
+     There is no path through this dialog that leaves a contained fault
+     with nobody booked to come back, which is the failure it exists to
+     prevent. */
+  async function closeOut(job, { outcome, reason, stillNeeded, actualMinutes, followUp }) {
+    const patch = { reason, stillNeeded };
+    if (actualMinutes != null) patch.actualMinutes = actualMinutes;
+
+    let child = null;
+    if (followUp && needsFollowUp(outcome)) {
+      child = makeFollowUp(job, followUp.date, who, {
+        scope: followUp.scope,
+        materials: followUp.materials,
+        team: followUp.team,
+        estimatedTime: followUp.estimatedTime,
+      });
+    }
+
+    const closed = setJobState(
+      { ...job, actualMinutes: actualMinutes != null ? actualMinutes : job.actualMinutes,
+        followUpJobId: child ? child.id : job.followUpJobId },
+      outcome, who, patch
+    );
+
+    await change(selectedDate, (cur) => {
+      let next = upsert(cur, closed);
+      if (child && followUp.date === selectedDate) next = [...next, child];
+      return next;
+    });
+    if (child && followUp.date !== selectedDate) {
+      await mutateDay(followUp.date, (cur) => [...cur, child]);
+    }
+    setCloseOutFor(null);
+    showToast(
+      child
+        ? `Closed as ${outcome.replace("_", " ")} — follow-up booked for ${followUp.date}.`
+        : `Closed as ${outcome.replace("_", " ")}.`,
+      "ok"
+    );
+  }
+
+  /* Anything that came in after the schedule was posted. Logged against
+     the day it actually happened, marked unplanned, so arriving volume
+     stops being invisible. */
+  async function logNightJob(fields, date) {
+    const j = newJob({ ...fields, unplanned: true }, date, who);
+    if (date === selectedDate) {
+      await change(selectedDate, (cur) => [...cur, j], "Logged.");
+    } else {
+      await mutateDay(date, (cur) => [...cur, j]);
+      showToast(`Logged against ${date}.`, "ok");
+    }
+    setNightLog(false);
   }
 
   async function edit(job, patch) {
@@ -334,6 +394,17 @@ export default function LiveBoard({
         busy={busy}
       />
 
+      <div className="flex flex-wrap items-center gap-2 -mt-1">
+        <button onClick={() => setNightLog(true)}
+                className="flex items-center gap-1.5 text-xs border border-slate-300 rounded-md px-2.5 py-1.5 hover:bg-slate-50">
+          <Moon className="w-3.5 h-3.5" /> Log an out-of-hours job
+        </button>
+        <span className="text-[11px] text-slate-400">
+          Anything that came in after the schedule was posted — the night call, the emergency, the
+          job arranged over Google Chat. It happened, so it belongs on the day it happened.
+        </span>
+      </div>
+
       {returnPrompts.length > 0 && (
         <ReturnPrompts
           prompts={returnPrompts}
@@ -362,7 +433,7 @@ export default function LiveBoard({
           key={g.team} group={g} me={me} allJobs={jobs} selectedDate={selectedDate}
           onAdvance={advance} onEdit={edit} onTogglePms={togglePms}
           onMove={setMoveFor} onOutcome={setOutcomeFor} onTrail={setTrailFor}
-          onEditFull={onEditFull} showToast={showToast}
+          onEditFull={onEditFull} showToast={showToast} onCloseOut={setCloseOutFor}
           onMoveMany={(list, reason) => moveStranded(list, addDays(selectedDate, 1), reason)}
         />
       ))}
@@ -392,6 +463,21 @@ export default function LiveBoard({
             advance(outcomeFor.job, outcomeFor.kind === "cancel" ? "cancelled" : "not_done", { reason });
             setOutcomeFor(null);
           }}
+        />
+      )}
+      {closeOutFor && (
+        <CloseOutDialog
+          job={closeOutFor} selectedDate={selectedDate}
+          onCancel={() => setCloseOutFor(null)}
+          onConfirm={(payload) => closeOut(closeOutFor, payload)}
+        />
+      )}
+      {nightLog && (
+        <NightLogDialog
+          selectedDate={selectedDate}
+          knownTechs={knownTechNames}
+          onCancel={() => setNightLog(false)}
+          onSave={logNightJob}
         />
       )}
     </div>
@@ -635,7 +721,7 @@ function ParsePreview({ fields }) {
 
 /* ========================= team group ========================= */
 
-function TeamGroup({ group, me, allJobs, selectedDate, onAdvance, onEdit, onTogglePms, onMove, onOutcome, onTrail, onEditFull, showToast, onMoveMany }) {
+function TeamGroup({ group, me, allJobs, selectedDate, onAdvance, onEdit, onTogglePms, onMove, onOutcome, onTrail, onEditFull, showToast, onMoveMany, onCloseOut }) {
   const [open, setOpen] = useState(true);
   const [showPlan, setShowPlan] = useState(false);
   const g = group;
@@ -709,7 +795,7 @@ function TeamGroup({ group, me, allJobs, selectedDate, onAdvance, onEdit, onTogg
               key={job.id} job={job} me={me}
               onAdvance={onAdvance} onEdit={onEdit} onTogglePms={onTogglePms}
               onMove={onMove} onOutcome={onOutcome} onTrail={onTrail}
-              onEditFull={onEditFull} showToast={showToast}
+              onEditFull={onEditFull} showToast={showToast} onCloseOut={onCloseOut}
               suggestFrom={g.team === "Unassigned" ? allJobs : null}
             />
           ))}
@@ -874,12 +960,15 @@ function DayPlan({ plan, team, onMoveMany, onTrail }) {
 const STATE_CHIP = {
   scheduled: "bg-slate-100 text-slate-600",
   in_progress: "bg-blue-100 text-blue-700",
+  fixed: "bg-emerald-100 text-emerald-700",
   done: "bg-emerald-100 text-emerald-700",
+  made_safe: "bg-amber-100 text-amber-800",
+  diagnosed: "bg-amber-100 text-amber-800",
   not_done: "bg-red-100 text-red-700",
   cancelled: "bg-slate-100 text-slate-400 line-through",
 };
 
-function JobRow({ job, me, onAdvance, onEdit, onTogglePms, onMove, onOutcome, onTrail, onEditFull, showToast, suggestFrom }) {
+function JobRow({ job, me, onAdvance, onEdit, onTogglePms, onMove, onOutcome, onTrail, onEditFull, showToast, suggestFrom, onCloseOut }) {
   const [expanded, setExpanded] = useState(false);
   const [suggestions, setSuggestions] = useState(null);
   const mins = jobMinutes(job);
@@ -921,8 +1010,37 @@ function JobRow({ job, me, onAdvance, onEdit, onTogglePms, onMove, onOutcome, on
                 unconfirmed
               </span>
             )}
+            {job.source && (
+              <span title={`Where this job came from: ${SOURCE_LABEL[job.source] || job.source}`}
+                    className="text-[10px] rounded px-1.5 py-0.5 bg-slate-50 text-slate-500 border border-slate-200">
+                {SOURCE_LABEL[job.source] || job.source}
+              </span>
+            )}
+            {job.unplanned && (
+              <span title="Came in after the schedule was posted"
+                    className="text-[10px] rounded px-1.5 py-0.5 bg-violet-50 text-violet-700 border border-violet-200">
+                unplanned
+              </span>
+            )}
+            {job.followUpOf && (
+              <span title={`Finishes work started on ${job.followUpOf.date}`}
+                    className="text-[10px] rounded px-1.5 py-0.5 bg-blue-50 text-blue-700 border border-blue-200 inline-flex items-center gap-0.5">
+                <CornerDownRight className="w-2.5 h-2.5" /> follow-up from {job.followUpOf.date}
+              </span>
+            )}
+            {needsFollowUp(job.state) && !job.followUpJobId && (
+              <span title="Contained but not finished, and nothing is booked to come back"
+                    className="text-[10px] rounded px-1.5 py-0.5 bg-red-100 text-red-800 border border-red-300 font-medium inline-flex items-center gap-0.5">
+                <ShieldAlert className="w-2.5 h-2.5" /> no follow-up booked
+              </span>
+            )}
           </div>
           <p className="text-xs text-slate-600 mt-0.5">{job.description || <span className="text-slate-400">no task written</span>}</p>
+          {squash(job.stillNeeded) && (
+            <p className="text-xs text-amber-800 mt-0.5">
+              <span className="font-medium">Still needed:</span> {job.stillNeeded}
+            </p>
+          )}
           <div className="flex flex-wrap gap-x-3 text-[11px] text-slate-400 mt-0.5">
             {mins != null ? <span>{formatMinutes(mins)}</span> : <span className="text-amber-600">no estimate</span>}
             {(() => {
@@ -955,7 +1073,9 @@ function JobRow({ job, me, onAdvance, onEdit, onTogglePms, onMove, onOutcome, on
               {job.state === "scheduled" && (
                 <IconBtn title="Started" onClick={() => onAdvance(job, "in_progress")} tone="blue"><Play className="w-3.5 h-3.5" /></IconBtn>
               )}
-              <IconBtn title="Done" onClick={() => onAdvance(job, "done")} tone="emerald" active={job.state === "done"}>
+              <IconBtn title="Close out — fixed, made safe, or diagnosed"
+                       onClick={() => onCloseOut(job)} tone="emerald"
+                       active={isResolved(job.state)}>
                 <Check className="w-3.5 h-3.5" />
               </IconBtn>
               <IconBtn title="Not done" onClick={() => onOutcome({ job, kind: "not_done" })} tone="red" active={job.state === "not_done"}>
@@ -1018,7 +1138,11 @@ function JobRow({ job, me, onAdvance, onEdit, onTogglePms, onMove, onOutcome, on
           <InlineField label="Unit state" value={job.status} onSave={(v) => onEdit(job, { status: v })} />
           <InlineField label="Priority" value={job.priority} onSave={(v) => onEdit(job, { priority: v })} placeholder="P2-High" />
           <InlineField label="Material" value={job.materialDetails} onSave={(v) => onEdit(job, { materialDetails: v, materialNeeded: v ? "Y" : job.materialNeeded })} placeholder="item + qty" />
-          <InlineField label="PMS ref" value={job.pmsRef} onSave={(v) => onEdit(job, { pmsRef: v })} />
+          <InlineSelect label="Where it came from" value={job.source}
+                        options={[["", "not set"], ...JOB_SOURCES.map((x) => [x.id, x.label])]}
+                        onSave={(v) => onEdit(job, { source: v })} />
+          <InlineField label="Reported by" value={job.reportedBy} onSave={(v) => onEdit(job, { reportedBy: v })} placeholder="support agent / HK / GRO" />
+          <InlineField label="PMS ref" value={job.pmsRef} onSave={(v) => onEdit(job, { pmsRef: v })} placeholder="TSK401787" />
           <InlineField label="Task" value={job.description} onSave={(v) => onEdit(job, { description: v })} full />
           <div className="sm:col-span-2 lg:col-span-4 flex gap-2">
             {onEditFull && (
@@ -1193,6 +1317,268 @@ function OutcomeDialog({ job, kind, onCancel, onConfirm }) {
         <button onClick={() => onConfirm(final)}
                 className={`text-sm text-white px-3 py-1.5 rounded-md ${kind === "cancel" ? "bg-slate-700" : "bg-red-600"}`}>
           {kind === "cancel" ? "Cancel job" : "Mark not done"}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+/* ==================== closing a job out ==================== *
+ * The dialog that replaces a single "Done" button.
+ *
+ * PMS marks a task Done when a technician stops working on it. One of the
+ * real examples reads "Pending work - the existing 28mm copper pipe is
+ * pinched and needs to be replaced", lists the copper pipe and unions
+ * still required, and its PMS status is Done. Nothing was fixed. The
+ * distinction between finishing a job and stopping work on it is the whole
+ * point of this screen.
+ * ========================================================== */
+
+function CloseOutDialog({ job, selectedDate, onCancel, onConfirm }) {
+  const [outcome, setOutcome] = useState(null);
+  const [report, setReport] = useState("");
+  const [parsed, setParsed] = useState(null);
+  const [stillNeeded, setStillNeeded] = useState("");
+  const [reason, setReason] = useState("");
+  const [minutes, setMinutes] = useState("");
+  const [fuDate, setFuDate] = useState(addDays(selectedDate, 1));
+  const [fuTeam, setFuTeam] = useState(job.team || "");
+  const [fuScope, setFuScope] = useState("");
+
+  const isP1 = canonPriority(job.priority) === "PRI-1";
+
+  function readReport(text) {
+    setReport(text);
+    if (!squash(text)) { setParsed(null); return; }
+    const r = parseWorkReport(text);
+    setParsed(r);
+    if (r.minutes != null) setMinutes(String(r.minutes));
+    const needed = r.stillNeeded;
+    if (needed) setStillNeeded(needed);
+    if (r.summary) setReason(r.summary.slice(0, 200));
+    if (r.suggestedOutcome && outcome === null) setOutcome(r.suggestedOutcome);
+    if (needed) setFuScope(r.materials.length ? `Fit / replace: ${needed}` : needed);
+  }
+
+  const requiresFollowUp = needsFollowUp(outcome);
+  const canConfirm = outcome && (!requiresFollowUp || (squash(stillNeeded) && fuDate));
+
+  return (
+    <Modal title={`Close out — ${job.property} ${job.unit}`} onCancel={onCancel} wide>
+      <p className="text-xs text-slate-600">{job.description}</p>
+
+      <label className="block text-xs text-slate-600 mt-3">
+        <span className="flex items-center gap-1">
+          <FileText className="w-3 h-3" /> Paste the technician's report from PMS
+          <span className="text-slate-400">— optional, but it fills everything below</span>
+        </span>
+        <textarea value={report} onChange={(e) => readReport(e.target.value)} rows={4}
+                  placeholder={"Arrived @ 7:58pm\nFinished @ 8:40pm\n- closed the valve to stop the leak\nMaterial Required:\n- water heater"}
+                  className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm font-mono" />
+      </label>
+
+      {parsed && (
+        <div className="mt-1 text-[11px] text-slate-600 bg-slate-50 border border-slate-200 rounded px-2 py-1.5">
+          {parsed.minutes != null
+            ? <>On site {fmtMin(parsed.arrivalMin)} → {fmtMin(parsed.departureMin)} · <span className="font-medium">{formatMinutes(parsed.minutes)}</span>. </>
+            : <>No arrival/departure times found. </>}
+          {parsed.materials.length > 0 && <>Material still required: <span className="font-medium">{parsed.materials.join(", ")}</span>. </>}
+          {parsed.suggestedOutcome && (
+            <>Reads like <span className="font-medium">{OUTCOME_OPTIONS.find((o) => o.id === parsed.suggestedOutcome)?.label}</span> — {parsed.why}. You decide.</>
+          )}
+        </div>
+      )}
+
+      <div className="mt-3">
+        <span className="text-xs text-slate-600">What actually happened?</span>
+        <div className="grid grid-cols-2 gap-1.5 mt-1">
+          {OUTCOME_OPTIONS.map((o) => (
+            <button key={o.id} onClick={() => setOutcome(o.id)}
+                    className={`text-left rounded-md border p-2 ${
+                      outcome === o.id
+                        ? o.needsFollowUp ? "border-amber-500 bg-amber-50" : "border-slate-900 bg-slate-50"
+                        : "border-slate-300 hover:bg-slate-50"}`}>
+              <div className="text-xs font-medium text-slate-900">{o.label}</div>
+              <div className="text-[10px] text-slate-500 leading-snug">{o.hint}</div>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {outcome === "not_done" && (
+        <label className="block text-xs text-slate-600 mt-3">
+          Why not?
+          <select value={reason} onChange={(e) => setReason(e.target.value)}
+                  className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm">
+            <option value="">— pick a reason —</option>
+            {NOT_DONE_REASONS.map((r) => <option key={r} value={r}>{r}</option>)}
+          </select>
+        </label>
+      )}
+
+      {requiresFollowUp && (
+        <div className="mt-3 rounded-md border border-amber-300 bg-amber-50 p-2.5">
+          <h4 className="text-xs font-medium text-amber-900">
+            This is not finished — book the visit that finishes it
+          </h4>
+          <p className="text-[11px] text-amber-800 mt-0.5 mb-2">
+            A closed valve is a stopped leak, not a repaired one. The follow-up is created now and
+            linked to this job, so it cannot be lost in a comment thread.
+            {isP1 && " This is a P1, so it stays a P1 until the work is actually done."}
+          </p>
+          <label className="block text-[11px] text-amber-900">
+            What is still needed
+            <input value={stillNeeded} onChange={(e) => setStillNeeded(e.target.value)}
+                   placeholder="e.g. new water heater, paint for the ceiling"
+                   className="mt-0.5 w-full border border-amber-300 rounded-md px-2 py-1.5 text-sm bg-white" />
+          </label>
+          <div className="grid sm:grid-cols-3 gap-2 mt-2">
+            <label className="block text-[11px] text-amber-900">
+              Come back on
+              <input type="date" value={fuDate} onChange={(e) => setFuDate(e.target.value)}
+                     className="mt-0.5 w-full border border-amber-300 rounded-md px-2 py-1.5 text-sm bg-white" />
+            </label>
+            <label className="block text-[11px] text-amber-900">
+              Technician
+              <input value={fuTeam} onChange={(e) => setFuTeam(e.target.value)}
+                     placeholder="leave blank to decide later"
+                     className="mt-0.5 w-full border border-amber-300 rounded-md px-2 py-1.5 text-sm bg-white" />
+            </label>
+            <label className="block text-[11px] text-amber-900">
+              Scope of the return visit
+              <input value={fuScope} onChange={(e) => setFuScope(e.target.value)}
+                     placeholder="defaults to what is still needed"
+                     className="mt-0.5 w-full border border-amber-300 rounded-md px-2 py-1.5 text-sm bg-white" />
+            </label>
+          </div>
+          <div className="flex gap-1.5 mt-1.5">
+            {[["Today", selectedDate], ["Tomorrow", addDays(selectedDate, 1)], ["+3 days", addDays(selectedDate, 3)]].map(([l, d]) => (
+              <button key={l} onClick={() => setFuDate(d)}
+                      className="text-[11px] border border-amber-300 rounded px-2 py-0.5 bg-white hover:bg-amber-100">{l}</button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {outcome && outcome !== "not_done" && (
+        <label className="block text-xs text-slate-600 mt-3">
+          Time on site (minutes)
+          <input type="number" min="0" value={minutes} onChange={(e) => setMinutes(e.target.value)}
+                 placeholder={parsed && parsed.minutes != null ? String(parsed.minutes) : "from the report, or leave blank"}
+                 className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
+        </label>
+      )}
+
+      <div className="flex justify-end gap-2 mt-4">
+        <button onClick={onCancel} className="text-sm border border-slate-300 px-3 py-1.5 rounded-md">Cancel</button>
+        <button disabled={!canConfirm}
+                onClick={() => onConfirm({
+                  outcome, reason: reason || "", stillNeeded,
+                  actualMinutes: minutes === "" ? null : Number(minutes),
+                  followUp: requiresFollowUp
+                    ? { date: fuDate, team: fuTeam, scope: fuScope || stillNeeded, materials: stillNeeded }
+                    : null,
+                })}
+                className="text-sm bg-slate-900 text-white px-3 py-1.5 rounded-md disabled:opacity-40">
+          {requiresFollowUp ? `Close and book ${fuDate}` : "Close out"}
+        </button>
+      </div>
+      {requiresFollowUp && !squash(stillNeeded) && (
+        <p className="text-[11px] text-amber-700 mt-1.5 text-right">
+          Say what is still needed before closing — that text becomes the return visit.
+        </p>
+      )}
+    </Modal>
+  );
+}
+
+/* ==================== out-of-hours log ==================== */
+
+function NightLogDialog({ selectedDate, knownTechs, onCancel, onSave }) {
+  const [date, setDate] = useState(addDays(selectedDate, -1));
+  const [text, setText] = useState("");
+  const [team, setTeam] = useState("");
+  const [reportedBy, setReportedBy] = useState("");
+  const [how, setHow] = useState(HOW_REPORTED[0]);
+  const [priority, setPriority] = useState("P1-Urgent");
+  const [pmsRef, setPmsRef] = useState("");
+
+  const parsedLine = useMemo(
+    () => (text.trim() ? parseQuickAdd(text, { techs: knownTechs }) : null),
+    [text, knownTechs]
+  );
+
+  return (
+    <Modal title="Log an out-of-hours job" onCancel={onCancel} wide>
+      <p className="text-xs text-slate-600">
+        The night call, the emergency, the job arranged over Google Chat while nobody was looking at
+        the schedule. It happened and it consumed a technician, so it belongs on the day it
+        happened — otherwise the only record is a chat thread and a PMS task nobody links back.
+      </p>
+
+      <div className="grid sm:grid-cols-2 gap-2 mt-3">
+        <label className="block text-xs text-slate-600">
+          Which day did it happen?
+          <input type="date" value={date} onChange={(e) => setDate(e.target.value)}
+                 className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
+        </label>
+        <label className="block text-xs text-slate-600">
+          Priority
+          <select value={priority} onChange={(e) => setPriority(e.target.value)}
+                  className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm">
+            {["P1-Urgent", "P2-High", "P3-Medium", "P4-Routine"].map((p) => <option key={p} value={p}>{p}</option>)}
+          </select>
+        </label>
+      </div>
+
+      <label className="block text-xs text-slate-600 mt-2">
+        What happened — same one line as the board
+        <input autoFocus value={text} onChange={(e) => setText(e.target.value)}
+               placeholder="Marina Gate 2 3705 water leak from washroom 1h Anthony occupied"
+               className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
+      </label>
+      {parsedLine && <div className="mt-1"><ParsePreview fields={parsedLine.fields} /></div>}
+
+      <div className="grid sm:grid-cols-3 gap-2 mt-2">
+        <label className="block text-xs text-slate-600">
+          Who attended
+          <input value={team} onChange={(e) => setTeam(e.target.value)}
+                 placeholder="night technician"
+                 className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
+        </label>
+        <label className="block text-xs text-slate-600">
+          Reported by
+          <input value={reportedBy} onChange={(e) => setReportedBy(e.target.value)}
+                 placeholder="support agent"
+                 className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
+        </label>
+        <label className="block text-xs text-slate-600">
+          How it reached us
+          <select value={how} onChange={(e) => setHow(e.target.value)}
+                  className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm">
+            {HOW_REPORTED.map((h) => <option key={h} value={h}>{h}</option>)}
+          </select>
+        </label>
+      </div>
+
+      <label className="block text-xs text-slate-600 mt-2">
+        PMS task ref
+        <input value={pmsRef} onChange={(e) => setPmsRef(e.target.value)} placeholder="TSK401787"
+               className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
+      </label>
+
+      <div className="flex justify-end gap-2 mt-4">
+        <button onClick={onCancel} className="text-sm border border-slate-300 px-3 py-1.5 rounded-md">Cancel</button>
+        <button disabled={!text.trim()}
+                onClick={() => onSave({
+                  ...(parsedLine ? parsedLine.fields : {}),
+                  team: team || (parsedLine && parsedLine.fields.team) || "",
+                  priority,
+                  source: "emergency",
+                  reportedBy, howReported: how, pmsRef, inPms: pmsRef ? true : null,
+                }, date)}
+                className="text-sm bg-slate-900 text-white px-3 py-1.5 rounded-md disabled:opacity-40">
+          Log it against {date}
         </button>
       </div>
     </Modal>
