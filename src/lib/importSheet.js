@@ -193,8 +193,8 @@ export function parseSheetPaste(text, fallbackDate) {
       priority: canonPriority(get(row, "priority")),
       notes: get(row, "notes"),
       // The workbook's own PMS columns are carried in as the admin's
-      // starting point, not as verified truth — the Verify tab is what
-      // turns them into an outcome.
+      // starting point, not as a confirmed outcome — closing the job on
+      // the Live Board is what records what actually happened.
       _sheetInPms: parseYN(get(row, "inPmsRaw")),
       _sheetPmsRef: get(row, "pmsRef"),
       _sheetChanged: parseYN(get(row, "changedRaw")),

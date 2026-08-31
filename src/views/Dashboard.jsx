@@ -4,6 +4,8 @@ import {
   Wallet, Settings2, ChevronDown, ChevronRight,
 } from "lucide-react";
 import { storageGet, storageSet } from "../lib/storage.js";
+import { parseDay, migrateDay } from "../lib/jobStore.js";
+import { liveJobs } from "../lib/job.js";
 import { computeCost, computeCostSeries, DEFAULT_RATES } from "../lib/cost.js";
 import { computeAll, DEFAULTS } from "../lib/metrics.js";
 import {
@@ -83,9 +85,11 @@ export default function Dashboard({ selectedDate, knownDates, onOpenDate }) {
       const slice = dates.slice(i, i + BATCH);
       const results = await Promise.all(slice.map((date) => storageGet(`schedule:${date}`)));
       results.forEach((v, k) => {
-        let arr = [];
-        try { arr = v ? JSON.parse(v) : []; } catch { arr = []; }
-        arr.forEach((j) => collected.push({ ...j, _date: slice[k] }));
+        // Tombstones are records of a job leaving a day, not jobs — counting
+        // them would inflate every rate on this page. The live jobs are
+        // migrated on read so days not yet opened on the board still count.
+        const day = migrateDay(parseDay(v), slice[k]);
+        liveJobs(day).forEach((j) => collected.push({ ...j, _date: slice[k] }));
       });
       setProgress(Math.min(dates.length, i + BATCH));
     }
@@ -169,6 +173,7 @@ export default function Dashboard({ selectedDate, knownDates, onOpenDate }) {
             m={m} focus={focus} focusDate={focusDate} setFocusDate={setFocusDate}
             availableDates={m.series.map((s) => s.date)} onOpenDate={onOpenDate}
           />
+          <Movement m={m} onOpenDate={onOpenDate} />
           <Trends m={m} />
           <CostSection m={m} jobs={loaded} rates={rates} onSaveRates={saveRates} ratesLoaded={ratesLoaded} />
           <WhereWorkGoes m={m} />
@@ -259,10 +264,10 @@ function RangeHeadline({ m, startDate, endDate }) {
           tone={rep.reworkRatePct > 12 ? "bad" : rep.reworkRatePct > 7 ? "warn" : "good"}
         />
         <Tile
-          label="Verified by admin"
+          label="Outcome recorded"
           value={ver.coverage.pct == null ? "0%" : `${ver.coverage.pct}%`}
-          sub={ver.verifiedCount ? `${ver.completionRatePct}% completed` : "no verification yet"}
-          coverage={`from ${ver.verifiedCount}/${ver.total} jobs checked in the Verify tab`}
+          sub={ver.verifiedCount ? `${ver.completionRatePct}% completed` : "no outcomes recorded yet"}
+          coverage={`from ${ver.verifiedCount}/${ver.total} jobs closed out on the board`}
           tone={ver.coverage.pct >= 80 ? "good" : ver.coverage.pct >= 30 ? "warn" : "bad"}
           icon={CheckCircle2}
         />
@@ -423,6 +428,105 @@ function RiskCard({ tone, title, hint, children }) {
   );
 }
 
+/* ====================== movement ====================== */
+
+function Movement({ m, onOpenDate }) {
+  const mv = m.movement;
+  if (!mv) return null;
+  const noHistory = mv.coverage.pct === 0;
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-4">
+      <h2 className="text-sm font-semibold text-slate-900">Where jobs went</h2>
+      <p className="text-xs text-slate-500 mt-0.5 mb-3 max-w-3xl">
+        The question nobody could answer before: a job that did not happen simply stopped
+        appearing. Every job now carries its own history, so being moved is a recorded event with
+        a reason and a name on it — and a job that stops appearing without ever being closed out
+        is countable instead of invisible.
+      </p>
+
+      {noHistory ? (
+        <p className="text-xs text-slate-400 py-3">
+          No job history in this range yet. Jobs imported from the workbook predate the live
+          board, so they have nothing to report here. This fills in as the board is used.
+        </p>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+            <Tile label="Jobs pushed at least once" value={mv.pushedJobs}
+                  sub={`${mv.pushedPct ?? 0}% of ${mv.total} jobs`}
+                  coverage={`${mv.moveEvents} move(s) recorded`}
+                  tone={mv.pushedPct > 25 ? "warn" : "neutral"} />
+            <Tile label="Pushed 3+ times" value={mv.chronic}
+                  sub="chronically deferred"
+                  coverage="each one is a decision nobody is making"
+                  tone={mv.chronic > 0 ? "bad" : "good"} />
+            <Tile label="Oldest job still moving" value={`${mv.maxAgeDays}d`}
+                  sub={`median ${mv.medianAgeDays ?? 0}d from first scheduled`}
+                  coverage="age from the day it first appeared" />
+            <Tile label="Cancelled with a reason" value={mv.cancelled}
+                  sub="visible, not vanished"
+                  coverage="was previously indistinguishable from a deletion" />
+            <Tile label="Open on a day already past" value={mv.lost}
+                  sub="never closed out"
+                  coverage="the disappearances, now counted"
+                  tone={mv.lost > 0 ? "bad" : "good"}
+                  icon={AlertTriangle} />
+          </div>
+
+          {mv.reasons.length > 0 && (
+            <div className="mt-4 grid lg:grid-cols-2 gap-4">
+              <div>
+                <h3 className="text-xs font-medium text-slate-700 mb-1.5">Why jobs move</h3>
+                <HBars
+                  items={mv.reasons.slice(0, 8).map(([label, n]) => ({ label, value: n, display: String(n) }))}
+                />
+              </div>
+              {mv.chronicJobs.length > 0 && (
+                <div>
+                  <h3 className="text-xs font-medium text-slate-700 mb-1.5">Pushed the most</h3>
+                  <ul className="space-y-1 text-xs">
+                    {mv.chronicJobs.slice(0, 8).map((j) => (
+                      <li key={j.id} className="flex justify-between gap-2">
+                        <span className="text-slate-700 truncate">{j.property} {j.unit} — {j.description}</span>
+                        <button onClick={() => onOpenDate && onOpenDate(j.scheduledDate)}
+                                className="text-red-700 font-medium shrink-0 underline">
+                          {j.pushCount}× · since {j.originDate}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+
+          {mv.lostJobs.length > 0 && (
+            <div className="mt-4 rounded-md border border-red-200 bg-red-50 p-3">
+              <h3 className="text-xs font-medium text-red-900">
+                {mv.lost} job(s) sitting on a day that has already passed, with no outcome
+              </h3>
+              <p className="text-[11px] text-red-800 mt-0.5 mb-1.5">
+                Nobody marked these done, not done, moved or cancelled. Open the day and close
+                them out — the Live Board will also prompt for them the next morning.
+              </p>
+              <ul className="space-y-0.5 text-xs">
+                {mv.lostJobs.slice(0, 10).map((j) => (
+                  <li key={j.id} className="flex justify-between gap-2">
+                    <span className="text-red-900 truncate">{j.property} {j.unit} — {j.description}</span>
+                    <button onClick={() => onOpenDate && onOpenDate(j._date)}
+                            className="text-red-700 underline shrink-0">{j._date}</button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 /* ====================== trends ====================== */
 
 function Trends({ m }) {
@@ -478,14 +582,15 @@ function Trends({ m }) {
         <ChartFrame
           title="Completion rate"
           subtitle={hasVerification
-            ? "Share of verified jobs the admin confirmed done."
-            : "Fills in once the admin starts the daily Verify pass. Nothing is shown here until there is real data behind it."}
+            ? "Share of closed-out jobs marked done."
+            : "Fills in as jobs are closed out on the Live Board. Nothing is shown here until there is real data behind it."}
         >
           {hasVerification
             ? <RateLine series={m.series} valueKey="completionRatePct" label="Completed" color={C.s3} target={95} />
             : <div className="text-xs text-slate-400 py-10 text-center px-6">
-                No verification data in this range. One pass in the Verify tab turns this chart on —
-                and with it completion rate, PMS traceability and first-time fix.
+                No outcomes recorded in this range. Marking jobs done or not done on the Live
+                Board turns this chart on — and with it completion rate, PMS traceability and
+                first-time fix.
               </div>}
         </ChartFrame>
       </div>
@@ -716,7 +821,7 @@ function CostSection({ m, jobs, rates, onSaveRates, ratesLoaded }) {
           — a visit that fails for access and had no material list appears in two — and a single
           number would overstate the prize. Each one is marked measured or estimated, so you can
           tell which are facts about {m.dateCount} days of real schedule and which are still
-          assumptions waiting on the Verify pass.
+          assumptions waiting on jobs being closed out on the board.
         </p>
         <div className="space-y-2">
           {cost.levers.map((l) => (
@@ -770,7 +875,7 @@ function RatesEditor({ rates, onSave, techs }) {
     ["vehicleCostPerTrip", "Vehicle cost per trip", "Fuel, Salik and wear for one building-to-building hop. The first building of the day is the commute and is not charged."],
     ["callOutFixedCost", "Fixed cost per visit", "Any dispatch or admin overhead you want carried on every job. Leave at 0 if you do not track one."],
     ["contractorCostPerHour", "Contractor cost per hour", "Applied instead of the technician rate on project work whose description mentions a contractor or third party."],
-    ["wastedVisitProbability", "Assumed failure rate, unconfirmed visits", "Only used for the forward-looking exposure figure. Once the Verify pass has run a couple of weeks, replace it with the rate you actually measure."],
+    ["wastedVisitProbability", "Assumed failure rate, unconfirmed visits", "Only used for the forward-looking exposure figure. Once jobs have been closed out on the board for a couple of weeks, replace it with the rate you actually measure."],
   ];
 
   return (
