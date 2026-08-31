@@ -11,6 +11,10 @@ import SheetImport from "./views/SheetImport.jsx";
 import LiveBoard from "./views/LiveBoard.jsx";
 import Projects from "./views/Projects.jsx";
 import Roster from "./views/Roster.jsx";
+import SignIn from "./views/SignIn.jsx";
+import {
+  isAuthRequired, currentSession, onAuthChange, identityFor, signOut,
+} from "./lib/auth.js";
 import { mutateDay } from "./lib/jobStore.js";
 import { newJob } from "./lib/job.js";
 import { needsGuestConfirmation, squash } from "./lib/normalize.js";
@@ -238,6 +242,30 @@ function chunkScheduleText(rawText, unitsPerChunk = 4) {
 }
 
 export default function App() {
+  /* The sign-in gate.
+   *
+   * `authRequired` is read from the database rather than compiled in, so
+   * it can be switched off again from the Roster tab or with one SQL
+   * statement if email delivery breaks. A login screen nobody can get past
+   * would take the whole department's day with it, and a redeploy is not
+   * an acceptable recovery path for that. */
+  const [authRequired, setAuthRequired] = useState(null);
+  const [session, setSession] = useState(null);
+  const [authChecked, setAuthChecked] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const [required, sess] = await Promise.all([isAuthRequired(), currentSession()]);
+      if (cancelled) return;
+      setAuthRequired(required);
+      setSession(sess);
+      setAuthChecked(true);
+    })();
+    const off = onAuthChange((s) => setSession(s));
+    return () => { cancelled = true; off(); };
+  }, []);
+
   const [loading, setLoading] = useState(true);
   const [storageOk, setStorageOk] = useState(true);
   const [faultMaster, setFaultMaster] = useState([]);
@@ -719,6 +747,17 @@ export default function App() {
     );
   }
 
+  if (!authChecked) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <Loader2 className="w-5 h-5 animate-spin text-slate-400" />
+      </div>
+    );
+  }
+  if (authRequired && !session) {
+    return <SignIn onSignedIn={(s) => setSession(s)} />;
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
       <Header
@@ -728,6 +767,7 @@ export default function App() {
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         onNewJob={() => { setEditingJob(null); setShowForm(true); }}
+        session={session}
       />
 
       {!storageOk && (
@@ -772,7 +812,12 @@ export default function App() {
           <PropertiesView propertyMaster={propertyMaster} onAdd={addProperty} />
         )}
         {activeTab === "roster" && (
-          <Roster selectedDate={selectedDate} setSelectedDate={setSelectedDate} showToast={showToast} />
+          <Roster
+            selectedDate={selectedDate} setSelectedDate={setSelectedDate}
+            showToast={showToast}
+            authRequired={authRequired} setAuthRequired={setAuthRequired}
+            session={session}
+          />
         )}
         {activeTab === "dashboard" && (
           <Dashboard
@@ -783,6 +828,7 @@ export default function App() {
         )}
         {activeTab === "live" && (
           <LiveBoard
+            session={session}
             selectedDate={selectedDate}
             setSelectedDate={setSelectedDate}
             propertyMaster={propertyMaster}
@@ -838,7 +884,7 @@ export default function App() {
   );
 }
 
-function Header({ selectedDate, setSelectedDate, knownDates, activeTab, setActiveTab, onNewJob }) {
+function Header({ selectedDate, setSelectedDate, knownDates, activeTab, setActiveTab, onNewJob, session }) {
   /* Tab order follows the daily cycle: build the schedule, post it, verify
      yesterday, then read the numbers. */
   /* The Live Board is the day. Everything else is a lens on it or a
@@ -890,6 +936,15 @@ function Header({ selectedDate, setSelectedDate, knownDates, activeTab, setActiv
               title="Jump back to today"
             >
               {selectedDate < todayISO() ? "Viewing a past date" : "Viewing a future date"} · Today
+            </button>
+          )}
+          {session && (
+            <button
+              onClick={async () => { await signOut(); window.location.reload(); }}
+              title={session.user?.email}
+              className="text-xs px-2 py-1.5 rounded-md bg-slate-800 border border-slate-700 text-slate-300 hover:bg-slate-700"
+            >
+              Sign out
             </button>
           )}
           <button

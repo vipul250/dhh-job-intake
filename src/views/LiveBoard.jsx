@@ -3,13 +3,15 @@ import {
   Plus, Play, Check, X, ArrowRight, Clipboard, History, AlertTriangle,
   Loader2, RefreshCw, ChevronDown, ChevronRight, Users, CircleDot, Trash2,
   CalendarClock, Wand2, Pin, Moon, ShieldAlert, CornerDownRight, FileText,
+  Lock, Unlock,
 } from "lucide-react";
 import {
   newJob, moveJob, setState as setJobState, applyEdit, withEvent,
   isTombstone, liveJobs, tombstones, jobMinutes, isOpen, pushSeverity,
   needsGuestConfirm, pmsText, parseQuickAdd, splitQuickAddLines, findReturn,
   actualDuration, makeFollowUp, needsFollowUp, isResolved,
-  STATE_META, NOT_DONE_REASONS, MOVE_REASONS, CANCEL_REASONS, EVENT_LABEL,
+  STATE_META, NOT_DONE_REASONS, MOVE_REASONS, MOVE_REASON_LABEL,
+  moveReasonDisplaces, CANCEL_REASONS, EVENT_LABEL,
   OUTCOME_OPTIONS, JOB_SOURCES, SOURCE_LABEL, HOW_REPORTED,
 } from "../lib/job.js";
 import { parseWorkReport, fmtMin } from "../lib/workReport.js";
@@ -19,6 +21,8 @@ import { staffIndex, seedStaff, TRADE_LABEL } from "../lib/staff.js";
 import {
   seedCatalogue, matchCatalogue, applyCatalogue, newCatalogueEntry,
 } from "../lib/catalogue.js";
+import { readPost, postDay, lockState, CHANGE_REASONS } from "../lib/dayLock.js";
+import { identityFor } from "../lib/auth.js";
 import { storageSet } from "../lib/storage.js";
 import { jobRequirement, checkCrew, checkDayCrewing } from "../lib/crewing.js";
 import { RETURN_REASONS, FAMILY_LABEL } from "../lib/faultFamily.js";
@@ -88,9 +92,17 @@ function useMe() {
 }
 
 export default function LiveBoard({
-  selectedDate, setSelectedDate, propertyMaster, knownTeams, onEditFull, showToast,
+  selectedDate, setSelectedDate, propertyMaster, knownTeams, onEditFull, showToast, session,
 }) {
-  const [me, setMe] = useMe();
+  const [typedMe, setTypedMe] = useMe();
+  const [staff, setStaff] = useState(null);
+
+  /* A verified session outranks a typed-in name. When sign-in is on there
+     is no "who are you" prompt at all, because the answer is already
+     proven rather than claimed. */
+  const sessionMe = useMemo(() => (session ? identityFor(session, staff) : null), [session, staff]);
+  const me = sessionMe || typedMe;
+  const setMe = setTypedMe;
   const [rows, setRows] = useState(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -104,7 +116,8 @@ export default function LiveBoard({
   const [nightLog, setNightLog] = useState(false);
   const [roster, setRoster] = useState(null);
   const [loadError, setLoadError] = useState("");
-  const [staff, setStaff] = useState(null);
+  const [post, setPost] = useState(null);
+  const [changeReasonFor, setChangeReasonFor] = useState(null);
   const [catalogue, setCatalogue] = useState(null);
   const watcher = useRef(null);
 
@@ -193,6 +206,34 @@ export default function LiveBoard({
 
   useEffect(() => { load(selectedDate); }, [selectedDate, load]);
   useEffect(() => { loadRollover(selectedDate); }, [selectedDate, loadRollover]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const rec = await readPost(selectedDate);
+      if (!cancelled) setPost(rec);
+    })();
+    return () => { cancelled = true; };
+  }, [selectedDate]);
+
+  const lock = useMemo(() => lockState(selectedDate, post), [selectedDate, post]);
+
+  async function doPost() {
+    const rec = await postDay(selectedDate, who, jobs.length);
+    setPost(rec);
+    showToast(`${selectedDate} posted. Changes from now on are logged with a reason.`, "ok");
+  }
+
+  /* Every edit to a locked day carries the reason with it, so the history
+     reads as a decision rather than a mutation. */
+  async function editWithReason(job, patch, reason) {
+    await change(selectedDate, (cur) => {
+      const target = cur.find((r) => !isTombstone(r) && r.id === job.id) || job;
+      const edited = applyEdit(target, patch, who);
+      return upsert(cur, reason
+        ? withEvent(edited, "edited", who, { reason, lock: lock.kind })
+        : edited);
+    });
+  }
 
   // The day's roster, so the board can say when work is assigned to
   // somebody who is not there.
@@ -295,7 +336,12 @@ export default function LiveBoard({
   /* ----------------------------- actions ------------------------------ */
 
   async function addJobs(fieldsList) {
-    const created = fieldsList.map((f) => newJob(f, selectedDate, who));
+    const created = fieldsList.map((f) => {
+      const j = newJob(f, selectedDate, who);
+      // A job added to a day that has already been published is a change to
+      // a schedule the field team has planned around, so it is logged as one.
+      return lock.locked ? withEvent(j, "added_late", who, { lock: lock.kind }) : j;
+    });
     await change(selectedDate, (cur) => [...cur, ...created],
       `Added ${created.length} job${created.length === 1 ? "" : "s"}.`);
 
@@ -326,8 +372,46 @@ export default function LiveBoard({
     setReturnPrompts((prev) => prev.filter((p) => p.job.id !== job.id));
   }
 
+  /* Recording an outcome is the day running its course, not a change to
+     the plan — except for cancelling, which removes work the schedule
+     promised and belongs in the after-posting record. */
   async function advance(job, state, extra) {
-    await change(selectedDate, (cur) => upsert(cur, setJobState(job, state, who, extra)));
+    const tag = state === "cancelled" && lock.locked ? { lock: lock.kind } : {};
+    await change(selectedDate, (cur) =>
+      upsert(cur, setJobState(job, state, who, { ...extra, ...tag })));
+  }
+
+  /* A job that was not done is not finished with. Whatever the coordinator
+     answers about rebooking is stored on the job, and a booked date creates
+     the linked job that carries the work forward — the same containment
+     path used for made-safe, for the same reason: nothing contained is left
+     with nobody coming back. */
+  async function markNotDone(job, kind, reason, rebook) {
+    const state = kind === "cancel" ? "cancelled" : "not_done";
+    const extra = { reason };
+    if (rebook) extra.rebook = rebook.rebook === "none" ? "none" : rebook.date;
+
+    let child = null;
+    if (rebook && rebook.date) {
+      // Built from the job as it will be once closed, so the child records
+      // what it is following up on rather than the state it was in before.
+      child = makeFollowUp({ ...job, state, outcomeReason: reason }, rebook.date, who,
+        { scope: `Retry: ${job.description}` });
+    }
+    await change(selectedDate, (cur) => {
+      const target = cur.find((r) => !isTombstone(r) && r.id === job.id) || job;
+      const closed = setJobState(target, state, who, {
+        ...extra,
+        ...(state === "cancelled" && lock.locked ? { lock: lock.kind } : {}),
+      });
+      return upsert(cur, child ? { ...closed, followUpJobId: child.id } : closed);
+    });
+    if (child) {
+      await mutateDay(rebook.date, (cur) => [...cur, child]);
+      showToast(`Not done. Booked again for ${rebook.date}.`, "ok");
+    } else if (rebook && rebook.rebook === "none") {
+      showToast("Not done, and recorded as not being rebooked.", "warn");
+    }
   }
 
   /* Closing a job out. The two outcomes that are not endings — made safe
@@ -387,7 +471,16 @@ export default function LiveBoard({
   }
 
   async function edit(job, patch) {
-    await change(selectedDate, (cur) => upsert(cur, applyEdit(job, patch, who)));
+    if (lock.locked) {
+      // Ask once per job, then apply this and any further edits to it with
+      // that reason attached.
+      setChangeReasonFor({ job, patch });
+      return;
+    }
+    await change(selectedDate, (cur) => {
+      const target = cur.find((r) => !isTombstone(r) && r.id === job.id) || job;
+      return upsert(cur, applyEdit(target, patch, who));
+    });
   }
 
   async function togglePms(job) {
@@ -398,9 +491,23 @@ export default function LiveBoard({
 
   /* The move. Two writes: a tombstone on the day it leaves, the job itself
      on the day it lands. Deliberately not a delete anywhere. */
-  async function doMove(job, toDate, reason) {
-    const { moved, tomb } = moveJob(job, toDate, who, reason);
-    await change(selectedDate, (cur) => [...removeJob(cur, job.id), tomb]);
+  async function doMove(job, toDate, reason, displacedBy) {
+    const { moved, tomb } = moveJob(job, toDate, who, reason, displacedBy, lock.kind);
+    await change(selectedDate, (cur) => {
+      let next = [...removeJob(cur, job.id), tomb];
+      // Record the other half on the job that took the slot, so the pair
+      // can be read from either end.
+      if (displacedBy && displacedBy.jobId) {
+        const winner = next.find((r) => !isTombstone(r) && r.id === displacedBy.jobId);
+        if (winner) {
+          next = upsert(next, {
+            ...winner,
+            displaced: Array.from(new Set([...(winner.displaced || []), job.id])),
+          });
+        }
+      }
+      return next;
+    });
     await mutateDay(toDate, (cur) => [...cur, moved]);
     showToast(`Moved to ${toDate}. The trail stays on ${selectedDate}.`, "ok");
     setMoveFor(null);
@@ -502,6 +609,11 @@ export default function LiveBoard({
         onRefresh={() => load(selectedDate)}
       />
 
+      <PostBar
+        lock={lock} post={post} date={selectedDate}
+        jobCount={jobs.length} onPost={doPost}
+      />
+
       {rosterCheck && <RosterStrip check={rosterCheck} />}
       {crewing && <CrewStrip crewing={crewing} />}
 
@@ -596,18 +708,30 @@ export default function LiveBoard({
       {trailFor && <TrailDrawer job={trailFor} onClose={() => setTrailFor(null)} />}
       {moveFor && (
         <MoveDialog
-          job={moveFor} fromDate={selectedDate}
+          job={moveFor} fromDate={selectedDate} dayJobs={jobs}
           onCancel={() => setMoveFor(null)}
-          onMove={(to, reason) => doMove(moveFor, to, reason)}
+          onMove={(to, reason, displacedBy) => doMove(moveFor, to, reason, displacedBy)}
         />
       )}
       {outcomeFor && (
         <OutcomeDialog
-          job={outcomeFor.job} kind={outcomeFor.kind}
+          job={outcomeFor.job} kind={outcomeFor.kind} selectedDate={selectedDate}
           onCancel={() => setOutcomeFor(null)}
-          onConfirm={(reason) => {
-            advance(outcomeFor.job, outcomeFor.kind === "cancel" ? "cancelled" : "not_done", { reason });
+          onConfirm={(reason, rebook) => {
+            markNotDone(outcomeFor.job, outcomeFor.kind, reason, rebook);
             setOutcomeFor(null);
+          }}
+        />
+      )}
+      {changeReasonFor && (
+        <ChangeReasonDialog
+          lock={lock}
+          job={changeReasonFor.job}
+          patch={changeReasonFor.patch}
+          onCancel={() => setChangeReasonFor(null)}
+          onConfirm={(reason) => {
+            editWithReason(changeReasonFor.job, changeReasonFor.patch, reason);
+            setChangeReasonFor(null);
           }}
         />
       )}
@@ -725,7 +849,7 @@ function TopBar({ me, onChangeMe, selectedDate, setSelectedDate, counts, busy, l
 /* ========================= rollover ========================= */
 
 function RolloverBanner({ rollover, today, onMoveAll, onDismiss, onOpenDay }) {
-  const [reason, setReason] = useState(MOVE_REASONS[6]);
+  const [reason, setReason] = useState("out-of-time");
   return (
     <div className="rounded-lg border border-amber-300 bg-amber-50 p-3">
       <div className="flex items-start gap-2">
@@ -753,7 +877,7 @@ function RolloverBanner({ rollover, today, onMoveAll, onDismiss, onOpenDay }) {
           <div className="flex flex-wrap items-center gap-2 mt-2">
             <select value={reason} onChange={(e) => setReason(e.target.value)}
                     className="text-xs border border-amber-300 rounded-md px-2 py-1.5 bg-white">
-              {MOVE_REASONS.map((r) => <option key={r} value={r}>{r}</option>)}
+              {MOVE_REASONS.filter((r) => !r.displaces).map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
             </select>
             <button onClick={() => onMoveAll(reason)}
                     className="text-xs bg-amber-700 text-white rounded-md px-3 py-1.5">
@@ -1047,6 +1171,91 @@ function TeamGroup({ group, me, allJobs, selectedDate, onAdvance, onEdit, onTogg
         </div>
       )}
     </div>
+  );
+}
+
+/* ==================== posting and locking ==================== *
+ * The evening coordinator publishes the day; from then on the field team
+ * has planned around it and guests have been told times. Changing it after
+ * that is an event with a cost, and this is where that becomes visible.
+ * ============================================================== */
+
+function PostBar({ lock, post, date, jobCount, onPost }) {
+  if (lock.kind === "past") {
+    return (
+      <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2">
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <Lock className="w-3.5 h-3.5 text-amber-700 shrink-0" />
+          <span className="font-medium text-amber-900">{lock.label}</span>
+          <span className="text-amber-800">{lock.why}</span>
+        </div>
+      </div>
+    );
+  }
+  if (lock.kind === "posted") {
+    return (
+      <div className="rounded-lg border border-slate-300 bg-slate-50 px-3 py-2">
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <Lock className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+          <span className="font-medium text-slate-800">{lock.label}</span>
+          <span className="text-slate-600">{lock.why}</span>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 flex flex-wrap items-center gap-2">
+      <Unlock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+      <span className="text-xs text-slate-600">
+        <span className="font-medium text-slate-800">Not posted yet.</span> Edits are not being
+        logged as changes — this is still a draft.
+      </span>
+      <button onClick={onPost} disabled={!jobCount}
+              className="ml-auto text-xs bg-slate-900 text-white rounded-md px-3 py-1.5 disabled:opacity-40">
+        Post {date} ({jobCount} jobs)
+      </button>
+    </div>
+  );
+}
+
+function ChangeReasonDialog({ lock, job, patch, onCancel, onConfirm }) {
+  const [reason, setReason] = useState(CHANGE_REASONS[0]);
+  const [other, setOther] = useState("");
+  const final = reason === "Other" ? (squash(other) || "Other") : reason;
+  const fields = Object.keys(patch || {});
+
+  return (
+    <Modal title={lock.kind === "past" ? "Changing a day that has passed" : "Changing a posted schedule"}
+           onCancel={onCancel}>
+      <p className="text-xs text-slate-600">{lock.why}</p>
+      <div className="mt-2 text-xs text-slate-700 bg-slate-50 border border-slate-200 rounded px-2 py-1.5">
+        <span className="font-medium">{job.property} {job.unit}</span>
+        <div className="text-slate-500 mt-0.5">
+          changing {fields.join(", ")}
+        </div>
+      </div>
+      <label className="block text-xs text-slate-600 mt-3">
+        Why?
+        <select value={reason} onChange={(e) => setReason(e.target.value)}
+                className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm">
+          {CHANGE_REASONS.map((r) => <option key={r} value={r}>{r}</option>)}
+        </select>
+      </label>
+      {reason === "Other" && (
+        <input autoFocus value={other} onChange={(e) => setOther(e.target.value)}
+               placeholder="What happened?"
+               className="mt-2 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
+      )}
+      <div className="flex justify-end gap-2 mt-4">
+        <button onClick={onCancel} className="text-sm border border-slate-300 px-3 py-1.5 rounded-md">
+          Leave it as it was
+        </button>
+        <button onClick={() => onConfirm(final)}
+                className="text-sm bg-slate-900 text-white px-3 py-1.5 rounded-md">
+          Save the change
+        </button>
+      </div>
+    </Modal>
   );
 }
 
@@ -1383,6 +1592,18 @@ function JobRow({ job, me, onAdvance, onEdit, onTogglePms, onMove, onOutcome, on
                 unplanned
               </span>
             )}
+            {job.displacedBy && (
+              <span title={`Moved because: ${job.displacedBy.label}`}
+                    className="text-[10px] rounded px-1.5 py-0.5 bg-blue-50 text-blue-700 border border-blue-200">
+                bumped by {squash(job.displacedBy.label).slice(0, 34)}
+              </span>
+            )}
+            {(job.displaced || []).length > 0 && (
+              <span title="This job took another job's slot"
+                    className="text-[10px] rounded px-1.5 py-0.5 bg-violet-50 text-violet-700 border border-violet-200">
+                took {job.displaced.length} slot{job.displaced.length === 1 ? "" : "s"}
+              </span>
+            )}
             {job.followUpOf && (
               <span title={`Finishes work started on ${job.followUpOf.date}`}
                     className="text-[10px] rounded px-1.5 py-0.5 bg-blue-50 text-blue-700 border border-blue-200 inline-flex items-center gap-0.5">
@@ -1634,7 +1855,10 @@ function LeftThisDay({ tombs, cancelled, onOpenDate, onTrail }) {
               moved to {t.toDate}
             </button>
             <span className="text-slate-400">by {t.by} at {clock(t.at)}</span>
-            {t.reason && <span className="text-slate-500">· {t.reason}</span>}
+            {t.reason && <span className="text-slate-500">· {MOVE_REASON_LABEL[t.reason] || t.reason}</span>}
+            {t.displacedBy && (
+              <span className="text-blue-700">· made way for {squash(t.displacedBy.label).slice(0, 46)}</span>
+            )}
           </li>
         ))}
         {cancelled.map((j) => (
@@ -1653,15 +1877,43 @@ function LeftThisDay({ tombs, cancelled, onOpenDate, onTrail }) {
 
 /* ========================= dialogs ========================= */
 
-function MoveDialog({ job, fromDate, onCancel, onMove }) {
+function MoveDialog({ job, fromDate, dayJobs, onCancel, onMove }) {
   const [to, setTo] = useState(addDays(fromDate, 1));
-  const [reason, setReason] = useState(MOVE_REASONS[0]);
+  const [reason, setReason] = useState(MOVE_REASONS[0].id);
+  const [winnerId, setWinnerId] = useState("");
+  const [winnerText, setWinnerText] = useState("");
+
+  const displaces = moveReasonDisplaces(reason);
+
+  /* Candidates for "what took the slot": the other jobs on this day, most
+     recently added first, since whatever bumped this one is usually the
+     thing that just arrived. */
+  const others = useMemo(
+    () => (dayJobs || [])
+      .filter((j) => j.id !== job.id && j.state !== "cancelled")
+      .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+      .slice(0, 40),
+    [dayJobs, job.id]
+  );
+
+  const displacedBy = displaces
+    ? {
+        jobId: winnerId,
+        label: winnerId
+          ? (() => { const w = others.find((o) => o.id === winnerId); return w ? `${w.property} ${w.unit} — ${w.description}` : ""; })()
+          : squash(winnerText),
+      }
+    : null;
+
+  const canMove = !displaces || !!(winnerId || squash(winnerText));
+
   return (
-    <Modal title={`Move ${job.property} ${job.unit}`} onCancel={onCancel}>
+    <Modal title={`Move ${job.property} ${job.unit}`} onCancel={onCancel} wide>
       <p className="text-xs text-slate-600">
         {fromDate} keeps a record that this job left and where it went. The job carries its
         history with it — it will show as pushed {(job.pushCount || 0) + 1}× on the new day.
       </p>
+
       <label className="block text-xs text-slate-600 mt-3">
         Move to
         <input type="date" value={to} onChange={(e) => setTo(e.target.value)}
@@ -1675,28 +1927,83 @@ function MoveDialog({ job, fromDate, onCancel, onMove }) {
           </button>
         ))}
       </div>
+
       <label className="block text-xs text-slate-600 mt-3">
-        Why is it moving? <span className="text-slate-400">— this is the part nobody can answer today</span>
-        <select value={reason} onChange={(e) => setReason(e.target.value)}
+        Why is it moving?
+        <select value={reason} onChange={(e) => { setReason(e.target.value); setWinnerId(""); setWinnerText(""); }}
                 className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm">
-          {MOVE_REASONS.map((r) => <option key={r} value={r}>{r}</option>)}
+          {MOVE_REASONS.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
         </select>
       </label>
+
+      {displaces && (
+        <div className="mt-3 rounded-md border border-blue-300 bg-blue-50 p-2.5">
+          <h4 className="text-xs font-medium text-blue-900">What took the slot?</h4>
+          <p className="text-[11px] text-blue-800 mt-0.5 mb-2">
+            This is a judgement call — one piece of work was preferred over another. Recording
+            both halves is what lets anyone look back and ask whether it was the right one. Without
+            it, all the record shows is that a job moved.
+          </p>
+          <select value={winnerId} onChange={(e) => setWinnerId(e.target.value)}
+                  className="w-full border border-blue-300 rounded-md px-2 py-1.5 text-sm bg-white">
+            <option value="">— pick the job that took it, or describe it below —</option>
+            {others.map((o) => (
+              <option key={o.id} value={o.id}>
+                {o.property} {o.unit} — {squash(o.description).slice(0, 60)}
+                {canonPriority(o.priority) ? ` [${o.priority}]` : ""}
+              </option>
+            ))}
+          </select>
+          {!winnerId && (
+            <input value={winnerText} onChange={(e) => setWinnerText(e.target.value)}
+                   placeholder="e.g. emergency leak at Marina Gate 2 3705"
+                   className="mt-1.5 w-full border border-blue-300 rounded-md px-2 py-1.5 text-sm bg-white" />
+          )}
+          {winnerId && (() => {
+            const w = others.find((o) => o.id === winnerId);
+            const a = canonPriority(job.priority), bpr = w && canonPriority(w.priority);
+            if (!w || !a || !bpr || a <= bpr) return null;
+            // a <= bpr means the displaced job is the higher priority
+            return (
+              <p className="mt-1.5 text-[11px] text-amber-900 bg-amber-100 border border-amber-300 rounded px-2 py-1">
+                Worth a second look: you are moving a {job.priority} to make room for a {w.priority}.
+                That may still be right — it is recorded either way.
+              </p>
+            );
+          })()}
+        </div>
+      )}
+
       <div className="flex justify-end gap-2 mt-4">
         <button onClick={onCancel} className="text-sm border border-slate-300 px-3 py-1.5 rounded-md">Cancel</button>
-        <button onClick={() => onMove(to, reason)} className="text-sm bg-slate-900 text-white px-3 py-1.5 rounded-md">
+        <button disabled={!canMove}
+                onClick={() => onMove(to, reason, displacedBy)}
+                className="text-sm bg-slate-900 text-white px-3 py-1.5 rounded-md disabled:opacity-40">
           Move to {to}
         </button>
       </div>
+      {displaces && !canMove && (
+        <p className="text-[11px] text-blue-700 mt-1.5 text-right">
+          Say what took the slot before moving it.
+        </p>
+      )}
     </Modal>
   );
 }
 
-function OutcomeDialog({ job, kind, onCancel, onConfirm }) {
+function OutcomeDialog({ job, kind, selectedDate, onCancel, onConfirm }) {
   const list = kind === "cancel" ? CANCEL_REASONS : NOT_DONE_REASONS;
   const [reason, setReason] = useState(list[0]);
   const [other, setOther] = useState("");
+  /* "" means the coordinator has not answered yet; "none" is a deliberate
+     "we are not rebooking it", which is a different thing from silence and
+     is recorded as such. */
+  const [rebook, setRebook] = useState("");
+  const [when, setWhen] = useState(addDays(selectedDate, 1));
   const final = reason === "Other" ? (other.trim() || "Other") : reason;
+  const asking = kind !== "cancel";
+  const ready = !asking || rebook !== "";
+
   return (
     <Modal title={kind === "cancel" ? `Cancel ${job.property} ${job.unit}` : `Not done — ${job.property} ${job.unit}`} onCancel={onCancel}>
       <p className="text-xs text-slate-600">
@@ -1713,10 +2020,50 @@ function OutcomeDialog({ job, kind, onCancel, onConfirm }) {
                placeholder="What happened?"
                className="mt-2 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
       )}
+
+      {/* The question the app never asked. A job marked not done used to sit
+          on a day that had already passed, with nobody booked to go back —
+          which is exactly how work went missing before. */}
+      {asking && (
+        <div className="mt-4 border-t border-slate-200 pt-3">
+          <div className="text-xs font-medium text-slate-800">When does it happen instead?</div>
+          <div className="mt-2 space-y-1.5">
+            {[
+              { id: "next", label: `Book it for ${addDays(selectedDate, 1)}` },
+              { id: "pick", label: "Book it for another day" },
+              { id: "none", label: "Not rebooking it — the guest or the building will raise it again" },
+            ].map((o) => (
+              <label key={o.id} className="flex items-start gap-2 text-xs text-slate-700 cursor-pointer">
+                <input type="radio" name="rebook" className="mt-0.5"
+                       checked={rebook === o.id} onChange={() => setRebook(o.id)} />
+                <span>{o.label}</span>
+              </label>
+            ))}
+          </div>
+          {rebook === "pick" && (
+            <input type="date" value={when} min={selectedDate}
+                   onChange={(e) => setWhen(e.target.value)}
+                   className="mt-2 border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
+          )}
+          {rebook === "none" && (
+            <p className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5">
+              This is recorded as a decision, not an oversight. It shows on the dashboard as work
+              that was dropped rather than rescheduled.
+            </p>
+          )}
+          {rebook === "" && (
+            <p className="mt-2 text-xs text-slate-500">Pick one — a missed job with no answer here is how work used to disappear.</p>
+          )}
+        </div>
+      )}
+
       <div className="flex justify-end gap-2 mt-4">
         <button onClick={onCancel} className="text-sm border border-slate-300 px-3 py-1.5 rounded-md">Back</button>
-        <button onClick={() => onConfirm(final)}
-                className={`text-sm text-white px-3 py-1.5 rounded-md ${kind === "cancel" ? "bg-slate-700" : "bg-red-600"}`}>
+        <button onClick={() => onConfirm(final, asking
+                  ? { rebook, date: rebook === "next" ? addDays(selectedDate, 1) : rebook === "pick" ? when : null }
+                  : null)}
+                disabled={!ready}
+                className={`text-sm text-white px-3 py-1.5 rounded-md disabled:opacity-40 ${kind === "cancel" ? "bg-slate-700" : "bg-red-600"}`}>
           {kind === "cancel" ? "Cancel job" : "Mark not done"}
         </button>
       </div>

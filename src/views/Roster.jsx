@@ -11,6 +11,7 @@ import {
   TRADES, TRADE_LABEL, describeStaff,
 } from "../lib/staff.js";
 import { checkDayCrewing } from "../lib/crewing.js";
+import { sendCode, verifyCode, setAuthRequired as persistAuthRequired, signOut } from "../lib/auth.js";
 
 /* ---------------------------------------------------------------------- *
  * Roster.jsx — who is actually available today.
@@ -27,7 +28,7 @@ import { checkDayCrewing } from "../lib/crewing.js";
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
 
-export default function Roster({ selectedDate, setSelectedDate, showToast }) {
+export default function Roster({ selectedDate, setSelectedDate, showToast, authRequired, setAuthRequired, session }) {
   const [date, setDate] = useState(selectedDate || todayISO());
   const [text, setText] = useState("");
   const [saved, setSaved] = useState(null);
@@ -131,6 +132,11 @@ export default function Roster({ selectedDate, setSelectedDate, showToast }) {
       {active && <RosterBoard roster={active} check={check} onOpenDay={() => setSelectedDate(date)} />}
 
       <Team jobs={jobs} showToast={showToast} />
+
+      <AccessPanel
+        authRequired={authRequired} setAuthRequired={setAuthRequired}
+        session={session} showToast={showToast}
+      />
 
       {!active && !loading && (
         <div className="rounded-lg border border-dashed border-slate-300 bg-white p-8 text-center text-sm text-slate-500">
@@ -276,6 +282,131 @@ function RosterBoard({ roster, check }) {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ==================== signing in ==================== *
+ * Turning a login screen on before email delivery is proven locks the
+ * department out of the tool they run their day on, and the only way back
+ * would be a redeploy. So this will not let you enable it until a real
+ * code has arrived in a real inbox.
+ * ================================================== */
+
+function AccessPanel({ authRequired, setAuthRequired, session, showToast }) {
+  const [email, setEmail] = useState(session?.user?.email || "");
+  const [code, setCode] = useState("");
+  const [stage, setStage] = useState("idle");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [err, setErr] = useState("");
+  const [proved, setProved] = useState(!!session);
+
+  async function test() {
+    setBusy(true); setErr(""); setMsg("");
+    const r = await sendCode(email);
+    setBusy(false);
+    if (!r.ok) { setErr(r.error); return; }
+    setStage("code");
+    setMsg(`Code sent to ${email}. Check the inbox — including spam.`);
+  }
+
+  async function confirm() {
+    setBusy(true); setErr("");
+    const r = await verifyCode(email, code);
+    setBusy(false);
+    if (!r.ok) { setErr(r.error); return; }
+    setProved(true); setStage("idle"); setCode("");
+    setMsg("That worked. Email delivery is working, so the sign-in gate is safe to turn on.");
+  }
+
+  async function toggle(on) {
+    await persistAuthRequired(on);
+    setAuthRequired(on);
+    showToast(on ? "Sign-in is now required." : "Sign-in is off — anyone with the link can use the app.", "ok");
+  }
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-3">
+      <h3 className="text-sm font-medium text-slate-900">Signing in</h3>
+      <p className="text-xs text-slate-500 mt-0.5 max-w-2xl">
+        With this on, everyone signs in with their work email and a one-time code, and every
+        change on the board carries a verified name rather than a typed one. It is off until
+        somebody proves a code actually arrives — a login screen nobody can get past would take
+        the whole department's day with it.
+      </p>
+
+      <div className={`mt-2 rounded-md border p-2.5 ${authRequired ? "border-emerald-300 bg-emerald-50" : "border-amber-300 bg-amber-50"}`}>
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span className={`font-medium ${authRequired ? "text-emerald-900" : "text-amber-900"}`}>
+            {authRequired ? "Sign-in required" : "Sign-in is OFF"}
+          </span>
+          <span className={authRequired ? "text-emerald-800" : "text-amber-800"}>
+            {authRequired
+              ? "Only people with an address added in Supabase can open the app."
+              : "Anyone with the link can open the app and change the board."}
+          </span>
+          <div className="ml-auto flex gap-1.5">
+            {!authRequired && (
+              <button onClick={() => toggle(true)} disabled={!proved}
+                      title={proved ? "" : "Send yourself a code first — this stays disabled until one arrives."}
+                      className="text-xs bg-slate-900 text-white rounded-md px-2.5 py-1 disabled:opacity-40">
+                Turn sign-in on
+              </button>
+            )}
+            {authRequired && (
+              <button onClick={() => toggle(false)}
+                      className="text-xs border border-slate-300 bg-white rounded-md px-2.5 py-1">
+                Turn it off
+              </button>
+            )}
+          </div>
+        </div>
+        {!authRequired && !proved && (
+          <p className="text-[11px] text-amber-800 mt-1.5">
+            The button unlocks once you have received and entered a code below. Before that, see
+            docs/ACCESS.md — Supabase needs email enabled, an SMTP sender configured, and each
+            person invited.
+          </p>
+        )}
+      </div>
+
+      <div className="mt-2 flex flex-wrap items-end gap-2">
+        <label className="text-[11px] text-slate-500 flex-1 min-w-[200px]">
+          Send a test code to
+          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)}
+                 placeholder="you@deluxehomes.com"
+                 className="mt-0.5 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
+        </label>
+        <button onClick={test} disabled={!email.trim() || busy}
+                className="text-sm border border-slate-300 rounded-md px-3 py-1.5 hover:bg-slate-50 disabled:opacity-40">
+          {busy && stage !== "code" ? "Sending…" : "Send test code"}
+        </button>
+        {stage === "code" && (
+          <>
+            <label className="text-[11px] text-slate-500 w-28">
+              Code
+              <input value={code} onChange={(e) => setCode(e.target.value)} inputMode="numeric"
+                     className="mt-0.5 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm tracking-widest" />
+            </label>
+            <button onClick={confirm} disabled={!code.trim() || busy}
+                    className="text-sm bg-slate-900 text-white rounded-md px-3 py-1.5 disabled:opacity-40">
+              Check it
+            </button>
+          </>
+        )}
+      </div>
+
+      {msg && <p className="mt-2 text-[11px] text-emerald-800 bg-emerald-50 border border-emerald-200 rounded px-2 py-1">{msg}</p>}
+      {err && <p className="mt-2 text-[11px] text-red-800 bg-red-50 border border-red-200 rounded px-2 py-1">{err}</p>}
+
+      {session && (
+        <p className="mt-2 text-[11px] text-slate-500">
+          Signed in as <span className="text-slate-800">{session.user?.email}</span>.
+          <button onClick={async () => { await signOut(); window.location.reload(); }}
+                  className="ml-1.5 underline hover:text-slate-800">sign out</button>
+        </p>
+      )}
     </div>
   );
 }

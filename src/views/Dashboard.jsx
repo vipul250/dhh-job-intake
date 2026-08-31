@@ -182,6 +182,7 @@ export default function Dashboard({ selectedDate, knownDates, onOpenDate }) {
           />
           <Containment m={m} onOpenDate={onOpenDate} />
           <Demand m={m} />
+          <Judgement m={m} onOpenDate={onOpenDate} />
           <Movement m={m} onOpenDate={onOpenDate} />
           <WhyWeGoBack m={m} />
           <TechTimes m={m} />
@@ -571,6 +572,133 @@ function Demand({ m }) {
   );
 }
 
+/* ============== the coordinator's calls ============== */
+
+function Judgement({ m, onOpenDate }) {
+  const d = m.displacement;
+  const c = m.churn;
+  if (!d) return null;
+  const none = d.total === 0 && (!c || c.changesAfterPost === 0);
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-4">
+      <h2 className="text-sm font-semibold text-slate-900">The coordinator's calls</h2>
+      <p className="text-xs text-slate-500 mt-0.5 mb-3 max-w-3xl">
+        When one job is moved so another can have its slot, somebody decided that this work matters
+        more than that work today. Both halves are now recorded — what moved and what took its place
+        — which is what makes it possible to look back and ask whether the call was sound. Bumping a
+        P3 for an emergency is right; bumping the same P3 four times running is a decision nobody is
+        making.
+      </p>
+
+      {none ? (
+        <p className="text-xs text-slate-400 py-3">
+          No displacements or post-publication changes recorded in this range yet. This builds up as
+          the board is used — it is the one section that only becomes useful with a few weeks behind
+          it.
+        </p>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+            <Tile label="Slots given away" value={d.total}
+                  sub={`${d.linkedToAJob} linked to the job that took it`}
+                  coverage="a job moved so another could run" />
+            <Tile label="Higher priority displaced" value={d.questionable}
+                  sub={d.questionablePct == null ? "" : `${d.questionablePct}% of calls`}
+                  coverage="more urgent work moved for less urgent"
+                  tone={d.questionable > 0 ? "warn" : "good"}
+                  icon={AlertTriangle} />
+            <Tile label="Displaced work finished" value={d.loserSettledPct == null ? "—" : `${d.loserSettledPct}%`}
+                  sub={`${d.loserSettled} of ${d.total} got done afterwards`}
+                  coverage="the real test of the call"
+                  tone={d.loserSettledPct >= 80 ? "good" : d.loserSettledPct != null ? "warn" : "neutral"} />
+            <Tile label="Changed after posting" value={c ? c.jobsChanged : 0}
+                  sub={c && c.churnRatePct != null ? `${c.churnRatePct}% of jobs` : ""}
+                  coverage={`${c ? c.changesAfterPost : 0} change(s), each with a reason`} />
+            <Tile label="Bumped more than once" value={d.repeatedlyBumped.length}
+                  sub="each call may have been fine"
+                  coverage="the cumulative effect is the problem"
+                  tone={d.repeatedlyBumped.length > 0 ? "bad" : "good"} />
+          </div>
+
+          <div className="grid lg:grid-cols-2 gap-4 mt-4">
+            {d.byCoordinator.length > 0 && (
+              <div>
+                <h3 className="text-xs font-medium text-slate-700 mb-1.5">By coordinator</h3>
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-slate-500 border-b border-slate-200">
+                      <th className="text-left font-medium py-1.5">Who</th>
+                      <th className="text-right font-medium py-1.5">Calls</th>
+                      <th className="text-right font-medium py-1.5">Higher pri. moved</th>
+                      <th className="text-right font-medium py-1.5">Displaced job done</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {d.byCoordinator.map((x) => (
+                      <tr key={x.by} className="border-b border-slate-100">
+                        <td className="py-1.5 text-slate-800">{x.by}</td>
+                        <td className="py-1.5 text-right tabular-nums">{x.calls}</td>
+                        <td className={`py-1.5 text-right tabular-nums ${x.questionable ? "text-amber-700" : "text-slate-400"}`}>
+                          {x.questionable || "—"}
+                        </td>
+                        <td className="py-1.5 text-right tabular-nums">{x.loserDone}/{x.calls}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <p className="text-[10px] text-slate-400 mt-1">
+                  Small numbers say very little. Read this after a month, not after a week.
+                </p>
+              </div>
+            )}
+
+            <div>
+              {d.reasons.length > 0 && (
+                <>
+                  <h3 className="text-xs font-medium text-slate-700 mb-1.5">What takes the slots</h3>
+                  <HBars items={d.reasons.map(([label, n]) => ({ label, value: n, display: String(n) }))} />
+                </>
+              )}
+              {c && c.reasons.length > 0 && (
+                <>
+                  <h3 className="text-xs font-medium text-slate-700 mb-1.5 mt-3">Why posted schedules change</h3>
+                  <HBars items={c.reasons.slice(0, 6).map(([label, n]) => ({ label, value: n, display: String(n) }))} />
+                </>
+              )}
+            </div>
+          </div>
+
+          {d.events.length > 0 && (
+            <div className="mt-4">
+              <h3 className="text-xs font-medium text-slate-700 mb-1.5">Recent calls</h3>
+              <ul className="space-y-1 text-xs">
+                {d.events.slice(0, 10).map((e, i) => (
+                  <li key={i} className={`flex flex-wrap items-baseline gap-x-2 ${e.questionable ? "text-amber-900" : "text-slate-700"}`}>
+                    <span className="text-slate-400 tabular-nums shrink-0">{e.date}</span>
+                    <span className="truncate">
+                      {e.loser.property} {e.loser.unit}
+                      {e.loserPri && <span className="text-slate-400"> [{e.loser.priority}]</span>}
+                    </span>
+                    <span className="text-slate-400">made way for</span>
+                    <span className="truncate">
+                      {e.winnerLabel || "(not recorded)"}
+                      {e.winnerPri && <span className="text-slate-400"> [{e.winner.priority}]</span>}
+                    </span>
+                    <span className="text-slate-400">· {e.by}</span>
+                    {e.questionable && <span className="text-amber-700 font-medium">· higher priority moved</span>}
+                    {!e.settled && <span className="text-red-700">· still not done</span>}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 /* ====================== movement ====================== */
 
 function Movement({ m, onOpenDate }) {
@@ -610,6 +738,12 @@ function Movement({ m, onOpenDate }) {
             <Tile label="Cancelled with a reason" value={mv.cancelled}
                   sub="visible, not vanished"
                   coverage="was previously indistinguishable from a deletion" />
+            <Tile label="Not done, booked again" value={mv.notDone ? `${mv.rebookedPct ?? 0}%` : "—"}
+                  sub={`${mv.rebooked ?? 0} of ${mv.notDone ?? 0} missed jobs`}
+                  coverage={mv.droppedOnPurpose
+                    ? `${mv.droppedOnPurpose} deliberately not rebooked`
+                    : (mv.rebookUnanswered ? `${mv.rebookUnanswered} closed before the question existed` : "every missed job was answered for")}
+                  tone={mv.notDone && mv.rebookedPct != null && mv.rebookedPct < 60 ? "warn" : "neutral"} />
             <Tile label="Open on a day already past" value={mv.lost}
                   sub="never closed out"
                   coverage="the disappearances, now counted"
