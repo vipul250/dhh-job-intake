@@ -32,15 +32,95 @@ import {
 } from "./normalize.js";
 import { faultFamily } from "./faultFamily.js";
 
-export const JOB_STATES = ["scheduled", "in_progress", "done", "not_done", "cancelled"];
+/* ---------------------------------------------------------------------- *
+ * Outcomes.
+ *
+ * "Done" was hiding three different things, and the difference is the
+ * whole problem. A technician sent to a P1 water leak closes the valve,
+ * writes what he needs to finish it properly — a water heater, paint for
+ * the ceiling — and leaves. The leak has stopped. Nothing is fixed. Today
+ * that lands in PMS comments and survives only if a coordinator happens to
+ * read them, which is exactly how the follow-up disappears.
+ *
+ * So a visit ends in one of four ways, and two of them are not endings:
+ *
+ *   fixed      — nothing left to do
+ *   made_safe  — contained, but it WILL come back without a return visit
+ *   diagnosed  — looked at, needs a quote, a part, or a contractor
+ *   not_done   — did not happen at all
+ *
+ * `made_safe` and `diagnosed` cannot be closed without naming what is
+ * still needed and when. The app creates the follow-up itself and links
+ * the two, so the chain from "valve closed" to "water heater replaced" is
+ * a property of the data rather than a thing somebody has to remember.
+ * -------------------------------------------------------------------- */
+export const JOB_STATES = [
+  "scheduled", "in_progress", "fixed", "made_safe", "diagnosed", "not_done", "cancelled",
+];
+
+/* A visit that happened, whatever came of it. Used everywhere a duration
+   or a completion is counted. "done" is the pre-outcome spelling of
+   "fixed" and is still read so older rows keep working. */
+export const RESOLVED_STATES = ["fixed", "made_safe", "diagnosed", "done"];
+
+/* Ended, but the work is not finished — these owe a follow-up. */
+export const OPEN_OUTCOME_STATES = ["made_safe", "diagnosed"];
 
 export const STATE_META = {
-  scheduled:   { label: "Scheduled",   short: "Scheduled", tone: "slate" },
-  in_progress: { label: "In progress", short: "Started",   tone: "blue" },
-  done:        { label: "Done",        short: "Done",      tone: "emerald" },
-  not_done:    { label: "Not done",    short: "Not done",  tone: "red" },
-  cancelled:   { label: "Cancelled",   short: "Cancelled", tone: "slate" },
+  scheduled:   { label: "Scheduled",    short: "Scheduled",  tone: "slate" },
+  in_progress: { label: "In progress",  short: "Started",    tone: "blue" },
+  fixed:       { label: "Fixed",        short: "Fixed",      tone: "emerald" },
+  done:        { label: "Fixed",        short: "Fixed",      tone: "emerald" },
+  made_safe:   { label: "Made safe",    short: "Made safe",  tone: "amber" },
+  diagnosed:   { label: "Diagnosed",    short: "Diagnosed",  tone: "amber" },
+  not_done:    { label: "Not done",     short: "Not done",   tone: "red" },
+  cancelled:   { label: "Cancelled",    short: "Cancelled",  tone: "slate" },
 };
+
+export const OUTCOME_OPTIONS = [
+  { id: "fixed",     label: "Fixed",      hint: "Nothing left to do on this one", needsFollowUp: false },
+  { id: "made_safe", label: "Made safe",  hint: "Contained — valve closed, power isolated. It comes back without a return visit", needsFollowUp: true },
+  { id: "diagnosed", label: "Diagnosed",  hint: "Looked at only — needs a part, a quote, or a contractor", needsFollowUp: true },
+  { id: "not_done",  label: "Not done",   hint: "The visit did not happen", needsFollowUp: false },
+];
+
+export const needsFollowUp = (state) => OPEN_OUTCOME_STATES.includes(state);
+export const isResolved = (state) => RESOLVED_STATES.includes(state);
+
+/* ---------------------------------------------------------------------- *
+ * Where the work came from.
+ *
+ * Nobody can judge what the field team is being asked to do while every
+ * job looks the same on arrival. These are the routes described by the
+ * department, plus the two the schedule has always contained without
+ * admitting it: out-of-hours emergencies, and inspections used to fill an
+ * idle technician's afternoon.
+ * -------------------------------------------------------------------- */
+export const JOB_SOURCES = [
+  { id: "guest",     label: "Guest / support team",     hint: "Complaint raised by the guest or support, usually with an appointment" },
+  { id: "hk",        label: "Housekeeping",             hint: "Found by HK while cleaning" },
+  { id: "gro",       label: "GRO / field employee",     hint: "Spotted by our own people on site" },
+  { id: "planned",   label: "Planned / PPM",            hint: "Scheduled maintenance, on a cycle" },
+  { id: "followup",  label: "Follow-up",                hint: "Finishing work an earlier visit could not" },
+  { id: "emergency", label: "Out-of-hours emergency",   hint: "Came in after the schedule was posted" },
+  { id: "filler",    label: "Inspection — filling time", hint: "Used to fill an idle slot or hold a technician on standby" },
+  { id: "project",   label: "Project / quoted work",    hint: "Part of an approved quotation" },
+];
+
+export const SOURCE_LABEL = Object.fromEntries(JOB_SOURCES.map((s) => [s.id, s.label]));
+
+/* Work that arrived rather than being planned — the demand the department
+   does not control. */
+export const REACTIVE_SOURCES = ["guest", "hk", "gro", "emergency"];
+
+export const HOW_REPORTED = [
+  "Google Chat — maintenance group",
+  "PMS task",
+  "Phone call",
+  "In person",
+  "Email",
+  "Other",
+];
 
 /* A state that means the job still needs somebody to do something about it.
    These are what roll over — and what the next coordinator must clear. */
@@ -134,6 +214,23 @@ export function newJob(fields, date, by) {
     // self-cost. Empty for ordinary daily work.
     projectId: "",
 
+    // Where the work came from, and how it reached us. Without this every
+    // job looks identical on arrival and the demand mix is unknowable.
+    source: "",
+    reportedBy: "",
+    howReported: "",
+
+    // Set when a visit ended without finishing the work: what the
+    // technician says is still needed, and the job created to do it.
+    stillNeeded: "",
+    followUpJobId: "",
+    followUpOf: null,      // { jobId, date } on the job that finishes the work
+
+    // True for anything added after the day was posted — an emergency, a
+    // new complaint, a job squeezed in. Planned volume and arriving volume
+    // are different things and were previously indistinguishable.
+    unplanned: false,
+
     events: [makeEvent("created", by)],
     ...fields,
   };
@@ -173,15 +270,22 @@ export function withEvent(job, kind, by, extra = {}) {
 
 export function setState(job, state, by, extra = {}) {
   const patch = { ...job, state };
-  if (state === "done") patch.outcomeReason = "";
-  if (state === "not_done" && extra.reason) patch.outcomeReason = extra.reason;
-  if (state === "cancelled" && extra.reason) patch.outcomeReason = extra.reason;
+  if (state === "fixed") patch.outcomeReason = "";
+  if (["not_done", "cancelled", "made_safe", "diagnosed"].includes(state) && extra.reason) {
+    patch.outcomeReason = extra.reason;
+  }
+  if (extra.stillNeeded !== undefined) patch.stillNeeded = squash(extra.stillNeeded);
+
+  /* Every outcome that means the technician was on site and finished emits
+     a "done" event, whatever came of the visit. Duration is measured from
+     started -> done, and a job that was made safe still took an hour of
+     somebody's day. */
   const kind =
     state === "in_progress" ? "started" :
-    state === "done" ? "done" :
+    isResolved(state) ? "done" :
     state === "not_done" ? "not_done" :
     state === "cancelled" ? "cancelled" : "edited";
-  return withEvent(patch, kind, by, extra);
+  return withEvent(patch, kind, by, { ...extra, outcome: state });
 }
 
 /* Moving is the operation the whole design exists for. It returns both
@@ -257,6 +361,36 @@ export function actualDuration(job) {
 
 export function jobFamily(job) {
   return faultFamily(job.description, job.faultCode);
+}
+
+/* ---------------------- finishing what was started -------------------- *
+ * Builds the job that completes work an earlier visit only contained. The
+ * technician's own note about what is missing becomes the new job's scope,
+ * and its material line, so nothing has to be retyped off a PMS comment.
+ * -------------------------------------------------------------------- */
+export function makeFollowUp(parent, date, by, opts = {}) {
+  const scope = squash(opts.scope) || squash(parent.stillNeeded) ||
+    `Finish: ${squash(parent.description)}`;
+  const child = newJob({
+    property: parent.property,
+    unit: parent.unit,
+    parking: parent.parking,
+    status: parent.status,
+    shift: parent.shift,
+    team: opts.team !== undefined ? opts.team : parent.team,
+    description: scope,
+    materialNeeded: squash(opts.materials) ? "Y" : parent.materialNeeded,
+    materialDetails: squash(opts.materials) || parent.materialDetails,
+    estimatedTime: opts.estimatedTime || parent.estimatedTime,
+    // A contained P1 stays a P1 until it is actually finished.
+    priority: parent.priority,
+    faultCode: parent.faultCode,
+    projectId: parent.projectId,
+    source: "followup",
+    followUpOf: { jobId: parent.id, date: parent.scheduledDate, outcome: parent.state },
+    notes: `Follows ${parent.scheduledDate}: ${squash(parent.outcomeReason) || STATE_META[parent.state]?.label || ""}`.trim(),
+  }, date, by);
+  return child;
 }
 
 /* ------------------------ spotting a return --------------------------- *
@@ -469,12 +603,25 @@ export function parseQuickAdd(line, known = {}) {
     rest = squash(rest.replace(re, " "));
   }
 
-  // unit — a short alphanumeric token, typically right after the property
-  const unitM = rest.match(/\b([A-Za-z]?\d{1,5}[A-Za-z]?|[A-Z]\d{1,3}|G\d{1,3})\b/);
-  if (unitM) {
-    fields.unit = unitM[1].toUpperCase();
+  /* Building names contain numbers — "Marina Gate 2", "Town Square Safi
+     1A", "Al Dhafrah 2". Taking the FIRST number-ish token as the unit
+     turned "Marina Gate 2 3705" into building "Marina Gate 3705", unit
+     "2". The unit is the last such token, and a 3-5 digit one outranks a
+     stray single digit that belongs to the building's name. */
+  const unitRe = /\b([A-Za-z]?\d{1,5}[A-Za-z]?|[A-Z]-?\d{1,3})\b/g;
+  const candidates = [];
+  let um;
+  while ((um = unitRe.exec(rest)) !== null) candidates.push({ text: um[1], index: um.index });
+  if (candidates.length) {
+    const scored = candidates.map((c) => {
+      const digits = (c.text.match(/\d/g) || []).length;
+      // Later in the line and longer number = more likely the unit.
+      return { ...c, score: c.index + (digits >= 3 ? 1000 : 0) };
+    });
+    const best = scored.sort((a, b) => b.score - a.score)[0];
+    fields.unit = best.text.toUpperCase();
     matched.unit = fields.unit;
-    rest = squash(rest.replace(unitM[0], " "));
+    rest = squash(rest.slice(0, best.index) + " " + rest.slice(best.index + best.text.length));
   }
 
   // whatever survives is the task
@@ -482,9 +629,13 @@ export function parseQuickAdd(line, known = {}) {
   if (!fields.property && fields.description) {
     // No known property matched — take the leading capitalised run as one,
     // so a new building still lands somewhere sensible rather than in the
-    // task text.
-    const lead = fields.description.match(/^([A-Z][\w'-]*(?:\s+[A-Z0-9][\w'-]*){0,3})\s+(.*)$/);
-    if (lead) {
+    // task text. Trailing digits belong to the name ("Marina Gate 2").
+    /* Buildings starting with a number are real — "5242 Tower 1" is one of
+       theirs — so the leading run may begin with a digit as well as a
+       capital. It must still contain a word, or a bare unit number would
+       be mistaken for a building. */
+    const lead = fields.description.match(/^((?:[A-Z0-9][\w'-]*)(?:\s+[A-Z0-9][\w'-]*){0,3})\s+(.*)$/);
+    if (lead && /[A-Za-z]{2}/.test(lead[1])) {
       fields.property = lead[1];
       matched.propertyGuess = lead[1];
       fields.description = lead[2];

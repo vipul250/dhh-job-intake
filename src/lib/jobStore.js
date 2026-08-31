@@ -170,7 +170,7 @@ export function migrateRow(row, date) {
   let state = "scheduled";
   let outcomeReason = "";
   const v = row.verify;
-  if (v && v.outcome === "done") state = "done";
+  if (v && v.outcome === "done") state = "fixed";
   else if (v && v.outcome === "not-done") { state = "not_done"; outcomeReason = v.reason || ""; }
   else if (v && v.outcome === "partial") { state = "not_done"; outcomeReason = v.reason || "Partially completed"; }
 

@@ -188,3 +188,87 @@ Run over all 123 technician-days in the real workbook: every job is either
 placed or listed as overflow (none silently lost), no two placed jobs
 overlap, nothing unanchored is scheduled past the end of a shift, and no P1
 is shed while there is room in the shift to hold it.
+
+---
+
+## Out-of-hours work, and jobs that stop without finishing
+
+### "Done" was hiding three different things
+
+The evening coordinator leaves at 11pm. A complaint arrives at midnight. A
+support agent raises a PMS task, posts it to the maintenance group on
+Google Chat, and a night technician goes. The intake system never hears
+about any of it.
+
+And when a technician does attend, the visit ends in one of several ways
+that PMS records identically. A real task from the system:
+
+> **TSK401531** — *"WC- Pending work - The existing 28 mm copper pipe is
+> pinched/damaged and needs to be replaced."*
+> Material required: 28 mm copper pipe – 2 meters, 28 mm copper union – 2
+> pieces. Technician's report: *"the pipe had been repaired multiple times
+> previously, but several leakage points were found along the line."*
+> **Status: Done.**
+
+Nothing was fixed. So a visit now ends in one of four ways:
+
+| Outcome | Meaning | Follow-up |
+|---|---|---|
+| **Fixed** | Nothing left to do | — |
+| **Made safe** | Contained — valve closed, power isolated. It comes back without a return visit | **required** |
+| **Diagnosed** | Looked at only — needs a part, a quote, or a contractor | **required** |
+| **Not done** | The visit did not happen | reason required |
+
+**Made safe and diagnosed cannot be closed without booking the return.**
+The dialog will not let you through without naming what is still needed
+and a date. The follow-up job is created on the spot, carries the parent's
+priority (a contained P1 stays a P1 until it is actually done), and links
+both ways — so the chain from "closed the valve" to "water heater
+replaced" is a property of the data, not something a coordinator has to
+notice in a comment thread.
+
+### Reading the technician's report instead of retyping it
+
+Technicians already file a structured report. Paste it into the close-out
+dialog and the app reads it:
+
+```
+Arrived @ 11:20pm
+Finished @ 11:55pm
+- closed the valve to stop the leak for now.
+- water heater is damaged and needs replacement, ceiling needs paint after.
+```
+
+→ 35 minutes on site, outcome suggested as **Made safe** ("the report
+describes a temporary measure"), and *"water heater is damaged and needs
+replacement, ceiling needs paint after"* pre-filled as what the follow-up
+must do. Both real PMS formats parse — `Arrived @ 7:58pm` and
+`- Arrival Time: 10:40 AM` — as does a `Material Required:` block.
+
+The app **suggests**; the person closing the job decides. It also
+distinguishes what was *found* from what is still *needed*: "guest reported
+a water leak" is the complaint, not the return visit.
+
+### Out-of-hours log
+
+One button on the board. Log the job against **the night it happened**,
+with who attended, who reported it, whether it came through Google Chat or
+PMS, and the task ref. It is marked `unplanned`, so arriving volume stops
+being invisible.
+
+### Where the work came from
+
+Every job carries a source: guest/support, housekeeping, GRO/field
+employee, planned/PPM, follow-up, out-of-hours emergency, project — and
+**inspection filling an idle slot**, which the schedule has always
+contained without admitting it. Filler hours look exactly like demand on
+every capacity chart until they are named.
+
+### What this makes measurable
+
+- **Open containments** — units running on a temporary measure with nobody
+  booked to finish. The one to watch; P1s among them are flagged.
+- First-visit fix rate — of visits that ended, how many actually finished
+- Follow-up booked rate, and median days to come back
+- Demand by source, reactive share, unplanned volume and hours
+- Inspection-as-filler hours, separated from real demand

@@ -180,6 +180,8 @@ export default function Dashboard({ selectedDate, knownDates, onOpenDate }) {
             m={m} focus={focus} focusDate={focusDate} setFocusDate={setFocusDate}
             availableDates={m.series.map((s) => s.date)} onOpenDate={onOpenDate}
           />
+          <Containment m={m} onOpenDate={onOpenDate} />
+          <Demand m={m} />
           <Movement m={m} onOpenDate={onOpenDate} />
           <WhyWeGoBack m={m} />
           <TechTimes m={m} />
@@ -433,6 +435,138 @@ function RiskCard({ tone, title, hint, children }) {
         </div>
       </div>
       <ul className="mt-2 space-y-1 text-xs">{children}</ul>
+    </div>
+  );
+}
+
+/* ============== stopped, not finished ============== */
+
+function Containment({ m, onOpenDate }) {
+  const c = m.containment;
+  if (!c) return null;
+  const none = c.resolvedCount === 0;
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-4">
+      <h2 className="text-sm font-semibold text-slate-900">Stopped, not finished</h2>
+      <p className="text-xs text-slate-500 mt-0.5 mb-3 max-w-3xl">
+        A technician who closes a valve on a leak has stopped it, not repaired it. PMS marks that
+        task Done — one real example is titled "pending work, the existing 28mm copper pipe needs
+        to be replaced", lists the pipe and unions still required, and its status is Done. Here the
+        two are counted apart, and a contained fault with nothing booked to finish it is the number
+        to watch.
+      </p>
+
+      {none ? (
+        <p className="text-xs text-slate-400 py-3">
+          No closed-out visits in this range yet. This fills in as jobs are closed on the board.
+        </p>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+            <Tile label="Actually fixed" value={c.fixed}
+                  sub={`${c.firstVisitFixPct ?? 0}% of ${c.resolvedCount} visits that ended`}
+                  coverage="nothing left to do"
+                  tone={c.firstVisitFixPct >= 75 ? "good" : "warn"} />
+            <Tile label="Made safe or diagnosed" value={c.contained}
+                  sub={`${c.containedPct ?? 0}% of visits that ended`}
+                  coverage="the work is not done" />
+            <Tile label="Follow-up booked" value={`${c.followUpBookedPct ?? 0}%`}
+                  sub={`${c.withFollowUp} of ${c.contained} contained jobs`}
+                  coverage="booked at close-out, not left to memory"
+                  tone={c.followUpBookedPct >= 95 ? "good" : "bad"} />
+            <Tile label="Open containments" value={c.openContainments}
+                  sub={c.openP1 > 0 ? `${c.openP1} of them P1` : "none of them P1"}
+                  coverage="running on a temporary measure, nobody booked"
+                  tone={c.openContainments > 0 ? "bad" : "good"}
+                  icon={AlertTriangle} />
+            <Tile label="Days to come back" value={c.medianReturnGapDays == null ? "—" : `${c.medianReturnGapDays}d`}
+                  sub="median, close-out to return visit"
+                  coverage={`oldest still open: ${c.oldestOpenDays}d`} />
+          </div>
+
+          {c.openList.length > 0 && (
+            <div className="mt-4 rounded-md border border-red-200 bg-red-50 p-3">
+              <h3 className="text-xs font-medium text-red-900">
+                {c.openContainments} unit{c.openContainments === 1 ? "" : "s"} running on a temporary
+                measure with nothing booked
+              </h3>
+              <p className="text-[11px] text-red-800 mt-0.5 mb-1.5">
+                Each of these had a visit that stopped the symptom. Nobody is scheduled to finish
+                the work.
+              </p>
+              <ul className="space-y-0.5 text-xs">
+                {c.openList.map((j) => (
+                  <li key={j.id} className="flex flex-wrap items-baseline gap-x-2">
+                    <span className="text-red-900 font-medium">{j.property} {j.unit}</span>
+                    <span className="text-red-800 truncate flex-1">
+                      {j.stillNeeded ? `needs ${j.stillNeeded}` : j.description}
+                    </span>
+                    {canonPriority(j.priority) === "PRI-1" && (
+                      <span className="text-[10px] bg-red-200 text-red-900 rounded px-1">P1</span>
+                    )}
+                    <button onClick={() => onOpenDate && onOpenDate(j._date)}
+                            className="text-red-700 underline shrink-0 tabular-nums">
+                      {j._date} · {j._ageDays}d ago
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ============== where the work comes from ============== */
+
+function Demand({ m }) {
+  const d = m.demand;
+  if (!d) return null;
+  const none = d.coverage.answered === 0;
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-4">
+      <h2 className="text-sm font-semibold text-slate-900">Where the work comes from</h2>
+      <p className="text-xs text-slate-500 mt-0.5 mb-3 max-w-3xl">
+        Every job looks the same once it is on the schedule, so what the field team is being asked
+        to do has never been visible. Splitting demand by its route separates what arrives — guest
+        complaints, things housekeeping spotted, night emergencies — from what the department chose
+        to schedule, including inspections used to fill an idle afternoon.
+      </p>
+
+      {none ? (
+        <p className="text-xs text-slate-400 py-3">
+          No source recorded on any job in this range. It is set on the job card and on the
+          out-of-hours log; rows imported from the workbook predate the field.
+        </p>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+            <Tile label="Source recorded" value={`${d.coverage.pct ?? 0}%`}
+                  sub={`${d.coverage.answered} of ${d.total} jobs`}
+                  coverage="set on the card"
+                  tone={d.coverage.pct >= 70 ? "good" : "warn"} />
+            <Tile label="Arrived, not planned" value={d.unplanned}
+                  sub={`${d.unplannedPct ?? 0}% of jobs · ${d.unplannedHours}h`}
+                  coverage="added after the schedule was posted"
+                  tone={d.unplannedPct > 20 ? "warn" : "neutral"} />
+            <Tile label="Reactive share" value={`${d.reactivePct ?? 0}%`}
+                  sub="guest, HK, GRO and emergencies"
+                  coverage={`of ${d.coverage.answered} jobs with a source`} />
+            <Tile label="Inspection filling time" value={`${d.fillerHours}h`}
+                  sub={`${d.fillerJobs} job${d.fillerJobs === 1 ? "" : "s"}`}
+                  coverage="looks like demand on every capacity chart until it is named"
+                  tone={d.fillerHours > 0 ? "warn" : "neutral"} />
+          </div>
+          <HBars items={d.bySource.map((s) => ({
+            label: s.label, value: s.jobs,
+            display: `${s.jobs} · ${Math.round(s.minutes / 60)}h`,
+          }))} />
+        </>
+      )}
     </div>
   );
 }
