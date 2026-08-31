@@ -1,10 +1,16 @@
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import {
   Plus, Check, AlertTriangle, Trash2, Copy, Download, X,
   ClipboardList, LayoutGrid, Database, BarChart3, Loader2,
-  ChevronDown, ChevronRight, ChevronLeft, RefreshCw, Edit3, UploadCloud, TrendingUp, Briefcase, Clock, Building2, Printer
+  ChevronDown, ChevronRight, ChevronLeft, RefreshCw, Edit3, UploadCloud, TrendingUp, Briefcase, Clock, Building2, Printer,
+  CheckSquare, Table2, Lock
 } from "lucide-react";
 import { storageGet, storageSet, storageList } from "./lib/storage.js";
+import Dashboard from "./views/Dashboard.jsx";
+import Verify from "./views/Verify.jsx";
+import SheetImport from "./views/SheetImport.jsx";
+import { needsGuestConfirmation, squash } from "./lib/normalize.js";
+import { computeCapacity, computeAccessRisk, computeMaterialReadiness } from "./lib/metrics.js";
 
 /* ---------------------------------------------------------------------- *
  * SEED DATA — the Fault Code Master, ships pre-loaded on first run.
@@ -311,6 +317,14 @@ export default function App() {
 
   const jobs = jobsByDate[selectedDate] || [];
 
+  /* The Verify pass is clicked fast — thirty jobs in a couple of minutes.
+     Each save reads the job list from a render closure, and two clicks
+     landing inside one render would make the second overwrite the first.
+     This ref always holds the latest list, so a save is never built on a
+     stale copy. */
+  const jobsByDateRef = useRef(jobsByDate);
+  useEffect(() => { jobsByDateRef.current = jobsByDate; }, [jobsByDate]);
+
   const faultByCode = useMemo(() => {
     const m = {};
     faultMaster.forEach((f) => { m[f.code] = f; });
@@ -376,6 +390,31 @@ export default function App() {
 
     const current = jobsByDate[selectedDate] || [];
     const idx = current.findIndex((j) => j.id === job.id);
+
+    /* Once the day is posted, record what moved. This is what makes the
+       churn number computed rather than self-reported — the equivalent
+       column in the workbook is filled on 4% of rows, which measures
+       nothing. Only the fields that change the field team's day are
+       tracked; a typo fixed in the notes is not churn. */
+    if (idx >= 0) {
+      const before = current[idx];
+      if (before.postedAt) {
+        const WATCHED = ["team", "shift", "property", "unit", "description", "estimatedTime", "priority", "timeOfVisit"];
+        const changes = WATCHED
+          .filter((f) => squash(before[f]) !== squash(job[f]))
+          .map((f) => ({ at: Date.now(), kind: "edited", field: f, from: squash(before[f]), to: squash(job[f]) }));
+        if (changes.length) job.changeLog = [...(before.changeLog || []), ...changes];
+      }
+    } else {
+      // Added to a day that was already posted — an addition, not an edit.
+      const dayPosted = current.find((j) => j.postedAt);
+      if (dayPosted) {
+        job.addedAfterPost = true;
+        job.postedAt = dayPosted.postedAt;
+        job.changeLog = [{ at: Date.now(), kind: "added", field: "", from: "", to: "" }];
+      }
+    }
+
     const updated = idx >= 0 ? current.map((j) => (j.id === job.id ? job : j)) : [...current, job];
     await persistJobs(selectedDate, updated);
     setShowForm(false);
@@ -497,6 +536,122 @@ export default function App() {
     showToast(`Imported ${jobsToAdd.length} job${jobsToAdd.length === 1 ? "" : "s"} into ${selectedDate}.`, "ok");
   }
 
+  /* ------------------------------------------------------------------ *
+   * The verification pass (Verify tab).
+   *
+   * This is the one write the whole measurement side depends on, so it is
+   * deliberately small: a patch onto the job, saved immediately, no modal
+   * and no submit button. `null` clears a verification the admin set by
+   * mistake.
+   * ------------------------------------------------------------------ */
+  const [savingVerify, setSavingVerify] = useState(false);
+
+  async function saveVerify(job, verifyPatch) {
+    setSavingVerify(true);
+    const current = jobsByDateRef.current[selectedDate] || [];
+    const updated = current.map((j) =>
+      j.id === job.id
+        ? { ...j, verify: verifyPatch ? { ...verifyPatch, verifiedBy: verifyPatch.verifiedBy || "admin" } : null }
+        : j
+    );
+    jobsByDateRef.current = { ...jobsByDateRef.current, [selectedDate]: updated };
+    await persistJobs(selectedDate, updated);
+    setSavingVerify(false);
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Posting the schedule.
+   *
+   * Stamping `postedAt` is what makes churn measurable: from that moment
+   * every edit is recorded against the posted version, so "how much does
+   * tomorrow's plan move after we publish it" is computed rather than
+   * self-reported. The equivalent column in the workbook is filled on 4%
+   * of rows, which is why it is worth taking out of anyone's hands.
+   * ------------------------------------------------------------------ */
+  async function postSchedule() {
+    if (!jobs.length) return;
+    const alreadyPosted = jobs.some((j) => j.postedAt);
+    if (alreadyPosted && !window.confirm(
+      `${selectedDate} was already posted. Re-posting resets the baseline, so edits made since ` +
+      `the first post stop counting as changes. Re-post anyway?`
+    )) return;
+    const at = Date.now();
+    const updated = jobs.map((j) => ({ ...j, postedAt: at }));
+    await persistJobs(selectedDate, updated);
+    showToast(`Schedule for ${selectedDate} posted — edits from now on are tracked as changes.`, "ok");
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Bulk import from the pasted workbook.
+   * ------------------------------------------------------------------ */
+  async function commitSheetImport(groupedJobs, mode) {
+    let total = 0;
+    const dates = [];
+    for (const [date, rows] of groupedJobs) {
+      if (!date || date === "(no date)") continue;
+      const existingRaw = await storageGet(`schedule:${date}`);
+      let existing = [];
+      try { existing = existingRaw ? JSON.parse(existingRaw) : []; } catch { existing = []; }
+
+      const mapped = rows.map((r) => {
+        const fault = faultByCode[r.faultCode];
+        return {
+          id: uid(),
+          shift: r.shift,
+          team: r.team,
+          property: r.property,
+          unit: r.unit,
+          parking: r.parking,
+          status: r.status,
+          timeOfVisit: r.timeOfVisit,
+          guestConfirmed: r.guestConfirmed,
+          description: r.description,
+          materialNeeded: r.materialNeeded,
+          materialDetails: r.materialDetails,
+          estimatedTime: r.estimatedTime,
+          pending: r.pending,
+          pendingDetails: r.pendingDetails,
+          priority: r.priority || "",
+          notes: r.notes,
+          // Imported rows carry no fault code — the sheet has no such column.
+          // They are still fully measurable: every Tier A metric reads the
+          // description and the intake fields, not the code.
+          faultCode: r.faultCode || "",
+          tools: fault ? fault.tools : "",
+          materials: fault ? fault.materials : "",
+          ownerTeam: "Maintenance",
+          jobStatus: "Open",
+          createdAt: Date.now(),
+          importedAt: Date.now(),
+          verify: null,
+          changeLog: [],
+          // The sheet's own PMS/change columns are kept for reference but
+          // are not treated as a verification — see Verify tab.
+          sheetInPms: r._sheetInPms,
+          sheetPmsRef: r._sheetPmsRef,
+          sheetChanged: r._sheetChanged,
+          sheetWhatChanged: r._sheetWhatChanged,
+        };
+      });
+
+      const next = mode === "replace" ? mapped : [...existing, ...mapped];
+      await storageSet(`schedule:${date}`, JSON.stringify(next));
+      setJobsByDate((prev) => ({ ...prev, [date]: next }));
+      total += mapped.length;
+      dates.push(date);
+    }
+    setKnownDates((prev) => Array.from(new Set([...prev, ...dates])).sort((a, b) => (a < b ? 1 : -1)));
+    const sorted = dates.slice().sort();
+    showToast(`Imported ${total} job(s) across ${dates.length} date(s).`, "ok");
+    return { jobs: total, dates: dates.length, first: sorted[0], last: sorted[sorted.length - 1] };
+  }
+
+  const existingCounts = useMemo(() => {
+    const m = {};
+    Object.entries(jobsByDate).forEach(([d, arr]) => { m[d] = arr.length; });
+    return m;
+  }, [jobsByDate]);
+
   const groupedByTeam = useMemo(() => {
     const groups = {};
     jobs.forEach((j) => {
@@ -612,6 +767,8 @@ export default function App() {
             onDelete={deleteJob}
             onCopy={copyAsText}
             onDownload={downloadCSV}
+            jobs={jobs}
+            onPost={postSchedule}
           />
         )}
         {activeTab === "insights" && (
@@ -630,7 +787,30 @@ export default function App() {
         {activeTab === "properties" && (
           <PropertiesView propertyMaster={propertyMaster} onAdd={addProperty} />
         )}
-        {activeTab === "trends" && <TrendsView />}
+        {activeTab === "dashboard" && (
+          <Dashboard
+            selectedDate={selectedDate}
+            knownDates={knownDates}
+            onOpenDate={(d) => { setSelectedDate(d); setActiveTab("board"); }}
+          />
+        )}
+        {activeTab === "verify" && (
+          <Verify
+            selectedDate={selectedDate}
+            setSelectedDate={setSelectedDate}
+            knownDates={knownDates}
+            jobs={jobs}
+            onSaveVerify={saveVerify}
+            saving={savingVerify}
+          />
+        )}
+        {activeTab === "sheetimport" && (
+          <SheetImport
+            defaultDate={selectedDate}
+            existingCounts={existingCounts}
+            onCommit={commitSheetImport}
+          />
+        )}
         {activeTab === "jobcards" && <JobCardsView faultMaster={faultMaster} knownDates={knownDates} />}
         {activeTab === "import" && (
           <ImportView
@@ -672,12 +852,16 @@ export default function App() {
 }
 
 function Header({ selectedDate, setSelectedDate, knownDates, activeTab, setActiveTab, onNewJob }) {
+  /* Tab order follows the daily cycle: build the schedule, post it, verify
+     yesterday, then read the numbers. */
   const tabs = [
     { id: "board", label: "Job Board", icon: LayoutGrid },
-    { id: "import", label: "Import (exceptions)", icon: UploadCloud },
+    { id: "sheetimport", label: "Import Sheet", icon: Table2 },
+    { id: "verify", label: "Verify", icon: CheckSquare },
+    { id: "dashboard", label: "Dashboard", icon: TrendingUp },
     { id: "jobcards", label: "Job Cards", icon: Briefcase },
-    { id: "insights", label: "Insights", icon: BarChart3 },
-    { id: "trends", label: "Trends (review)", icon: TrendingUp },
+    { id: "insights", label: "Insights (today)", icon: BarChart3 },
+    { id: "import", label: "AI Import", icon: UploadCloud },
     { id: "faultcodes", label: "Fault Codes", icon: Database },
     { id: "properties", label: "Properties", icon: Building2 },
   ];
@@ -747,8 +931,30 @@ function Header({ selectedDate, setSelectedDate, knownDates, activeTab, setActiv
   );
 }
 
-function BoardView({ selectedDate, groupedByTeam, priorityCounts, dupFlagsCount, carryCount, onEdit, onSetStatus, onLogActualTime, onDelete, onCopy, onDownload }) {
-  const total = Object.values(priorityCounts).reduce((a, b) => a + b, 0);
+function BoardView({ selectedDate, groupedByTeam, priorityCounts, dupFlagsCount, carryCount, onEdit, onSetStatus, onLogActualTime, onDelete, onCopy, onDownload, jobs, onPost }) {
+  /* Count the jobs, not the priorities. The header used to sum the four
+     priority buckets, so a day of jobs with the priority left blank read
+     "0 jobs for 2026-09-01" above a full board. Priority is unset on a
+     quarter of the real rows, so this was not a rare case. */
+  const total = jobs ? jobs.length : Object.values(priorityCounts).reduce((a, b) => a + b, 0);
+  const priorityUnset = Math.max(0, total - Object.values(priorityCounts).reduce((a, b) => a + b, 0));
+
+  /* The same three checks the dashboard runs, shown while the schedule is
+     still being built. A warning after the fact is a report; a warning
+     during is a fix. */
+  const readiness = useMemo(() => {
+    if (!jobs || !jobs.length) return null;
+    const day = jobs.map((j) => ({ ...j, _date: selectedDate }));
+    return {
+      cap: computeCapacity(day),
+      access: computeAccessRisk(day),
+      mat: computeMaterialReadiness(day),
+    };
+  }, [jobs, selectedDate]);
+
+  const posted = jobs && jobs.length ? jobs.every((j) => j.postedAt) : false;
+  const partiallyPosted = jobs && jobs.some((j) => j.postedAt) && !posted;
+
   return (
     <div>
       <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
@@ -760,6 +966,11 @@ function BoardView({ selectedDate, groupedByTeam, priorityCounts, dupFlagsCount,
                 <span className={`w-2 h-2 rounded-full ${PRIORITY_COLORS[p].dot}`} /> {p}: {c}
               </span>
             ))}
+            {priorityUnset > 0 && (
+              <span className="flex items-center gap-1 text-slate-400">
+                <span className="w-2 h-2 rounded-full bg-slate-300" /> no priority set: {priorityUnset}
+              </span>
+            )}
             {dupFlagsCount > 0 && (
               <span className="flex items-center gap-1 text-red-600 font-medium">
                 <AlertTriangle size={12} /> {dupFlagsCount} duplicate flag{dupFlagsCount === 1 ? "" : "s"}
@@ -773,6 +984,18 @@ function BoardView({ selectedDate, groupedByTeam, priorityCounts, dupFlagsCount,
           </div>
         </div>
         <div className="flex gap-2">
+          <button
+            onClick={onPost}
+            title={posted
+              ? "This day is already posted. Re-posting resets the change baseline."
+              : "Locks in tonight's version. Every edit after this is recorded, so schedule churn is measured rather than self-reported."}
+            className={`flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md border ${
+              posted
+                ? "bg-emerald-50 border-emerald-300 text-emerald-800"
+                : "bg-slate-900 border-slate-900 text-white hover:bg-slate-800"}`}
+          >
+            <Lock size={14} /> {posted ? "Posted" : partiallyPosted ? "Post the rest" : "Post schedule"}
+          </button>
           <button onClick={onCopy} className="flex items-center gap-1.5 text-sm bg-white border border-slate-300 hover:bg-slate-50 px-3 py-1.5 rounded-md">
             <Copy size={14} /> Copy formatted
           </button>
@@ -781,6 +1004,46 @@ function BoardView({ selectedDate, groupedByTeam, priorityCounts, dupFlagsCount,
           </button>
         </div>
       </div>
+
+      {readiness && (
+        <div className="mb-4 grid sm:grid-cols-3 gap-2">
+          <ReadinessChip
+            tone={readiness.cap.overloaded.length ? "bad" : readiness.cap.tight.length ? "warn" : "ok"}
+            label={
+              readiness.cap.overloaded.length
+                ? `${readiness.cap.overloaded.length} tech${readiness.cap.overloaded.length === 1 ? "" : "s"} booked past the shift`
+                : readiness.cap.tight.length
+                ? `${readiness.cap.tight.length} tech${readiness.cap.tight.length === 1 ? "" : "s"} near capacity`
+                : "Everyone inside their shift"
+            }
+            detail={
+              readiness.cap.overloaded.length
+                ? readiness.cap.overloaded.map((r) => `${r.tech} ${r.loadPct}%`).join(" · ")
+                : `${readiness.cap.utilisationPct ?? 0}% of rostered hours committed`
+            }
+          />
+          <ReadinessChip
+            tone={readiness.access.atRiskCount ? "warn" : "ok"}
+            label={
+              readiness.access.needingConfirmation === 0
+                ? "No occupied units today"
+                : readiness.access.atRiskCount
+                ? `${readiness.access.atRiskCount} occupied unit${readiness.access.atRiskCount === 1 ? "" : "s"} unconfirmed`
+                : "All occupied units confirmed"
+            }
+            detail={`${readiness.access.confirmed} of ${readiness.access.needingConfirmation} occupied visits confirmed`}
+          />
+          <ReadinessChip
+            tone={readiness.mat.notReadyCount ? "warn" : "ok"}
+            label={
+              readiness.mat.notReadyCount
+                ? `${readiness.mat.notReadyCount} job${readiness.mat.notReadyCount === 1 ? "" : "s"} without a material list`
+                : "Material specified where needed"
+            }
+            detail={`${readiness.mat.buckets.specified} specified · ${readiness.mat.buckets.vague} vague · ${readiness.mat.buckets.missing} blank`}
+          />
+        </div>
+      )}
 
       {groupedByTeam.length === 0 && (
         <div className="bg-white border border-dashed border-slate-300 rounded-lg p-10 text-center text-slate-400">
@@ -800,6 +1063,23 @@ function BoardView({ selectedDate, groupedByTeam, priorityCounts, dupFlagsCount,
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+function ReadinessChip({ tone, label, detail }) {
+  const tones = {
+    ok: "border-emerald-200 bg-emerald-50 text-emerald-800",
+    warn: "border-amber-300 bg-amber-50 text-amber-800",
+    bad: "border-red-300 bg-red-50 text-red-800",
+  };
+  const Icon = tone === "ok" ? Check : AlertTriangle;
+  return (
+    <div className={`rounded-md border px-3 py-2 ${tones[tone]}`}>
+      <div className="flex items-center gap-1.5 text-xs font-medium">
+        <Icon size={13} /> {label}
+      </div>
+      <div className="text-[11px] opacity-75 mt-0.5">{detail}</div>
     </div>
   );
 }
@@ -1305,279 +1585,21 @@ function ImportView({ faultMaster, parsing, parseError, parseProgress, parsedJob
   );
 }
 
-function TrendsView() {
-  const [startDate, setStartDate] = useState(addDaysISO(todayISO(), -30));
-  const [endDate, setEndDate] = useState(todayISO());
-  const [loading, setLoading] = useState(false);
-  const [allJobs, setAllJobs] = useState(null);
-  const [daysLoaded, setDaysLoaded] = useState(0);
-
-  async function runReview() {
-    setLoading(true);
-    setAllJobs(null);
-    const dates = [];
-    let d = startDate;
-    while (d <= endDate) { dates.push(d); d = addDaysISO(d, 1); }
-    const collected = [];
-    for (const date of dates) {
-      const v = await storageGet(`schedule:${date}`);
-      let arr = [];
-      try { arr = v ? JSON.parse(v) : []; } catch { arr = []; }
-      arr.forEach((j) => collected.push({ ...j, _date: date }));
-      setDaysLoaded((n) => n + 1);
-    }
-    setAllJobs(collected);
-    setLoading(false);
-  }
-
-  const stats = useMemo(() => {
-    if (!allJobs) return null;
-    const total = allJobs.length;
-    const byPriority = { "PRI-1": 0, "PRI-2": 0, "PRI-3": 0, "PRI-4": 0 };
-    let flagged = 0, dupCount = 0, carryCount = 0, unmatchedFault = 0, slaBreachCount = 0;
-    const propertyCount = {};
-    const teamCount = {};
-    const ownerTeamCount = {};
-    const blockReasonCount = {};
-    const safetyJobs = [];
-    const varianceSamples = [];
-
-    allJobs.forEach((j) => {
-      if (byPriority[j.priority] !== undefined) byPriority[j.priority]++;
-      if (j.dupFlag) dupCount++;
-      if (j.carryFlag) carryCount++;
-      if (j.dupFlag || j.carryFlag) flagged++;
-      if (j.faultCode === "NEEDS-REVIEW" || j.faultCode === "SCOPE-UNKNOWN") unmatchedFault++;
-      const pKey = norm(j.property) || "(blank)";
-      propertyCount[pKey] = (propertyCount[pKey] || 0) + 1;
-      const tKey = j.team || "(unassigned)";
-      teamCount[tKey] = (teamCount[tKey] || 0) + 1;
-      const oKey = j.ownerTeam || "Maintenance";
-      ownerTeamCount[oKey] = (ownerTeamCount[oKey] || 0) + 1;
-      if (j.priority === "PRI-1") safetyJobs.push(j);
-      if (j.jobStatus === "Blocked") {
-        const r = j.blockReason || "(reason not set)";
-        blockReasonCount[r] = (blockReasonCount[r] || 0) + 1;
-      }
-      if (j.slaDeadline && j.jobStatus !== "Completed" && Date.now() > j.slaDeadline) slaBreachCount++;
-      if (j.scheduledTime && j.actualStartAt && j._date) {
-        const [h, m] = j.scheduledTime.split(":").map(Number);
-        const scheduledMs = new Date(`${j._date}T00:00:00`).setHours(h, m, 0, 0);
-        varianceSamples.push((j.actualStartAt - scheduledMs) / 60000);
-      }
-    });
-
-    const topProperties = Object.entries(propertyCount)
-      .filter(([, c]) => c >= 2)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 10);
-
-    const teamBreakdown = Object.entries(teamCount).sort((a, b) => b[1] - a[1]);
-    const ownerTeamBreakdown = Object.entries(ownerTeamCount).sort((a, b) => b[1] - a[1]);
-    const blockReasonBreakdown = Object.entries(blockReasonCount).sort((a, b) => b[1] - a[1]);
-
-    const safetyClosed = safetyJobs.filter((j) => j.jobStatus === "Completed" && j.completedAt);
-    const safetyStillOpen = safetyJobs.filter((j) => j.jobStatus !== "Completed");
-    const avgSafetyCloseHours = safetyClosed.length
-      ? safetyClosed.reduce((sum, j) => sum + (j.completedAt - (j.createdAt || j.completedAt)) / 3600000, 0) / safetyClosed.length
-      : null;
-    const avgVarianceMinutes = varianceSamples.length ? varianceSamples.reduce((a, b) => a + b, 0) / varianceSamples.length : null;
-
-    return {
-      total,
-      byPriority,
-      cleanRate: total ? Math.round(((total - flagged) / total) * 100) : 0,
-      dupCount,
-      carryCount,
-      unmatchedFault,
-      topProperties,
-      teamBreakdown,
-      ownerTeamBreakdown,
-      blockReasonBreakdown,
-      blockedCount: blockReasonBreakdown.reduce((a, [, c]) => a + c, 0),
-      slaBreachCount,
-      avgVarianceMinutes,
-      varianceSampleSize: varianceSamples.length,
-      safetyCount: safetyJobs.length,
-      safetyStillOpen: safetyStillOpen.length,
-      avgSafetyCloseHours,
-    };
-  }, [allJobs]);
-
-  function downloadRangeCSV() {
-    if (!allJobs) return;
-    const headers = ["Date", "Shift", "Team", "Owner Team", "Property", "Unit", "Status", "Fault Code", "Priority", "Job Status", "Block Reason", "Quotation Ref", "Est. Completion", "Duplicate Flag", "Carryover Flag", "Created At", "Completed At"];
-    const rows = allJobs.map((j) => [
-      j._date, j.shift, j.team, j.ownerTeam, j.property, j.unit, j.status, j.faultCode, j.priority, j.jobStatus, j.blockReason, j.quotationRef, j.estimatedCompletionDate,
-      j.dupFlag, j.carryFlag, j.createdAt ? new Date(j.createdAt).toISOString() : "", j.completedAt ? new Date(j.completedAt).toISOString() : "",
-    ]);
-    const csv = [headers, ...rows].map((r) => r.map((v) => `"${String(v || "").replace(/"/g, '""')}"`).join(",")).join("\n");
-    const blob = new Blob([csv], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `DHH_Trends_${startDate}_to_${endDate}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-
-  return (
-    <div>
-      <h1 className="text-lg font-semibold mb-1">Review a date range</h1>
-      <p className="text-sm text-slate-500 mb-4">
-        This is the "after 15 days / after a month" view. It pulls every job stored across the range
-        below and computes the metrics worth tracking. For anything going into a GM deck, download the
-        CSV and build the chart in Sheets/Excel — this view is for you to check trajectory quickly.
-        Note: once the Jul-13 triage rules take hold (small appliances, curtains, safe-box batteries,
-        sticker removal routing away from Maintenance), total job count will drop for a good reason —
-        don't read a falling total as the tool "working," track clean-rate and owner-team mix instead.
-      </p>
-      <div className="flex flex-wrap items-end gap-3 mb-5">
-        <label className="text-xs">
-          <span className="text-slate-500 block mb-1">From</span>
-          <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
-        </label>
-        <label className="text-xs">
-          <span className="text-slate-500 block mb-1">To</span>
-          <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
-        </label>
-        <button onClick={runReview} disabled={loading} className="flex items-center gap-1.5 text-sm bg-slate-900 text-white px-4 py-2 rounded-md">
-          {loading ? <Loader2 size={14} className="animate-spin" /> : <BarChart3 size={14} />}
-          {loading ? `Loading… (${daysLoaded} days)` : "Run review"}
-        </button>
-        {allJobs && (
-          <button onClick={downloadRangeCSV} className="flex items-center gap-1.5 text-sm bg-white border border-slate-300 px-4 py-2 rounded-md">
-            <Download size={14} /> Download range CSV
-          </button>
-        )}
-      </div>
-
-      {stats && (
-        <div className="space-y-6">
-          <div className="grid sm:grid-cols-4 gap-3">
-            <StatCard label="Total jobs" value={stats.total} />
-            <StatCard label="Clean rate (no flags)" value={`${stats.cleanRate}%`} sub="target: trending toward 100%" />
-            <StatCard label="Duplicate dispatches" value={stats.dupCount} sub="target: 0" warn={stats.dupCount > 0} />
-            <StatCard label="Carried-over jobs" value={stats.carryCount} sub="jobs open >1 day" warn={stats.carryCount > 0} />
-          </div>
-
-          <div className="grid sm:grid-cols-3 gap-3">
-            <StatCard label="PRI-1 safety items" value={stats.safetyCount} />
-            <StatCard label="Safety items still open" value={stats.safetyStillOpen} warn={stats.safetyStillOpen > 0} sub="target: 0, always" />
-            <StatCard
-              label="Avg. safety close time"
-              value={stats.avgSafetyCloseHours !== null ? `${stats.avgSafetyCloseHours.toFixed(1)}h` : "—"}
-              sub={stats.avgSafetyCloseHours === null ? "no closed PRI-1 items yet" : "target: same-day"}
-            />
-          </div>
-
-          <div className="grid sm:grid-cols-3 gap-3">
-            <StatCard label="Blocked jobs" value={stats.blockedCount} sub="permit/access/material — see breakdown below" warn={stats.blockedCount > 0} />
-            <StatCard label="External SLA breaches" value={stats.slaBreachCount} sub="48h landlord-facing reply, target: 0" warn={stats.slaBreachCount > 0} />
-            <StatCard
-              label="Avg. schedule variance"
-              value={stats.avgVarianceMinutes !== null ? `${stats.avgVarianceMinutes > 0 ? "+" : ""}${Math.round(stats.avgVarianceMinutes)} min` : "—"}
-              sub={stats.varianceSampleSize ? `n=${stats.varianceSampleSize} jobs with both scheduled + actual time logged` : "no jobs have both scheduled + actual time yet"}
-            />
-          </div>
-
-          {stats.blockReasonBreakdown.length > 0 && (
-            <div>
-              <h2 className="text-sm font-semibold text-slate-600 uppercase tracking-wide mb-2">Blocked-reason breakdown</h2>
-              <div className="bg-white border border-slate-200 rounded-lg divide-y">
-                {stats.blockReasonBreakdown.map(([reason, count]) => (
-                  <div key={reason} className="flex items-center justify-between px-3 py-2 text-sm">
-                    <span>{reason}</span>
-                    <span className="font-semibold text-slate-600">{count}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          <div>
-            <h2 className="text-sm font-semibold text-slate-600 uppercase tracking-wide mb-2">
-              Owner team breakdown — verifies the Jul-13 triage rules are actually holding
-            </h2>
-            <div className="bg-white border border-slate-200 rounded-lg divide-y">
-              {stats.ownerTeamBreakdown.map(([team, count]) => (
-                <div key={team} className="flex items-center gap-3 px-3 py-2 text-sm">
-                  <span className="w-40 truncate">{team}</span>
-                  <div className="flex-1 bg-slate-100 rounded h-2 overflow-hidden">
-                    <div className="bg-slate-500 h-2" style={{ width: `${Math.min(100, (count / stats.total) * 100)}%` }} />
-                  </div>
-                  <span className="w-8 text-right text-slate-500">{count}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div>
-            <h2 className="text-sm font-semibold text-slate-600 uppercase tracking-wide mb-2">
-              Fault code coverage
-            </h2>
-            <p className="text-sm text-slate-600">
-              {stats.unmatchedFault} of {stats.total} jobs ({stats.total ? Math.round((stats.unmatchedFault / stats.total) * 100) : 0}%) used
-              NEEDS-REVIEW or SCOPE-UNKNOWN. Rising over time means either the Fault Code Master needs more
-              codes, or coordinators are writing vaguer task descriptions — check which before assuming either.
-            </p>
-          </div>
-
-          <div>
-            <h2 className="text-sm font-semibold text-slate-600 uppercase tracking-wide mb-2">
-              Recurring properties (2+ jobs in range) — where to look for a root cause, not another patch
-            </h2>
-            {stats.topProperties.length === 0 ? (
-              <p className="text-sm text-slate-400">No property repeated within this range.</p>
-            ) : (
-              <div className="bg-white border border-slate-200 rounded-lg divide-y">
-                {stats.topProperties.map(([prop, count]) => (
-                  <div key={prop} className="flex items-center justify-between px-3 py-2 text-sm">
-                    <span className="capitalize">{prop}</span>
-                    <span className="font-semibold text-slate-600">{count}×</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div>
-            <h2 className="text-sm font-semibold text-slate-600 uppercase tracking-wide mb-2">Jobs by team</h2>
-            <div className="bg-white border border-slate-200 rounded-lg divide-y">
-              {stats.teamBreakdown.map(([team, count]) => (
-                <div key={team} className="flex items-center gap-3 px-3 py-2 text-sm">
-                  <span className="w-48 truncate">{team}</span>
-                  <div className="flex-1 bg-slate-100 rounded h-2 overflow-hidden">
-                    <div className="bg-slate-500 h-2" style={{ width: `${Math.min(100, (count / stats.total) * 100)}%` }} />
-                  </div>
-                  <span className="w-8 text-right text-slate-500">{count}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {!stats && !loading && (
-        <div className="bg-white border border-dashed border-slate-300 rounded-lg p-10 text-center text-slate-400">
-          Pick a range and run the review. With only a few days of data, treat duplicate/carryover/safety
-          numbers as directional, not statistically final — 15 days is enough to see a trend forming, not
-          enough to declare victory.
-        </div>
-      )}
-    </div>
-  );
-}
-
-function StatCard({ label, value, sub, warn }) {
-  return (
-    <div className={`rounded-lg border p-4 ${warn ? "border-amber-300 bg-amber-50" : "border-slate-200 bg-white"}`}>
-      <div className={`text-2xl font-semibold ${warn ? "text-amber-700" : "text-slate-900"}`}>{value}</div>
-      <div className="text-xs text-slate-500 mt-1">{label}</div>
-      {sub && <div className="text-[11px] text-slate-400 mt-0.5">{sub}</div>}
-    </div>
-  );
-}
+/* The old TrendsView lived here. It has been replaced by views/Dashboard.jsx.
+ *
+ * It was removed rather than kept alongside, because most of what it
+ * reported was not measuring the department. Its "clean rate" was
+ * (jobs - duplicate/carryover flags) / jobs, and those flags were only
+ * ever set against the ~14 dates cached in memory — so it read close to
+ * 100% no matter what was happening. Its schedule-variance and
+ * safety-close-time figures were averaged over actualStartAt /
+ * completedAt timestamps that required somebody to press buttons in the
+ * app during the working day, which nobody was doing, so those samples
+ * were empty or a handful of rows presented as a trend.
+ *
+ * The replacement computes from the fields the coordinator already
+ * fills in, and states its coverage next to every rate.
+ */
 
 function JobCardsView({ faultMaster, knownDates }) {
   const [loading, setLoading] = useState(true);
@@ -1824,6 +1846,18 @@ function JobFormModal({ initial, faultMaster, propertyMaster, knownTeams, onCanc
       estimatedCompletionDate: "",
       scheduledTime: "",
       slaApplies: false,
+      /* Intake fields — these are what the coordinator already writes in
+         the workbook, and between them they drive every Tier A metric on
+         the dashboard: capacity, access risk, van readiness and backlog. */
+      estimatedTime: "1 hr",
+      timeOfVisit: "",
+      guestConfirmed: "",
+      parking: "",
+      materialNeeded: "N",
+      materialDetails: "",
+      materialCost: "",
+      pending: "N",
+      pendingDetails: "",
     }
   );
 
@@ -1974,6 +2008,110 @@ function JobFormModal({ initial, faultMaster, propertyMaster, knownTeams, onCanc
             </select>
           </label>
           <Field label="Description (exact quantities/specs here — see best-practice example in Fault Codes tab)" value={form.description} onChange={(v) => update("description", v)} full />
+
+          {/* ---- Intake block ----------------------------------------- *
+             * Short, and every field here earns its place by feeding a
+             * metric. Estimated time drives capacity; guest confirmation
+             * drives access risk; the material list decides whether the van
+             * can be loaded. A blank is never read as a "no" — the
+             * dashboard counts unanswered separately and shows the fill
+             * rate, so leaving one empty costs coverage, not accuracy.
+             * ---------------------------------------------------------- */}
+          <div className="col-span-2 mt-2 pt-3 border-t border-slate-200">
+            <h3 className="text-xs font-semibold text-slate-700">Intake — what the dashboard measures</h3>
+            <p className="text-[11px] text-slate-500 mt-0.5">
+              These five fields carry the capacity, access-risk and readiness numbers. Blank is
+              honest — it counts as "not answered", never as "no".
+            </p>
+          </div>
+
+          <label className="block text-xs">
+            <span className="text-slate-500">Estimated time <span className="text-slate-400">— drives the capacity check</span></span>
+            <input
+              list="est-time-options"
+              value={form.estimatedTime}
+              onChange={(e) => update("estimatedTime", e.target.value)}
+              placeholder="1 hr · 30 mins · 2 hr"
+              className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm"
+            />
+            <datalist id="est-time-options">
+              {["30 mins", "45 mins", "1 hr", "1 hr 30 mins", "2 hr", "3 hr", "4 hr"].map((t) => <option key={t} value={t} />)}
+            </datalist>
+          </label>
+
+          <label className="block text-xs">
+            <span className="text-slate-500">Time of visit</span>
+            <input
+              value={form.timeOfVisit}
+              onChange={(e) => update("timeOfVisit", e.target.value)}
+              placeholder="e.g. 15:00-16:00, or leave blank"
+              className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm"
+            />
+          </label>
+
+          <label className="block text-xs">
+            <span className="text-slate-500">
+              Guest confirmed?
+              {needsGuestConfirmation(form.status) && (
+                <span className="text-amber-700 font-medium"> — this unit is occupied</span>
+              )}
+            </span>
+            <select value={form.guestConfirmed} onChange={(e) => update("guestConfirmed", e.target.value)}
+                    className={`mt-1 w-full border rounded-md px-2 py-1.5 text-sm ${
+                      needsGuestConfirmation(form.status) && form.guestConfirmed !== "Y"
+                        ? "border-amber-400 bg-amber-50" : "border-slate-300"}`}>
+              <option value="">Not asked yet</option>
+              <option value="Y">Yes — guest agreed to the visit</option>
+              <option value="N">No — not confirmed</option>
+            </select>
+          </label>
+
+          <Field label="Parking bay" value={form.parking} onChange={(v) => update("parking", v)} />
+
+          <label className="block text-xs">
+            <span className="text-slate-500">Material needed?</span>
+            <select value={form.materialNeeded} onChange={(e) => update("materialNeeded", e.target.value)}
+                    className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm">
+              <option value="">Not answered</option>
+              <option value="N">No</option>
+              <option value="Y">Yes</option>
+            </select>
+          </label>
+
+          <label className="block text-xs">
+            <span className="text-slate-500">Material cost (optional)</span>
+            <input type="number" min="0" step="any" value={form.materialCost}
+                   onChange={(e) => update("materialCost", e.target.value)}
+                   placeholder="AED — leave blank if unknown"
+                   className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
+          </label>
+
+          {form.materialNeeded === "Y" && (
+            <label className="block text-xs col-span-2">
+              <span className="text-slate-500">
+                Material details — item and quantity.{" "}
+                <span className="text-amber-700">"Basic materials" counts as not ready on the dashboard.</span>
+              </span>
+              <input value={form.materialDetails} onChange={(e) => update("materialDetails", e.target.value)}
+                     placeholder="e.g. Shower door hinges ×2, silicone ×1"
+                     className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
+            </label>
+          )}
+
+          <label className="block text-xs">
+            <span className="text-slate-500">Pending from a previous visit?</span>
+            <select value={form.pending} onChange={(e) => update("pending", e.target.value)}
+                    className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm">
+              <option value="">Not answered</option>
+              <option value="N">No</option>
+              <option value="Y">Yes</option>
+            </select>
+          </label>
+
+          {form.pending === "Y" && (
+            <Field label="What is pending" value={form.pendingDetails} onChange={(v) => update("pendingDetails", v)} />
+          )}
+
           <Field label="Notes" value={form.notes} onChange={(v) => update("notes", v)} full />
           <Field label="SKU ref (if known)" value={form.skuRef} onChange={(v) => update("skuRef", v)} />
           <Field label="Vehicle assigned" value={form.vehicle} onChange={(v) => update("vehicle", v)} />
