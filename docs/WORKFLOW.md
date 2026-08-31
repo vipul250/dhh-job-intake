@@ -428,3 +428,81 @@ Real output for a full repaint: **Khaled — "is the painter · cannot drive ·
 Danube today"**, then Faizal — *"is the pool · based in Fujairah"*.
 
 Every factor is named, including the awkward ones.
+
+---
+
+## Why the board sometimes came up empty
+
+Reported as "it fails to show the jobs for the day sometimes, and they are
+still not there after refreshing". Reproduced, and it was four defects in
+one function:
+
+1. **A failed read looked exactly like an empty day.** `storageGet` returns
+   `null` both when a key is missing and when the request fails, so a
+   network blink rendered *"Nothing scheduled for 2026-08-22"* — silently.
+   On an app whose whole job is showing what is scheduled, that is the
+   worst available failure: it looks like the data was lost.
+2. **`setLoading(false)` was not in a `finally`.** Anything that threw — a
+   write conflict while migrating an old day, a dropped request — left the
+   board on "Loading…" permanently, through refreshes.
+3. **Nothing cancelled a superseded load.** A slow response for an earlier
+   date could land after a newer one and paint the wrong day.
+4. **The migration write ignored the rows it was handed**, taking a
+   snapshot from before the re-read — the exact mistake `mutateDay`'s
+   contract warns about, made in the one place that runs every time a day
+   is opened.
+
+Now: reads distinguish failure from emptiness and say so, with a Try
+again button and an explicit "nothing has been lost"; every path releases
+the spinner; superseded loads are discarded; and the migration derives from
+what it was given. The rollover prompt was also moved off the critical path
+— it reads five more days, and a failure there used to take the board down
+with it.
+
+## Nothing can be deleted
+
+Hard delete is gone from the app. A job that has been logged is a record of
+what the department planned or did; removing it takes the answer to "where
+did that go" with it, which is the failure this system exists to end.
+
+- **Before the visit** — a job can be *cancelled*, with a reason. It stays
+  on the day, greyed, in "Left this day".
+- **After it is closed out** — the Cancel option disappears. The visit
+  happened; that is a fact about the day. The card says so, and points at
+  the history if it was recorded by mistake.
+- **Moved** — leaves a tombstone naming where it went.
+
+## Filling tomorrow's schedule — fast, and the same every time
+
+Free text is quick to type and impossible to compare. In the real month
+"pool cleaning" appeared 57 times in four spellings, and shower door hinges
+were written three different ways. Every metric downstream then has to
+guess whether those are the same work, and each coordinator invents their
+own wording.
+
+So capture is still **one line**, but the line **snaps to a standard task**:
+
+```
+palm villa e41 shower door hinges need to replaced vitalis occupied
+```
+
+becomes **"Shower door hinge replacement and alignment"** — with **2 hr**,
+**2 people** and **shower door hinges** as the material, all filled in
+automatically. No extra clicks: it works on the words the coordinator was
+going to type anyway, and the snap is always shown before it is applied.
+
+That single example fixes three problems at once: consistent wording,
+consistent duration, and the crew size that was being missed.
+
+The catalogue holds 36 standard tasks seeded from the real month — 59% of
+jobs fall into recurring shapes, so most of a day is covered. Durations are
+the medians actually scheduled; crew sizes come from the crewing rules.
+There is also a searchable picker (*pick from standard tasks*) that keeps
+whatever building and unit is already typed, and anything typed that
+matches nothing can be saved as a new standard task from the board, so the
+list grows with the department.
+
+Matching is deliberately conservative — two thirds of the standard wording
+has to be present. Silently rewriting a coordinator's words into the wrong
+task is worse than not matching at all: they would stop trusting the box,
+and a wrong canonical label corrupts every metric built on it.

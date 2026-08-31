@@ -461,11 +461,15 @@ export default function App() {
     await persistJobs(selectedDate, updated);
   }
 
-  async function deleteJob(job) {
-    if (!window.confirm(`Delete "${job.property} - ${job.faultCode}"? This can't be undone.`)) return;
-    const updated = jobs.filter((j) => j.id !== job.id);
-    await persistJobs(selectedDate, updated);
-  }
+  /* Hard delete is gone.
+   *
+   * A job that has been logged is a record of what the department planned
+   * or did, and removing it takes the answer to "where did that go" with
+   * it — which is the failure this whole system was built to end. Anything
+   * that should not have been scheduled is cancelled with a reason and
+   * stays visible; anything moved leaves a tombstone on the day it left.
+   * There is deliberately no route in the app that erases either. */
+
 
   async function addFaultCode(entry) {
     const next = [...faultMaster, entry];
@@ -746,7 +750,6 @@ export default function App() {
             onEdit={(job) => { setEditingJob(job); setShowForm(true); }}
             onSetStatus={setJobStatus}
             onLogActualTime={logActualTime}
-            onDelete={deleteJob}
             onCopy={copyAsText}
             onDownload={downloadCSV}
             jobs={jobs}
@@ -918,7 +921,7 @@ function Header({ selectedDate, setSelectedDate, knownDates, activeTab, setActiv
   );
 }
 
-function BoardView({ selectedDate, groupedByTeam, priorityCounts, dupFlagsCount, carryCount, onEdit, onSetStatus, onLogActualTime, onDelete, onCopy, onDownload, jobs }) {
+function BoardView({ selectedDate, groupedByTeam, priorityCounts, dupFlagsCount, carryCount, onEdit, onSetStatus, onLogActualTime, onCopy, onDownload, jobs }) {
   /* Count the jobs, not the priorities. The header used to sum the four
      priority buckets, so a day of jobs with the priority left blank read
      "0 jobs for 2026-09-01" above a full board. Priority is unset on a
@@ -1029,7 +1032,7 @@ function BoardView({ selectedDate, groupedByTeam, priorityCounts, dupFlagsCount,
             <h2 className="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-2">{label}</h2>
             <div className="space-y-2">
               {teamJobs.map((job) => (
-                <JobCard key={job.id} job={job} onEdit={onEdit} onSetStatus={onSetStatus} onLogActualTime={onLogActualTime} onDelete={onDelete} />
+                <JobCard key={job.id} job={job} onEdit={onEdit} onSetStatus={onSetStatus} onLogActualTime={onLogActualTime} />
               ))}
             </div>
           </div>
@@ -1056,7 +1059,7 @@ function ReadinessChip({ tone, label, detail }) {
   );
 }
 
-function JobCard({ job, onEdit, onSetStatus, onLogActualTime, onDelete }) {
+function JobCard({ job, onEdit, onSetStatus, onLogActualTime }) {
   const [expanded, setExpanded] = useState(false);
   const pc = PRIORITY_COLORS[job.priority] || PRIORITY_COLORS["PRI-4"];
   const done = job.jobStatus === "Completed";

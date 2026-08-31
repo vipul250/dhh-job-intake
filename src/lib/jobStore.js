@@ -39,6 +39,20 @@ export async function readDay(date) {
   return parseDay(await storageGet(key(date)));
 }
 
+/**
+ * Read a day, distinguishing "no jobs" from "could not read".
+ *
+ * `readDay` cannot tell those apart: a failed request and an empty day
+ * both come back as []. On a board whose entire job is showing what is
+ * scheduled, rendering "Nothing scheduled" because the network blinked is
+ * the worst available failure — it looks exactly like the data was lost.
+ * Anything that paints the board must use this instead.
+ */
+export async function readDayResult(date) {
+  const r = await storageGetVersioned(key(date));
+  return { rows: parseDay(r.value), failed: !!r.failed, version: r.version };
+}
+
 export async function readDays(dates) {
   const out = {};
   const BATCH = 6;
