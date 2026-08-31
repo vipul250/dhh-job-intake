@@ -272,3 +272,75 @@ every capacity chart until they are named.
 - Follow-up booked rate, and median days to come back
 - Demand by source, reactive share, unplanned volume and hours
 - Inspection-as-filler hours, separated from real demand
+
+---
+
+## Roster — who is actually available
+
+The schedule was always built against an assumed team. Nothing knew that
+Riyaz was on his week off, that Faizal was in Fujairah, or that Anthony was
+the only person reachable between 11pm and 2am. A job could be assigned to
+somebody on annual leave and nothing said a word.
+
+Somebody already writes the roster every day as a message, so it is
+**pasted, not re-entered** — the same reasoning as the technician's work
+report. Paste it exactly as written:
+
+```
+*Shift Timings for 01/09/2026*
+
+Week off - Riyaz
+PH -   Imtiaz
+Fujairah -  Faizal
+Annual Leave - Kofi
+
+9.00am - 6.00pm
+Resty
+Adi, Khaled, Nizar, Shafiq & Bijaya
+...
+Stand-by Emergency Tech 11.00pm - 2.00am
+Anthony +971 50 260 6632
+
+*Coordinators Shift*
+Haris - 8.00 am - 5.00 pm
+```
+
+Read from that: three shift blocks with their hours, crews expanded into
+the individuals they contain, four categories of absence, the stand-by
+technician with the hours and the phone number, and the coordinators'
+shifts. `Anthony (First Day)` keeps its note.
+
+**Fujairah is not an absence.** Somebody posted off-site is working — they
+are just not available for Dubai jobs. Counting them as away would
+understate the headcount the department is paying for, so they are counted
+as available and shown separately.
+
+### Live vs total headcount
+
+- **Available today** — on shift, off-site, or on stand-by
+- **Total on the roster** — everyone, including week offs and leave
+
+The gap between the two is what a fully-booked board is really running on.
+Rostered hours are computed from the shifts themselves rather than assumed.
+
+### The check it exists for
+
+The saved roster is compared against the day's schedule, on the Roster tab
+and as a strip across the top of the Live Board:
+
+- **Work assigned to somebody who is not available** — named, with the
+  reason, e.g. *"Abdul Riyaz (Week off) — Ocean Heights 1204"*
+- **Technicians with jobs who are not on the roster** — either the message
+  missed them, or the name is spelled differently on the board
+- **Technicians on shift with nothing scheduled** — paid capacity with no
+  work against it, worth filling with planned work before it becomes an
+  inspection to pass the time
+
+### Crews
+
+`Adi, Khaled, Nizar, Shafiq & Bijaya` is five people who travel together,
+and every metric has always split them into five individuals — five rows in
+the load heatmap, five entries in cost-by-technician. The board now says
+"5 people" on the group header, because a single row with one load bar read
+as one person. The load bar is elapsed time on site: they are all there for
+it, so three hours of work is three hours of everyone's day.

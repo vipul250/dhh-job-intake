@@ -13,6 +13,8 @@ import {
   OUTCOME_OPTIONS, JOB_SOURCES, SOURCE_LABEL, HOW_REPORTED,
 } from "../lib/job.js";
 import { parseWorkReport, fmtMin } from "../lib/workReport.js";
+import { checkAgainstSchedule } from "../lib/roster.js";
+import { storageGet } from "../lib/storage.js";
 import { RETURN_REASONS, FAMILY_LABEL } from "../lib/faultFamily.js";
 import {
   readDay, mutateDay, upsert, removeJob, migrateDay, needsMigration,
@@ -94,6 +96,7 @@ export default function LiveBoard({
   const [returnPrompts, setReturnPrompts] = useState([]);
   const [closeOutFor, setCloseOutFor] = useState(null);
   const [nightLog, setNightLog] = useState(false);
+  const [roster, setRoster] = useState(null);
   const watcher = useRef(null);
 
   const jobs = useMemo(() => (rows ? liveJobs(rows) : []), [rows]);
@@ -133,6 +136,23 @@ export default function LiveBoard({
   }, []);
 
   useEffect(() => { load(selectedDate); }, [selectedDate, load]);
+
+  // The day's roster, so the board can say when work is assigned to
+  // somebody who is not there.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const raw = await storageGet(`roster:${selectedDate}`);
+      if (cancelled) return;
+      try { setRoster(raw ? JSON.parse(raw) : null); } catch { setRoster(null); }
+    })();
+    return () => { cancelled = true; };
+  }, [selectedDate]);
+
+  const rosterCheck = useMemo(
+    () => (roster ? checkAgainstSchedule(roster, jobs) : null),
+    [roster, jobs]
+  );
 
   /* --------------------------- live refresh --------------------------- */
   useEffect(() => {
@@ -376,6 +396,8 @@ export default function LiveBoard({
         counts={counts} busy={busy} liveNote={liveNote}
         onRefresh={() => load(selectedDate)}
       />
+
+      {rosterCheck && <RosterStrip check={rosterCheck} />}
 
       {rollover && (
         <RolloverBanner
@@ -745,6 +767,12 @@ function TeamGroup({ group, me, allJobs, selectedDate, onAdvance, onEdit, onTogg
           {open ? <ChevronDown className="w-4 h-4 text-slate-400" /> : <ChevronRight className="w-4 h-4 text-slate-400" />}
           <Users className="w-3.5 h-3.5 text-slate-400" />
           <span className="text-sm font-medium text-slate-900 truncate">{g.team}</span>
+          {g.members.length > 1 && (
+            <span title={`${g.members.length} people who work together: ${g.members.join(", ")}. The load bar is elapsed time on site — they are all there for it.`}
+                  className="text-[10px] rounded px-1.5 py-0.5 bg-violet-50 text-violet-700 border border-violet-200 shrink-0">
+              {g.members.length} people
+            </span>
+          )}
           <span className="text-xs text-slate-400">{g.list.length} jobs</span>
         </button>
 
@@ -799,6 +827,68 @@ function TeamGroup({ group, me, allJobs, selectedDate, onAdvance, onEdit, onTogg
               suggestFrom={g.team === "Unassigned" ? allJobs : null}
             />
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ==================== the roster, on the board ==================== *
+ * A job assigned to somebody on their week off used to be invisible until
+ * the morning. The check runs against the roster saved for the day.
+ * ============================================================== */
+
+function RosterStrip({ check }) {
+  const s = check.summary;
+  const problems = check.assignedAway.length > 0 || check.notOnRosterTechs.length > 0;
+
+  return (
+    <div className={`rounded-lg border p-2.5 ${problems ? "border-red-300 bg-red-50" : "border-slate-200 bg-white"}`}>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+        <span className="flex items-center gap-1.5 text-slate-700">
+          <Users className="w-3.5 h-3.5 text-slate-400" />
+          <span className="font-semibold">{s.liveCount}</span> of {s.totalCount} available
+          <span className="text-slate-400">· {s.onShiftCount} on shift</span>
+        </span>
+        {s.shifts.map((sh) => (
+          <span key={sh.label} className="text-slate-500 tabular-nums">
+            {sh.label} <span className="text-slate-700 font-medium">{sh.techs.length}</span>
+          </span>
+        ))}
+        {s.unavailable.length > 0 && (
+          <span className="text-slate-500">away: {s.unavailable.join(", ")}</span>
+        )}
+        {s.offsite.length > 0 && <span className="text-slate-500">off-site: {s.offsite.join(", ")}</span>}
+        {s.standby.length > 0 && (
+          <span className="text-slate-500">
+            stand-by: <span className="text-slate-700">{s.standby.join(", ")}</span>
+            {s.standbyBlock && s.standbyBlock.phone && <span className="text-slate-400"> {s.standbyBlock.phone}</span>}
+          </span>
+        )}
+        {check.idle.length > 0 && (
+          <span className="text-amber-700">idle: {check.idle.join(", ")}</span>
+        )}
+      </div>
+
+      {check.assignedAway.length > 0 && (
+        <div className="mt-1.5 pt-1.5 border-t border-red-200 text-xs text-red-900">
+          <span className="font-medium flex items-center gap-1">
+            <AlertTriangle className="w-3.5 h-3.5" />
+            {check.assignedAway.length} job(s) are assigned to somebody who is not available today
+          </span>
+          <ul className="mt-0.5 space-y-0.5">
+            {check.assignedAway.slice(0, 6).map((x, i) => (
+              <li key={i} className="truncate">
+                <span className="font-medium">{x.tech}</span> ({x.reason}) — {x.job.property} {x.job.unit}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {check.notOnRosterTechs.length > 0 && (
+        <div className="mt-1 text-[11px] text-amber-800">
+          Not on today's roster but has jobs: {check.notOnRosterTechs.join(", ")} — either the roster
+          message missed them, or the name is spelled differently on the board.
         </div>
       )}
     </div>
