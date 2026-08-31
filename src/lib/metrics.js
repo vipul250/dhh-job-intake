@@ -24,6 +24,8 @@ import {
   assetKey, canonPriority, occupancyClass, needsGuestConfirmation,
   materialReadiness, daysBetween, workType, WORK_TYPES,
 } from "./normalize.js";
+import { faultFamily, FAMILY_LABEL, RETURN_REASON_LABEL, isOurFault } from "./faultFamily.js";
+import { actualDuration } from "./job.js";
 
 export const DEFAULTS = {
   shiftMinutes: 540,        // 09:00-18:00, the dominant shift in the workbook
@@ -530,6 +532,146 @@ export function computeFirstTimeFix(jobs, opts = {}) {
   };
 }
 
+/* ------------------- 10. Why we keep going back ---------------------- *
+ * The rework count says how often a unit is revisited. It does not say
+ * why, and the why is what decides whether anything can be done about it.
+ * A fix that did not hold is our cost to eliminate; a guest breaking the
+ * same thing twice is not. Averaging those together produces a number
+ * nobody can act on.
+ *
+ * Two cuts, from two different sources:
+ *   - the FAMILY of work (AC, plumbing, electrical), inferred from the
+ *     task text, so a building's pattern is legible
+ *   - the RETURN REASON, which the coordinator supplies when the board
+ *     spots a repeat, because it cannot be inferred
+ * -------------------------------------------------------------------- */
+export function computeReturnReasons(jobs, repeats) {
+  const returns = (repeats && repeats.returns) || [];
+
+  const byReason = {};
+  const byFamily = {};
+  let answered = 0, ourFault = 0;
+
+  returns.forEach((r) => {
+    const job = r.second;
+    const fam = faultFamily(job.description, job.faultCode);
+    if (!byFamily[fam]) byFamily[fam] = { family: fam, label: FAMILY_LABEL[fam], returns: 0, ourFault: 0 };
+    byFamily[fam].returns++;
+
+    const reason = squash(job.returnReason);
+    if (!reason) return;
+    answered++;
+    if (!byReason[reason]) byReason[reason] = { id: reason, label: RETURN_REASON_LABEL[reason] || reason, count: 0, ours: isOurFault(reason) };
+    byReason[reason].count++;
+    if (isOurFault(reason)) { ourFault++; byFamily[fam].ourFault++; }
+  });
+
+  // Which buildings keep pulling the team back, and for what.
+  const byProperty = {};
+  returns.forEach((r) => {
+    const key = canonProperty(r.second.property);
+    if (!key) return;
+    if (!byProperty[key]) {
+      byProperty[key] = { key, label: displayProperty(r.second.property), returns: 0, families: {}, ourFault: 0 };
+    }
+    const e = byProperty[key];
+    e.returns++;
+    const fam = faultFamily(r.second.description, r.second.faultCode);
+    e.families[fam] = (e.families[fam] || 0) + 1;
+    if (isOurFault(squash(r.second.returnReason))) e.ourFault++;
+  });
+
+  return {
+    totalReturns: returns.length,
+    answered,
+    coverage: coverage(answered, returns.length),
+    ourFault,
+    ourFaultPct: pct(ourFault, answered),
+    byReason: Object.values(byReason).sort((a, b) => b.count - a.count),
+    byFamily: Object.values(byFamily).sort((a, b) => b.returns - a.returns),
+    byProperty: Object.values(byProperty)
+      .map((e) => ({
+        ...e,
+        topFamily: Object.entries(e.families).sort((a, b) => b[1] - a[1])[0],
+      }))
+      .sort((a, b) => b.returns - a.returns)
+      .slice(0, 12),
+  };
+}
+
+/* ------------------- 11. How long jobs actually take ------------------ *
+ * Per technician and per kind of work, from the time the board measured
+ * between Start and Done. Median rather than mean: one job left open over
+ * lunch should not move a technician's figure.
+ *
+ * Everything is reported against the number of jobs it was measured from,
+ * because "Vitalis averages 40 minutes on AC" over three jobs and over
+ * ninety are different claims.
+ * -------------------------------------------------------------------- */
+export function computeTechTimes(jobs, opts = {}) {
+  const minSample = opts.minSample || 3;
+  const rows = [];
+
+  jobs.forEach((j) => {
+    const act = actualDuration(j);
+    if (act.minutes == null) return;
+    const est = parseDurationMinutes(j.estimatedTime);
+    const fam = faultFamily(j.description, j.faultCode);
+    splitCrew(j.team).forEach((tech) => {
+      rows.push({ tech, family: fam, actual: act.minutes, est, source: act.source, job: j });
+    });
+  });
+
+  const group = (keyFn) => {
+    const m = new Map();
+    rows.forEach((r) => {
+      const k = keyFn(r);
+      if (!m.has(k)) m.set(k, []);
+      m.get(k).push(r);
+    });
+    return m;
+  };
+
+  const summarise = (list) => {
+    const acts = list.map((r) => r.actual);
+    const withEst = list.filter((r) => r.est != null);
+    const ratios = withEst.map((r) => r.actual / r.est);
+    return {
+      jobs: list.length,
+      medianMinutes: median(acts),
+      minMinutes: Math.min(...acts),
+      maxMinutes: Math.max(...acts),
+      medianEstimate: withEst.length ? median(withEst.map((r) => r.est)) : null,
+      // Above 100 means the work takes longer than the schedule allows for.
+      estimateRatioPct: ratios.length ? median(ratios.map((r) => Math.round(r * 100))) : null,
+      estimateSample: withEst.length,
+    };
+  };
+
+  const byTech = Array.from(group((r) => r.tech))
+    .map(([tech, list]) => ({ tech, ...summarise(list) }))
+    .sort((a, b) => b.jobs - a.jobs);
+
+  const byFamily = Array.from(group((r) => r.family))
+    .map(([family, list]) => ({ family, label: FAMILY_LABEL[family], ...summarise(list) }))
+    .sort((a, b) => b.jobs - a.jobs);
+
+  const byTechFamily = Array.from(group((r) => `${r.tech}||${r.family}`))
+    .map(([k, list]) => {
+      const [tech, family] = k.split("||");
+      return { tech, family, label: FAMILY_LABEL[family], ...summarise(list) };
+    })
+    .filter((r) => r.jobs >= minSample)
+    .sort((a, b) => b.jobs - a.jobs);
+
+  return {
+    measuredJobs: new Set(rows.map((r) => r.job.id)).size,
+    coverage: coverage(new Set(rows.map((r) => r.job.id)).size, jobs.length),
+    byTech, byFamily, byTechFamily,
+    minSample,
+  };
+}
+
 /* ====================================================================== *
  * Mix, concentration, and the daily series behind the charts
  * ====================================================================== */
@@ -686,6 +828,8 @@ export function computeAll(jobs, opts = {}) {
     estimates: computeEstimateAccuracy(jobs),
     firstTimeFix: computeFirstTimeFix(jobs, opts),
     mix: computeMix(jobs),
+    returnReasons: computeReturnReasons(jobs, computeRepeatVisits(jobs, opts)),
+    techTimes: computeTechTimes(jobs, opts),
     series: computeDailySeries(jobs, opts),
     quality: computeDataQuality(jobs),
   };

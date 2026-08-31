@@ -7,9 +7,11 @@ import {
 import {
   newJob, moveJob, setState as setJobState, applyEdit, withEvent,
   isTombstone, liveJobs, tombstones, jobMinutes, isOpen, pushSeverity,
-  needsGuestConfirm, pmsText, parseQuickAdd, splitQuickAddLines,
+  needsGuestConfirm, pmsText, parseQuickAdd, splitQuickAddLines, findReturn,
+  actualDuration,
   STATE_META, NOT_DONE_REASONS, MOVE_REASONS, CANCEL_REASONS, EVENT_LABEL,
 } from "../lib/job.js";
+import { RETURN_REASONS, FAMILY_LABEL } from "../lib/faultFamily.js";
 import {
   readDay, mutateDay, upsert, removeJob, migrateDay, needsMigration,
   createDayWatcher,
@@ -87,6 +89,7 @@ export default function LiveBoard({
   const [moveFor, setMoveFor] = useState(null);
   const [outcomeFor, setOutcomeFor] = useState(null);
   const [liveNote, setLiveNote] = useState("");
+  const [returnPrompts, setReturnPrompts] = useState([]);
   const watcher = useRef(null);
 
   const jobs = useMemo(() => (rows ? liveJobs(rows) : []), [rows]);
@@ -166,7 +169,32 @@ export default function LiveBoard({
     const created = fieldsList.map((f) => newJob(f, selectedDate, who));
     await change(selectedDate, (cur) => [...cur, ...created],
       `Added ${created.length} job${created.length === 1 ? "" : "s"}.`);
+
+    /* Look back for the same unit having had similar work recently. This
+       runs after the save, never before it — capture stays one line and
+       one Enter, and the question about why a job is back is asked
+       afterwards, where it can be ignored without blocking anything. */
+    const lookback = [];
+    for (let n = 1; n <= 21; n++) {
+      const d = addDays(selectedDate, -n);
+      lookback.push({ date: d, rows: liveJobs(migrateDay(await readDay(d), d)) });
+    }
+    const prompts = [];
+    created.forEach((j) => {
+      const hit = findReturn(j, lookback);
+      if (hit) prompts.push({ job: j, ...hit });
+    });
+    if (prompts.length) setReturnPrompts((prev) => [...prev, ...prompts]);
     return created;
+  }
+
+  async function setReturnReason(job, reasonId, hit) {
+    await change(selectedDate, (cur) =>
+      upsert(cur, withEvent(
+        { ...job, returnReason: reasonId, returnOf: { jobId: hit.prior.id, date: hit.date, gapDays: hit.gapDays } },
+        "edited", who, { changes: [{ field: "returnReason", label: "Why it is back", from: "", to: reasonId }] }
+      )));
+    setReturnPrompts((prev) => prev.filter((p) => p.job.id !== job.id));
   }
 
   async function advance(job, state, extra) {
@@ -305,6 +333,14 @@ export default function LiveBoard({
         onAdd={addJobs}
         busy={busy}
       />
+
+      {returnPrompts.length > 0 && (
+        <ReturnPrompts
+          prompts={returnPrompts}
+          onAnswer={setReturnReason}
+          onDismiss={(job) => setReturnPrompts((prev) => prev.filter((p) => p.job.id !== job.id))}
+        />
+      )}
 
       {loading && (
         <div className="flex items-center gap-2 text-sm text-slate-500 py-8 justify-center">
@@ -683,6 +719,60 @@ function TeamGroup({ group, me, allJobs, selectedDate, onAdvance, onEdit, onTogg
   );
 }
 
+/* ==================== why is this job back? ==================== *
+ * Whether a fix failed, or a part failed, or the job was always going to
+ * take three visits, is a judgement only the person scheduling it can
+ * make — so it is asked for rather than inferred. One click, and it can be
+ * ignored: an unanswered return still counts as a return, it just does not
+ * carry a reason, and the dashboard reports that coverage honestly.
+ * ============================================================== */
+
+function ReturnPrompts({ prompts, onAnswer, onDismiss }) {
+  return (
+    <div className="rounded-lg border border-blue-300 bg-blue-50 p-3">
+      <h3 className="text-sm font-medium text-blue-900">
+        {prompts.length} unit{prompts.length === 1 ? " was" : "s were"} visited recently for similar work
+      </h3>
+      <p className="text-xs text-blue-800 mt-0.5 mb-2">
+        Why is it back? This is the one thing that cannot be worked out from the schedule, and it
+        is what separates a fix that did not hold from a guest breaking the same thing twice.
+      </p>
+      <div className="space-y-2">
+        {prompts.map((p) => (
+          <div key={p.job.id} className="rounded-md border border-blue-200 bg-white p-2">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <div className="text-xs font-medium text-slate-900">
+                  {p.job.property} {p.job.unit} — {p.job.description}
+                </div>
+                <div className="text-[11px] text-slate-500">
+                  Last visited {p.date} ({p.gapDays} day{p.gapDays === 1 ? "" : "s"} ago)
+                  {p.sameFamily && " · same kind of work"} — “{squash(p.prior.description).slice(0, 70)}”
+                </div>
+              </div>
+              <button onClick={() => onDismiss(p.job)} className="text-slate-400 hover:text-slate-600 shrink-0">
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <div className="flex flex-wrap gap-1 mt-1.5">
+              {RETURN_REASONS.map((r) => (
+                <button key={r.id} onClick={() => onAnswer(p.job, r.id, p)} title={r.hint}
+                        className={`text-[11px] rounded border px-1.5 py-0.5 hover:bg-slate-50 ${
+                          r.ours ? "border-red-200 text-red-800" : "border-slate-300 text-slate-600"}`}>
+                  {r.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+      <p className="text-[10px] text-blue-700 mt-2">
+        Red options are the ones that cost us money and can be designed out.
+      </p>
+    </div>
+  );
+}
+
 /* ========================= the day plan ========================= *
  * The scheduling rule made visible: confirmed appointment, then P1, then
  * batch by building. Each line says why it sits where it does, because a
@@ -835,6 +925,17 @@ function JobRow({ job, me, onAdvance, onEdit, onTogglePms, onMove, onOutcome, on
           <p className="text-xs text-slate-600 mt-0.5">{job.description || <span className="text-slate-400">no task written</span>}</p>
           <div className="flex flex-wrap gap-x-3 text-[11px] text-slate-400 mt-0.5">
             {mins != null ? <span>{formatMinutes(mins)}</span> : <span className="text-amber-600">no estimate</span>}
+            {(() => {
+              const a = actualDuration(job);
+              if (a.minutes == null) return null;
+              const over = mins != null && a.minutes > mins * 1.25;
+              return (
+                <span className={over ? "text-amber-700" : "text-emerald-700"}
+                      title={a.source === "measured" ? "Measured between Start and Done" : "Entered by hand"}>
+                  took {formatMinutes(a.minutes)}
+                </span>
+              );
+            })()}
             {job.timeOfVisit && <span>{job.timeOfVisit}</span>}
             {job.outcomeReason && <span className="text-red-600">{job.outcomeReason}</span>}
             <button onClick={() => setExpanded((v) => !v)} className="underline hover:text-slate-600">

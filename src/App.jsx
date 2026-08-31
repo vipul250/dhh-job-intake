@@ -9,6 +9,7 @@ import { storageGet, storageSet, storageList } from "./lib/storage.js";
 import Dashboard from "./views/Dashboard.jsx";
 import SheetImport from "./views/SheetImport.jsx";
 import LiveBoard from "./views/LiveBoard.jsx";
+import Projects from "./views/Projects.jsx";
 import { mutateDay } from "./lib/jobStore.js";
 import { newJob } from "./lib/job.js";
 import { needsGuestConfirmation, squash } from "./lib/normalize.js";
@@ -790,7 +791,7 @@ export default function App() {
             onCommit={commitSheetImport}
           />
         )}
-        {activeTab === "jobcards" && <JobCardsView faultMaster={faultMaster} knownDates={knownDates} />}
+        {activeTab === "jobcards" && <Projects knownDates={knownDates} showToast={showToast} />}
         {activeTab === "import" && (
           <ImportView
             faultMaster={faultMaster}
@@ -839,7 +840,7 @@ function Header({ selectedDate, setSelectedDate, knownDates, activeTab, setActiv
     { id: "live", label: "Live Board", icon: Radio },
     { id: "dashboard", label: "Dashboard", icon: TrendingUp },
     { id: "sheetimport", label: "Import Sheet", icon: Table2 },
-    { id: "jobcards", label: "Job Cards", icon: Briefcase },
+    { id: "jobcards", label: "Projects", icon: Briefcase },
     { id: "board", label: "Print / Export", icon: LayoutGrid },
     { id: "insights", label: "Insights (today)", icon: BarChart3 },
     { id: "import", label: "AI Import", icon: UploadCloud },
