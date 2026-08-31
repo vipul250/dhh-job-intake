@@ -3,12 +3,14 @@ import {
   Plus, Check, AlertTriangle, Trash2, Copy, Download, X,
   ClipboardList, LayoutGrid, Database, BarChart3, Loader2,
   ChevronDown, ChevronRight, ChevronLeft, RefreshCw, Edit3, UploadCloud, TrendingUp, Briefcase, Clock, Building2, Printer,
-  CheckSquare, Table2, Lock
+  Table2, Radio
 } from "lucide-react";
 import { storageGet, storageSet, storageList } from "./lib/storage.js";
 import Dashboard from "./views/Dashboard.jsx";
-import Verify from "./views/Verify.jsx";
 import SheetImport from "./views/SheetImport.jsx";
+import LiveBoard from "./views/LiveBoard.jsx";
+import { mutateDay } from "./lib/jobStore.js";
+import { newJob } from "./lib/job.js";
 import { needsGuestConfirmation, squash } from "./lib/normalize.js";
 import { computeCapacity, computeAccessRisk, computeMaterialReadiness } from "./lib/metrics.js";
 
@@ -241,7 +243,7 @@ export default function App() {
   const [selectedDate, setSelectedDate] = useState(addDaysISO(todayISO(), 1));
   const [jobsByDate, setJobsByDate] = useState({});
   const [knownDates, setKnownDates] = useState([]);
-  const [activeTab, setActiveTab] = useState("board");
+  const [activeTab, setActiveTab] = useState("live");
   const [showForm, setShowForm] = useState(false);
   const [editingJob, setEditingJob] = useState(null);
   const [toast, setToast] = useState(null);
@@ -315,9 +317,15 @@ export default function App() {
     })();
   }, [selectedDate]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const jobs = jobsByDate[selectedDate] || [];
+  /* Tombstones are the records a day keeps when a job leaves it. They live
+     in the same array as the jobs, so every legacy view has to filter them
+     out or it will try to render a move record as a job card. */
+  const jobs = useMemo(
+    () => (jobsByDate[selectedDate] || []).filter((r) => !r || !r._tomb),
+    [jobsByDate, selectedDate]
+  );
 
-  /* The Verify pass is clicked fast — thirty jobs in a couple of minutes.
+  /* Outcomes are clicked fast — thirty jobs in a couple of minutes.
      Each save reads the job list from a render closure, and two clicks
      landing inside one render would make the second overwrite the first.
      This ref always holds the latest list, so a save is never built on a
@@ -362,9 +370,18 @@ export default function App() {
     return null;
   }, [jobsByDate, selectedDate]);
 
+  /* The legacy views hand back the live jobs only — they filter tombstones
+     out on the way in and know nothing about them. Writing that array
+     straight back would erase every record of a job having left the day,
+     which is the one thing this whole design exists to preserve. So the
+     write goes through the guarded mutator and re-attaches whatever
+     tombstones the stored day is currently carrying. */
   async function persistJobs(date, updatedJobs) {
-    setJobsByDate((prev) => ({ ...prev, [date]: updatedJobs }));
-    await storageSet(`schedule:${date}`, JSON.stringify(updatedJobs));
+    const written = await mutateDay(date, (cur) => [
+      ...cur.filter((r) => r && r._tomb),
+      ...updatedJobs,
+    ]);
+    setJobsByDate((prev) => ({ ...prev, [date]: written }));
     if (!knownDates.includes(date)) {
       setKnownDates((prev) => [date, ...prev].sort((a, b) => (a < b ? 1 : -1)));
     }
@@ -536,50 +553,16 @@ export default function App() {
     showToast(`Imported ${jobsToAdd.length} job${jobsToAdd.length === 1 ? "" : "s"} into ${selectedDate}.`, "ok");
   }
 
-  /* ------------------------------------------------------------------ *
-   * The verification pass (Verify tab).
-   *
-   * This is the one write the whole measurement side depends on, so it is
-   * deliberately small: a patch onto the job, saved immediately, no modal
-   * and no submit button. `null` clears a verification the admin set by
-   * mistake.
-   * ------------------------------------------------------------------ */
-  const [savingVerify, setSavingVerify] = useState(false);
+  /* The standalone verification pass and the "post schedule" stamp both
+     lived here. Both are gone, and neither was replaced by an equivalent
+     elsewhere — they were the double-entry.
 
-  async function saveVerify(job, verifyPatch) {
-    setSavingVerify(true);
-    const current = jobsByDateRef.current[selectedDate] || [];
-    const updated = current.map((j) =>
-      j.id === job.id
-        ? { ...j, verify: verifyPatch ? { ...verifyPatch, verifiedBy: verifyPatch.verifiedBy || "admin" } : null }
-        : j
-    );
-    jobsByDateRef.current = { ...jobsByDateRef.current, [selectedDate]: updated };
-    await persistJobs(selectedDate, updated);
-    setSavingVerify(false);
-  }
-
-  /* ------------------------------------------------------------------ *
-   * Posting the schedule.
-   *
-   * Stamping `postedAt` is what makes churn measurable: from that moment
-   * every edit is recorded against the posted version, so "how much does
-   * tomorrow's plan move after we publish it" is computed rather than
-   * self-reported. The equivalent column in the workbook is filled on 4%
-   * of rows, which is why it is worth taking out of anyone's hands.
-   * ------------------------------------------------------------------ */
-  async function postSchedule() {
-    if (!jobs.length) return;
-    const alreadyPosted = jobs.some((j) => j.postedAt);
-    if (alreadyPosted && !window.confirm(
-      `${selectedDate} was already posted. Re-posting resets the baseline, so edits made since ` +
-      `the first post stop counting as changes. Re-post anyway?`
-    )) return;
-    const at = Date.now();
-    const updated = jobs.map((j) => ({ ...j, postedAt: at }));
-    await persistJobs(selectedDate, updated);
-    showToast(`Schedule for ${selectedDate} posted — edits from now on are tracked as changes.`, "ok");
-  }
+     Outcomes are now advanced on the job card itself by whoever is looking
+     at it, so there is no second pass in a second tab the following day.
+     Schedule churn no longer needs a posting stamp either: every edit,
+     move and cancellation is an event on the job, so the movement figures
+     are read off the log rather than off a button somebody remembered to
+     press. See views/LiveBoard.jsx and lib/job.js. */
 
   /* ------------------------------------------------------------------ *
    * Bulk import from the pasted workbook.
@@ -589,14 +572,10 @@ export default function App() {
     const dates = [];
     for (const [date, rows] of groupedJobs) {
       if (!date || date === "(no date)") continue;
-      const existingRaw = await storageGet(`schedule:${date}`);
-      let existing = [];
-      try { existing = existingRaw ? JSON.parse(existingRaw) : []; } catch { existing = []; }
-
       const mapped = rows.map((r) => {
         const fault = faultByCode[r.faultCode];
         return {
-          id: uid(),
+          ...newJob({}, date, "import"),
           shift: r.shift,
           team: r.team,
           property: r.property,
@@ -620,13 +599,9 @@ export default function App() {
           tools: fault ? fault.tools : "",
           materials: fault ? fault.materials : "",
           ownerTeam: "Maintenance",
-          jobStatus: "Open",
-          createdAt: Date.now(),
           importedAt: Date.now(),
-          verify: null,
-          changeLog: [],
           // The sheet's own PMS/change columns are kept for reference but
-          // are not treated as a verification — see Verify tab.
+          // are not treated as a confirmed outcome — see the Live Board.
           sheetInPms: r._sheetInPms,
           sheetPmsRef: r._sheetPmsRef,
           sheetChanged: r._sheetChanged,
@@ -634,8 +609,13 @@ export default function App() {
         };
       });
 
-      const next = mode === "replace" ? mapped : [...existing, ...mapped];
-      await storageSet(`schedule:${date}`, JSON.stringify(next));
+      /* Through the same version-guarded write as everything else: an
+         import is exactly when somebody else is most likely to be editing
+         that day, and a bulk overwrite is the most destructive thing that
+         could land on top of them. */
+      const next = await mutateDay(date, (cur) =>
+        mode === "replace" ? mapped : [...cur, ...mapped]
+      );
       setJobsByDate((prev) => ({ ...prev, [date]: next }));
       total += mapped.length;
       dates.push(date);
@@ -768,7 +748,6 @@ export default function App() {
             onCopy={copyAsText}
             onDownload={downloadCSV}
             jobs={jobs}
-            onPost={postSchedule}
           />
         )}
         {activeTab === "insights" && (
@@ -794,14 +773,14 @@ export default function App() {
             onOpenDate={(d) => { setSelectedDate(d); setActiveTab("board"); }}
           />
         )}
-        {activeTab === "verify" && (
-          <Verify
+        {activeTab === "live" && (
+          <LiveBoard
             selectedDate={selectedDate}
             setSelectedDate={setSelectedDate}
-            knownDates={knownDates}
-            jobs={jobs}
-            onSaveVerify={saveVerify}
-            saving={savingVerify}
+            propertyMaster={propertyMaster}
+            knownTeams={knownTeams}
+            showToast={showToast}
+            onEditFull={(job) => { setEditingJob(job); setShowForm(true); }}
           />
         )}
         {activeTab === "sheetimport" && (
@@ -854,12 +833,14 @@ export default function App() {
 function Header({ selectedDate, setSelectedDate, knownDates, activeTab, setActiveTab, onNewJob }) {
   /* Tab order follows the daily cycle: build the schedule, post it, verify
      yesterday, then read the numbers. */
+  /* The Live Board is the day. Everything else is a lens on it or a
+     reference table, so it leads and the rest follow. */
   const tabs = [
-    { id: "board", label: "Job Board", icon: LayoutGrid },
-    { id: "sheetimport", label: "Import Sheet", icon: Table2 },
-    { id: "verify", label: "Verify", icon: CheckSquare },
+    { id: "live", label: "Live Board", icon: Radio },
     { id: "dashboard", label: "Dashboard", icon: TrendingUp },
+    { id: "sheetimport", label: "Import Sheet", icon: Table2 },
     { id: "jobcards", label: "Job Cards", icon: Briefcase },
+    { id: "board", label: "Print / Export", icon: LayoutGrid },
     { id: "insights", label: "Insights (today)", icon: BarChart3 },
     { id: "import", label: "AI Import", icon: UploadCloud },
     { id: "faultcodes", label: "Fault Codes", icon: Database },
@@ -931,7 +912,7 @@ function Header({ selectedDate, setSelectedDate, knownDates, activeTab, setActiv
   );
 }
 
-function BoardView({ selectedDate, groupedByTeam, priorityCounts, dupFlagsCount, carryCount, onEdit, onSetStatus, onLogActualTime, onDelete, onCopy, onDownload, jobs, onPost }) {
+function BoardView({ selectedDate, groupedByTeam, priorityCounts, dupFlagsCount, carryCount, onEdit, onSetStatus, onLogActualTime, onDelete, onCopy, onDownload, jobs }) {
   /* Count the jobs, not the priorities. The header used to sum the four
      priority buckets, so a day of jobs with the priority left blank read
      "0 jobs for 2026-09-01" above a full board. Priority is unset on a
@@ -951,9 +932,6 @@ function BoardView({ selectedDate, groupedByTeam, priorityCounts, dupFlagsCount,
       mat: computeMaterialReadiness(day),
     };
   }, [jobs, selectedDate]);
-
-  const posted = jobs && jobs.length ? jobs.every((j) => j.postedAt) : false;
-  const partiallyPosted = jobs && jobs.some((j) => j.postedAt) && !posted;
 
   return (
     <div>
@@ -984,18 +962,6 @@ function BoardView({ selectedDate, groupedByTeam, priorityCounts, dupFlagsCount,
           </div>
         </div>
         <div className="flex gap-2">
-          <button
-            onClick={onPost}
-            title={posted
-              ? "This day is already posted. Re-posting resets the change baseline."
-              : "Locks in tonight's version. Every edit after this is recorded, so schedule churn is measured rather than self-reported."}
-            className={`flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md border ${
-              posted
-                ? "bg-emerald-50 border-emerald-300 text-emerald-800"
-                : "bg-slate-900 border-slate-900 text-white hover:bg-slate-800"}`}
-          >
-            <Lock size={14} /> {posted ? "Posted" : partiallyPosted ? "Post the rest" : "Post schedule"}
-          </button>
           <button onClick={onCopy} className="flex items-center gap-1.5 text-sm bg-white border border-slate-300 hover:bg-slate-50 px-3 py-1.5 rounded-md">
             <Copy size={14} /> Copy formatted
           </button>

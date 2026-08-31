@@ -11,7 +11,7 @@
  * Metrics are split into two tiers:
  *   Tier A — needs nothing beyond the schedule the coordinator already
  *            types. Available from day one, on 100% of rows.
- *   Tier B — needs the admin's one-click verification pass. Reported with
+ *   Tier B — needs the outcome recorded on the job. Reported with
  *            explicit coverage until that habit is established.
  *
  * Pure functions, no React, no I/O — so they can be run against a raw
@@ -333,44 +333,69 @@ export function computePendingBacklog(jobs, asOfDate, opts = {}) {
   };
 }
 
-/* --------------------------- 6. Churn --------------------------------- *
- * How stable is the schedule once it is posted? Every edit after the
- * evening post is recorded by the app itself, so this needs no discipline
- * from anyone — which matters, because the equivalent column in the
- * workbook ("Changed After 8pm Posting?") is filled on 4% of rows and so
- * measures nothing.
+/* ------------------- 6. Movement — where jobs went -------------------- *
+ * The metric the department has never had.
+ *
+ * Today a job that does not happen is simply absent from tomorrow's sheet,
+ * and nobody can say whether it was moved, done, or lost. Now every job
+ * carries its own event log, so this reads straight off the data: how many
+ * jobs were pushed to another day, how many times, why, and — the number
+ * that matters — how many are still being pushed around after a week.
+ *
+ * `lost` is the one to watch. A job that stopped appearing anywhere without
+ * ever being closed out is exactly the failure that prompted this rebuild,
+ * and it is now countable rather than invisible.
  * -------------------------------------------------------------------- */
-export function computeChurn(jobs) {
-  const posted = jobs.filter((j) => j.postedAt);
-  const changedAfterPost = posted.filter((j) =>
-    (j.changeLog || []).some((c) => c.at > j.postedAt)
-  );
-  const addedAfterPost = jobs.filter((j) => j.addedAfterPost);
-  const removedAfterPost = jobs.filter((j) => j.removedAfterPost);
+export function computeMovement(jobs, opts = {}) {
+  const o = { ...DEFAULTS, ...opts };
+  const pushed = jobs.filter((j) => (j.pushCount || 0) > 0);
+  const chronic = jobs.filter((j) => (j.pushCount || 0) >= 3);
 
   const reasons = {};
+  let moveEvents = 0;
   jobs.forEach((j) => {
-    (j.changeLog || []).forEach((c) => {
-      if (!j.postedAt || c.at <= j.postedAt) return;
-      const r = squash(c.reason) || "(no reason given)";
+    (j.events || []).forEach((e) => {
+      if (e.kind !== "moved_in" && e.kind !== "moved_out") return;
+      moveEvents++;
+      const r = squash(e.reason) || "(no reason given)";
       reasons[r] = (reasons[r] || 0) + 1;
     });
   });
 
+  // Age from the day a job first appeared to the day it is now sitting on.
+  const ages = pushed
+    .map((j) => daysBetween(j.originDate, j.scheduledDate))
+    .filter((n) => n != null && n >= 0);
+
+  const cancelled = jobs.filter((j) => j.state === "cancelled");
+  const stillOpen = jobs.filter((j) => j.state === "scheduled" || j.state === "in_progress");
+
+  // Jobs with no recorded outcome on a day that has already passed: nobody
+  // said done, not done, moved or cancelled. These are the disappearances.
+  const today = opts.asOfDate || "";
+  const lost = stillOpen.filter((j) => today && j.scheduledDate < today);
+
   return {
-    postedCount: posted.length,
-    changedCount: changedAfterPost.length,
-    addedCount: addedAfterPost.length,
-    removedCount: removedAfterPost.length,
-    churnRatePct: pct(changedAfterPost.length + addedAfterPost.length + removedAfterPost.length, posted.length),
+    total: jobs.length,
+    pushedJobs: pushed.length,
+    pushedPct: pct(pushed.length, jobs.length),
+    moveEvents,
+    chronic: chronic.length,
+    chronicJobs: chronic.sort((a, b) => (b.pushCount || 0) - (a.pushCount || 0)).slice(0, 15),
+    medianAgeDays: median(ages),
+    maxAgeDays: ages.length ? Math.max(...ages) : 0,
     reasons: Object.entries(reasons).sort((a, b) => b[1] - a[1]),
-    changed: changedAfterPost,
-    coverage: coverage(posted.length, jobs.length),
+    cancelled: cancelled.length,
+    lost: lost.length,
+    lostJobs: lost.slice(0, 25),
+    // How much of the log is actually being written — a job created before
+    // the live board existed has no events to read.
+    coverage: coverage(jobs.filter((j) => (j.events || []).length > 0).length, jobs.length),
   };
 }
 
 /* ====================================================================== *
- * TIER B — needs the admin's verification pass
+ * TIER B — needs the outcome recorded on the job
  * ====================================================================== */
 
 /* ------------------- 7. Completion & PMS verification ----------------- *
@@ -383,50 +408,63 @@ export function computeChurn(jobs) {
  * daily, every number below is reported over `coverage`, never over the
  * full row count.
  * -------------------------------------------------------------------- */
-export const VERIFY_OUTCOMES = ["done", "partial", "not-done"];
 export const NOT_DONE_REASONS = [
   "No access / guest refused",
   "Guest not reachable",
   "Material not available",
   "Ran out of time",
-  "Reassigned to another day",
-  "Cancelled by owner/PM",
   "Needs contractor / out of scope",
   "Other",
 ];
 
+/* A job's outcome now lives on the job itself, as a state advanced on the
+   board by whoever is looking at it. The old shape — a separate `verify`
+   blob written in a separate tab the following day — is still read here so
+   rows recorded under it are not lost, but nothing writes it any more. */
+function outcomeOf(job) {
+  if (job.state) {
+    if (job.state === "done") return "done";
+    if (job.state === "not_done") return "not-done";
+    return null;                       // scheduled / in progress / cancelled
+  }
+  const v = job.verify;
+  if (!v) return null;
+  if (v.outcome === "partial") return "not-done";
+  return ["done", "not-done"].includes(v.outcome) ? v.outcome : null;
+}
+const reasonOf = (j) => squash(j.outcomeReason) || squash(j.verify && j.verify.reason);
+const pmsOf = (j) => (j.inPms !== undefined && j.inPms !== null ? j.inPms : (j.verify ? j.verify.inPms : null));
+
 export function computeVerification(jobs) {
-  const verified = jobs.filter((j) => j.verify && VERIFY_OUTCOMES.includes(j.verify.outcome));
-  const done = verified.filter((j) => j.verify.outcome === "done");
-  const partial = verified.filter((j) => j.verify.outcome === "partial");
-  const notDone = verified.filter((j) => j.verify.outcome === "not-done");
+  const settled = jobs.filter((j) => outcomeOf(j) !== null);
+  const done = settled.filter((j) => outcomeOf(j) === "done");
+  const notDone = settled.filter((j) => outcomeOf(j) === "not-done");
 
   const reasons = {};
-  notDone.concat(partial).forEach((j) => {
-    const r = squash(j.verify.reason) || "(no reason given)";
+  notDone.forEach((j) => {
+    const r = reasonOf(j) || "(no reason given)";
     reasons[r] = (reasons[r] || 0) + 1;
   });
 
-  // PMS: of the work the admin confirmed happened, how much is traceable
-  // in PMS? A job done but not in PMS is invisible to everyone downstream.
-  const shouldBeInPms = done.concat(partial);
-  const inPms = shouldBeInPms.filter((j) => j.verify.inPms === true);
-  const missingInPms = shouldBeInPms.filter((j) => j.verify.inPms === false);
+  // Of the work confirmed to have happened, how much is traceable in PMS?
+  // A job done but not in PMS is invisible to everyone downstream.
+  const inPms = done.filter((j) => pmsOf(j) === true);
+  const missingInPms = done.filter((j) => pmsOf(j) === false);
 
   // The reverse mismatch: PMS has a ticket, the field says it never happened.
-  const ghostTickets = notDone.filter((j) => j.verify.inPms === true);
+  const ghostTickets = notDone.filter((j) => pmsOf(j) === true);
 
   return {
     total: jobs.length,
-    verifiedCount: verified.length,
-    coverage: coverage(verified.length, jobs.length),
+    verifiedCount: settled.length,
+    coverage: coverage(settled.length, jobs.length),
     done: done.length,
-    partial: partial.length,
+    partial: 0,
     notDone: notDone.length,
-    completionRatePct: pct(done.length, verified.length),
-    effectiveRatePct: pct(done.length + partial.length * 0.5, verified.length),
+    completionRatePct: pct(done.length, settled.length),
+    effectiveRatePct: pct(done.length, settled.length),
     notDoneReasons: Object.entries(reasons).sort((a, b) => b[1] - a[1]),
-    pmsCoveragePct: pct(inPms.length, shouldBeInPms.length),
+    pmsCoveragePct: pct(inPms.length, done.length),
     missingInPms: missingInPms.length,
     ghostTickets: ghostTickets.length,
     notDoneJobs: notDone,
@@ -442,7 +480,8 @@ export function computeEstimateAccuracy(jobs) {
   const samples = [];
   jobs.forEach((j) => {
     const est = parseDurationMinutes(j.estimatedTime);
-    const act = j.verify && j.verify.actualMinutes != null ? Number(j.verify.actualMinutes) : null;
+    const act = j.actualMinutes != null ? Number(j.actualMinutes)
+      : (j.verify && j.verify.actualMinutes != null ? Number(j.verify.actualMinutes) : null);
     if (!est || !act) return;
     samples.push({ job: j, est, act, ratio: act / est });
   });
@@ -467,7 +506,7 @@ export function computeFirstTimeFix(jobs, opts = {}) {
   const o = { ...DEFAULTS, ...opts };
   // Only reactive work can meaningfully be "fixed first time".
   const done = jobs.filter((j) =>
-    j.verify && j.verify.outcome === "done" && workType(j.description, j.faultCode) === "reactive"
+    outcomeOf(j) === "done" && workType(j.description, j.faultCode) === "reactive"
   );
   let returned = 0;
   done.forEach((j) => {
@@ -623,10 +662,10 @@ export function computeDataQuality(jobs) {
     return { ...f, answered, total: jobs.length, pct: pct(answered, jobs.length) };
   });
 
-  const verified = jobs.filter((j) => j.verify && VERIFY_OUTCOMES.includes(j.verify.outcome)).length;
+  const settled = jobs.filter((j) => outcomeOf(j) !== null).length;
   rows.push({
-    key: "verify", label: "Verification pass", why: "Completion, PMS, first-time fix",
-    tier: "B", answered: verified, total: jobs.length, pct: pct(verified, jobs.length),
+    key: "verify", label: "Outcome recorded", why: "Completion, PMS, first-time fix",
+    tier: "B", answered: settled, total: jobs.length, pct: pct(settled, jobs.length),
   });
   return rows;
 }
@@ -642,7 +681,7 @@ export function computeAll(jobs, opts = {}) {
     material: computeMaterialReadiness(jobs),
     repeats: computeRepeatVisits(jobs, opts),
     pending: computePendingBacklog(jobs, asOf, opts),
-    churn: computeChurn(jobs),
+    movement: computeMovement(jobs, { ...opts, asOfDate: asOf }),
     verification: computeVerification(jobs),
     estimates: computeEstimateAccuracy(jobs),
     firstTimeFix: computeFirstTimeFix(jobs, opts),

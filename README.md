@@ -17,36 +17,31 @@ the URL can use it — no Claude account, no Google account, no login of any kin
    serverless function that holds your `ANTHROPIC_API_KEY` and makes that
    call server-side; the browser now calls `/api/parse` instead.
 
-Nothing else changed. If it worked one way in the artifact, it works the same
-way here.
+## The daily cycle
 
-## The daily cycle (added: intake → post → verify → measure)
+The app is built around one board that both the coordinator and the admin
+work, so the schedule and what happened to it are the same object rather
+than two systems and one job done twice.
 
-The app now follows the way the department actually works, and the
-measurement falls out of it rather than being typed in separately.
+1. **Build the schedule** — *Live Board*. Capture is one line
+   (`Palm Villa E41 AC not cooling 1h Vitalis occupied p2 3-4pm`); every
+   field is picked out of it in any order and shown back before saving.
+   Each technician's load bar updates as you go, so over-capacity is
+   visible while it can still be changed.
+2. **Feed PMS** — *Copy for PMS* on any job or any technician's list
+   formats the task for pasting. The API route is closed, so the second
+   record still has to exist; it no longer has to be retyped.
+3. **Change it during the day** — on the same board. Moving a job needs a
+   reason, and the day it left keeps a record of where it went.
+4. **Close out** — Done / Not done / PMS ✓ are buttons on the same card.
+   There is no separate verification pass in a separate tool.
+5. **Read the numbers** — *Dashboard*, including *Where jobs went*.
 
-1. **Build tomorrow's schedule** — *Job Board* / *Import Sheet*.
-   As the coordinator builds it, three checks run live at the top of the
-   board: is anybody booked past their shift, is anybody being sent to an
-   occupied unit no guest has confirmed, and does every job needing
-   material have an actual picking list. A warning after the fact is a
-   report; a warning during is a fix.
-2. **Post it** — the *Post schedule* button.
-   Stamps the version. Every edit after that is recorded automatically, so
-   schedule churn is computed rather than self-reported. (The workbook's
-   own "Changed After 8pm Posting?" column is filled on 4% of rows.)
-3. **Verify yesterday** — *Verify* tab.
-   One row per job, three buttons — Done / Partial / Not done — plus
-   whether it was actually found in PMS. About three minutes for a day.
-   This is the only data entry the dashboard asks for that the schedule
-   does not already contain, and it is what turns completion rate, PMS
-   traceability and first-time fix into real numbers.
-4. **Read the numbers** — *Dashboard* tab.
-   Risk for a chosen day first (the part still changeable), then the
-   trend, then cost.
+The next morning the board asks about anything left open on an earlier day.
+Nothing rolls over silently and nothing vanishes if it is ignored.
 
-`docs/METRICS.md` defines every metric: the field it reads, the
-denominator, and who acts on it.
+`docs/WORKFLOW.md` explains the design and what it replaced.
+`docs/METRICS.md` defines every metric.
 
 ### Importing the existing workbook
 
@@ -70,6 +65,11 @@ dashboard before quoting any figure. See `docs/METRICS.md` for what each
 rate should actually be.
 
 ### What was removed
+
+The standalone *Verify* tab and the *Post schedule* button — both were the
+double entry. Outcomes are now recorded on the job card itself, and
+schedule churn is read off each job's event log rather than off a button
+somebody had to remember to press.
 
 The old *Trends (review)* tab. Most of what it reported was not measuring
 the department: its "clean rate" was built on duplicate/carryover flags

@@ -188,7 +188,7 @@ export function computeCost(jobs, rates, capacity, repeats, opts = {}) {
    * risk: labour + a trip committed to occupied units nobody confirmed,
    * discounted by how often such a visit actually fails. The probability
    * is an ASSUMPTION and is stated as one wherever it is displayed —
-   * it becomes a measured rate the moment the Verify pass has run for a
+   * it becomes a measured rate as soon as jobs have been closed out for a
    * couple of weeks. */
   const unconfirmed = jobs.filter((j) => {
     const needsConfirm = ["Occupied", "Occupied - GC", "Check-in", "B2B"].some(
@@ -241,7 +241,7 @@ export function computeCost(jobs, rates, capacity, repeats, opts = {}) {
       value: materialFailures.length > 0 ? materialFailureCost : null,
       basis: materialFailures.length > 0
         ? `${materialFailures.length} job(s) failed or ran partial for want of the right part`
-        : "No verified material failures yet — this becomes a measured number after a fortnight of the Verify pass",
+        : "No confirmed material failures yet — this becomes a measured number once jobs are being closed out on the board",
       action: "A specific list also makes warehouse pickup plannable instead of a morning scramble.",
     },
     {
