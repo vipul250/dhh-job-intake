@@ -31,11 +31,15 @@ than two systems and one job done twice.
 2. **Feed PMS** — *Copy for PMS* on any job or any technician's list
    formats the task for pasting. The API route is closed, so the second
    record still has to exist; it no longer has to be retyped.
-3. **Change it during the day** — on the same board. Moving a job needs a
+3. **Order the day** — *Order of work* on each technician applies the
+   agreed rule (confirmed appointment → P1 → batch by building), shows a
+   timeline with a reason per line, and lists what will not fit in the
+   order the rule says to shed it.
+4. **Change it during the day** — on the same board. Moving a job needs a
    reason, and the day it left keeps a record of where it went.
-4. **Close out** — Done / Not done / PMS ✓ are buttons on the same card.
+5. **Close out** — Done / Not done / PMS ✓ are buttons on the same card.
    There is no separate verification pass in a separate tool.
-5. **Read the numbers** — *Dashboard*, including *Where jobs went*.
+6. **Read the numbers** — *Dashboard*, including *Where jobs went*.
 
 The next morning the board asks about anything left open on an earlier day.
 Nothing rolls over silently and nothing vanishes if it is ignored.
