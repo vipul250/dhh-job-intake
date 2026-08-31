@@ -32,8 +32,20 @@
 
 import {
   squash, canonKey, canonProperty, displayProperty, parseDurationMinutes,
-  parseShiftMinutes, canonPriority, parseYN, splitCrew,
+  parseShiftMinutes, canonPriority, parseYN, splitCrew, canonTech,
 } from "./normalize.js";
+
+/* Which kinds of work each trade can take. Mirrors staff.js; kept here as
+   a plain constant so the scheduler has no import cycle with the staff
+   module. */
+const TRADE_COVERAGE = {
+  multi_tech: ["multi_tech", "general"],
+  supervisor: ["supervisor", "multi_tech", "general"],
+  pool: ["pool", "general"],
+  painter: ["painter", "general"],
+  carpenter: ["carpenter", "general"],
+  helper: ["general"],
+};
 
 export const PLAN_DEFAULTS = {
   shiftStartMin: 9 * 60,     // used when the shift string cannot be read
@@ -399,11 +411,22 @@ export function planDay(jobs, options = {}) {
  * -------------------------------------------------------------------- */
 export function suggestTechnician(job, dayJobs, options = {}) {
   const o = { ...PLAN_DEFAULTS, ...options };
+  const staffIdx = options.staffIdx || null;
+  const requirement = options.requirement || null;
   const building = canonProperty(job.property);
   const jobMins = parseDurationMinutes(job.estimatedTime) ?? o.defaultJobMinutes;
   const win = parseTimeWindow(job.timeOfVisit);
 
+  /* Candidates are everyone rostered today, not only those who already
+     have work. Building the list from the schedule alone meant the painter
+     could never be suggested for a painting job unless somebody had
+     already given him one — the empty diary made him invisible exactly
+     when he was the right answer. */
   const byTech = new Map();
+  (options.candidates || []).forEach((t) => {
+    const name = canonTech(t);
+    if (name) byTech.set(name, []);
+  });
   dayJobs.forEach((j) => {
     if (!j || j._tomb || j.state === "cancelled") return;
     splitCrew(j.team).forEach((t) => {
@@ -416,12 +439,32 @@ export function suggestTechnician(job, dayJobs, options = {}) {
   byTech.forEach((list, tech) => {
     const plan = planDay(list, o);
     const room = plan.availableMinutes - plan.committedMinutes;
-    const goesThere = list.some((j) => canonProperty(j.property) === building);
+    const goesThere = list.length > 0 && list.some((j) => canonProperty(j.property) === building);
     const coversWindow = !win || !win.start ||
       (win.start >= plan.shiftStart && win.start + jobMins <= plan.shiftEnd);
 
     let score = 0;
     const why = [];
+    const rec = staffIdx ? staffIdx.get(tech) : null;
+
+    /* Trade and licence are properties of the person, not of their diary,
+       and they decide whether an assignment is possible rather than merely
+       convenient. A pool needs the pool cleaner's equipment; somebody who
+       cannot drive needs a colleague who can; somebody based in Fujairah
+       is not a candidate for a Dubai job. */
+    if (rec && requirement && requirement.trade && requirement.trade !== "general") {
+      const list = TRADE_COVERAGE[rec.trade] || [];
+      if (list.includes(requirement.trade)) {
+        score += 35;
+        why.push(`is the ${String(rec.trade).replace("_", " ")}`);
+      } else if (requirement.tradeStrict) {
+        score -= 60;
+        why.push(`not a ${String(requirement.trade).replace("_", " ")}`);
+      }
+    }
+    if (rec && rec.licence === false) { score -= 15; why.push("cannot drive"); }
+    if (rec && rec.base && rec.base !== "Dubai") { score -= 40; why.push(`based in ${rec.base}`); }
+
     if (goesThere) { score += 50; why.push(`already at ${displayProperty(job.property)} today`); }
     if (room >= jobMins + (goesThere ? 0 : o.travelMinutes)) {
       score += 30; why.push(`${Math.round(room / 60 * 10) / 10}h still free`);
@@ -435,7 +478,12 @@ export function suggestTechnician(job, dayJobs, options = {}) {
     score -= p1count * 4;
     if (p1count) why.push(`already has ${p1count} P1`);
 
-    out.push({ tech, score, why, room, loadPct: Math.round((plan.committedMinutes / plan.availableMinutes) * 100), goesThere, coversWindow });
+    if (list.length === 0) { score += 12; why.push("nothing scheduled yet"); }
+    out.push({
+      tech, score, why, room,
+      loadPct: Math.round((plan.committedMinutes / plan.availableMinutes) * 100),
+      goesThere, coversWindow, jobsToday: list.length,
+    });
   });
 
   return out.sort((a, b) => b.score - a.score);
