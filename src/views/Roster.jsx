@@ -6,6 +6,11 @@ import { storageGet, storageSet } from "../lib/storage.js";
 import { readDay, migrateDay } from "../lib/jobStore.js";
 import { liveJobs } from "../lib/job.js";
 import { parseRosterMessage, rosterSummary, checkAgainstSchedule } from "../lib/roster.js";
+import {
+  seedStaff, staffIndex, parseStaffMessage, mergeStaff, normaliseStaff,
+  TRADES, TRADE_LABEL, describeStaff,
+} from "../lib/staff.js";
+import { checkDayCrewing } from "../lib/crewing.js";
 
 /* ---------------------------------------------------------------------- *
  * Roster.jsx — who is actually available today.
@@ -124,6 +129,8 @@ export default function Roster({ selectedDate, setSelectedDate, showToast }) {
       )}
 
       {active && <RosterBoard roster={active} check={check} onOpenDay={() => setSelectedDate(date)} />}
+
+      <Team jobs={jobs} showToast={showToast} />
 
       {!active && !loading && (
         <div className="rounded-lg border border-dashed border-slate-300 bg-white p-8 text-center text-sm text-slate-500">
@@ -270,6 +277,175 @@ function RosterBoard({ roster, check }) {
         </div>
       </div>
     </div>
+  );
+}
+
+/* ==================== the team ==================== *
+ * Who these people are, as distinct from who is in today. A painter, a
+ * carpenter who cannot drive, a pool cleaner based in Fujairah — none of
+ * which the board knew, and all of which decide whether an assignment
+ * makes sense.
+ * ================================================== */
+
+function Team({ jobs, showToast }) {
+  const [staff, setStaff] = useState(null);
+  const [paste, setPaste] = useState("");
+  const [showPaste, setShowPaste] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      const raw = await storageGet("staff");
+      let list = null;
+      try { list = raw ? JSON.parse(raw) : null; } catch { list = null; }
+      if (!list || !list.length) {
+        list = seedStaff();
+        await storageSet("staff", JSON.stringify(list));
+      }
+      setStaff(list);
+    })();
+  }, []);
+
+  const idx = useMemo(() => (staff ? staffIndex(staff) : null), [staff]);
+  const crewing = useMemo(() => (idx ? checkDayCrewing(jobs, idx) : null), [idx, jobs]);
+
+  async function save(next) {
+    setSaving(true);
+    setStaff(next);
+    await storageSet("staff", JSON.stringify(next));
+    setSaving(false);
+  }
+
+  function applyPaste() {
+    const { parsed, unreadable } = parseStaffMessage(paste);
+    if (!parsed.length) { showToast("Nothing readable in that paste.", "warn"); return; }
+    save(mergeStaff(staff || [], parsed));
+    setPaste(""); setShowPaste(false);
+    showToast(
+      `Updated ${parsed.length} people${unreadable.length ? `, ${unreadable.length} line(s) not understood` : ""}.`,
+      "ok"
+    );
+  }
+
+  if (!staff) return null;
+  const field = staff.filter((s) => s.role !== "office");
+  const office = staff.filter((s) => s.role === "office");
+  const licenceGaps = field.filter((s) => s.licence === null);
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h3 className="text-sm font-medium text-slate-900">The team</h3>
+          <p className="text-xs text-slate-500 mt-0.5 max-w-2xl">
+            Trade and driving licence decide whether an assignment makes sense — a pool needs the
+            pool cleaner's equipment, and a crew where nobody drives cannot reach the property.
+            This is the same list for every day; the roster above is who is in today.
+          </p>
+        </div>
+        <button onClick={() => setShowPaste((v) => !v)}
+                className="text-xs border border-slate-300 rounded-md px-2.5 py-1.5 hover:bg-slate-50 shrink-0">
+          {showPaste ? "Close" : "Paste team details"}
+        </button>
+      </div>
+
+      {showPaste && (
+        <div className="mt-2">
+          <textarea value={paste} onChange={(e) => setPaste(e.target.value)} rows={5}
+                    placeholder={"Khaled- Painter dubai without licence\nFaizal- Pool cleaner in fujierah with drivers licence"}
+                    className="w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm font-mono" />
+          <button onClick={applyPaste} disabled={!paste.trim()}
+                  className="mt-1.5 text-sm bg-slate-900 text-white px-3 py-1.5 rounded-md disabled:opacity-40">
+            Update the team from this
+          </button>
+          <p className="text-[11px] text-slate-500 mt-1">
+            Only what a line actually says is changed — anything it does not mention is left alone.
+          </p>
+        </div>
+      )}
+
+      {licenceGaps.length > 0 && (
+        <p className="mt-2 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+          Driving licence not recorded for <span className="font-medium">{licenceGaps.map((s) => s.name).join(", ")}</span>.
+          Until it is, the board cannot tell you when a crew has no way of getting to site.
+        </p>
+      )}
+
+      {crewing && (crewing.short.length > 0 || crewing.wrongTrade.length > 0 || crewing.noDriver.length > 0) && (
+        <div className="mt-2 rounded-md border border-red-200 bg-red-50 p-2 text-xs">
+          <div className="font-medium text-red-900">Crewing problems on this day's schedule</div>
+          <ul className="mt-1 space-y-0.5 text-red-800">
+            {crewing.short.length > 0 && (
+              <li>
+                <span className="font-medium">{crewing.short.length} job(s) short-crewed</span> —{" "}
+                {crewing.short.slice(0, 3).map((x) => `${x.job.property} ${x.job.unit} (${x.crew.length}/${x.requirement.people})`).join(", ")}
+                {crewing.short.length > 3 && `, +${crewing.short.length - 3} more`}
+              </li>
+            )}
+            {crewing.wrongTrade.length > 0 && (
+              <li>{crewing.wrongTrade.length} job(s) want a specialist who is not on the crew</li>
+            )}
+            {crewing.noDriver.length > 0 && (
+              <li className="font-medium">{crewing.noDriver.length} crew(s) with nobody who can drive</li>
+            )}
+          </ul>
+        </div>
+      )}
+
+      <div className="mt-3 overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-slate-500 border-b border-slate-200">
+              <th className="text-left font-medium py-1.5">Name</th>
+              <th className="text-left font-medium py-1.5">Trade</th>
+              <th className="text-left font-medium py-1.5">Based</th>
+              <th className="text-left font-medium py-1.5">Drives</th>
+              <th className="text-left font-medium py-1.5">Note</th>
+            </tr>
+          </thead>
+          <tbody>
+            {field.concat(office).map((sRec, i) => (
+              <StaffRow key={sRec.name + i} rec={sRec}
+                        onChange={(next) => save(staff.map((x) => (x.name === sRec.name ? normaliseStaff({ ...x, ...next }) : x)))} />
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {saving && <span className="text-[11px] text-slate-400">saving…</span>}
+    </div>
+  );
+}
+
+function StaffRow({ rec, onChange }) {
+  return (
+    <tr className={`border-b border-slate-100 ${rec.role === "office" ? "bg-slate-50/60" : ""}`}>
+      <td className="py-1 text-slate-800 font-medium">{rec.name}</td>
+      <td className="py-1">
+        <select value={rec.trade} onChange={(e) => onChange({ trade: e.target.value })}
+                className="border border-slate-200 rounded px-1 py-0.5 text-xs bg-transparent">
+          {TRADES.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+        </select>
+      </td>
+      <td className="py-1">
+        <input value={rec.base} onChange={(e) => onChange({ base: e.target.value })}
+               className="border border-slate-200 rounded px-1 py-0.5 text-xs w-24 bg-transparent" />
+      </td>
+      <td className="py-1">
+        <select value={rec.licence === true ? "y" : rec.licence === false ? "n" : ""}
+                onChange={(e) => onChange({ licence: e.target.value === "y" ? true : e.target.value === "n" ? false : null })}
+                className={`border rounded px-1 py-0.5 text-xs bg-transparent ${
+                  rec.licence === null ? "border-amber-300 text-amber-700" : "border-slate-200"}`}>
+          <option value="">not recorded</option>
+          <option value="y">yes</option>
+          <option value="n">no</option>
+        </select>
+      </td>
+      <td className="py-1 text-slate-500">
+        <input value={rec.note} onChange={(e) => onChange({ note: e.target.value })}
+               placeholder="—"
+               className="border border-transparent hover:border-slate-200 focus:border-slate-300 rounded px-1 py-0.5 text-xs w-full bg-transparent" />
+      </td>
+    </tr>
   );
 }
 

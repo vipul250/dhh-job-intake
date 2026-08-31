@@ -344,3 +344,87 @@ the load heatmap, five entries in cost-by-technician. The board now says
 "5 people" on the group header, because a single row with one load bar read
 as one person. The load bar is elapsed time on site: they are all there for
 it, so three hours of work is three hours of everyone's day.
+
+---
+
+## The team, and how many people a job needs
+
+### These people are not interchangeable
+
+Khaled is a painter. Kofi is a carpenter and cannot drive. Faizal cleans
+pools and is based in Fujairah. Bijaya is a helper. The board treated them
+all as "a technician".
+
+Two attributes carry most of the weight:
+
+- **Trade** — a pool wants the pool cleaner's equipment; a full repaint
+  wants the painter. A multi technician covers general work.
+- **Driving licence** — a crew of three people none of whom can drive
+  cannot get to the property. This is a hard dispatch constraint and
+  nothing in the app knew about it.
+
+Licence is three-valued. **Unknown is not the same as no**, and guessing
+would produce exactly the confident wrong answer this project keeps
+removing. The team list flags whose licence has not been recorded.
+
+The team list is seeded from the details supplied and is editable in place.
+Annotated lines can be pasted to update it —
+`Khaled- Painter dubai without licence` — and only what a line actually
+says is changed.
+
+### Two people, not one
+
+The complaint from the field: a water heater takes two people, one gets
+assigned, and when they call it in a nearby technician is pulled off his
+own work. Two jobs disrupted for one bad assignment.
+
+It is measurable in the real workbook, not a hunch:
+
+| Work | Jobs | Crewed with one person |
+|---|---|---|
+| Water heater | 7 | **2** |
+| Glass door / mirror | 11 | **8** |
+| Duct cleaning | 3 | 0 |
+
+Technicians were writing the requirement into the task text because there
+was nowhere else to put it — *"Door is touching on the floor need to assign
+two"*, *"Pending work (Need two person)"*.
+
+The requirement is now read from three places, in the order they deserve
+trust:
+
+1. **What a coordinator set on the job** — an explicit override
+2. **What the task text says** — "need two person" is parsed
+3. **A rule for the kind of work** — water heater lift, duct cleaning,
+   glass and mirrors, moving furniture, work at height, full repaint
+
+Every rule states its reason on the card, so it can be overruled by
+somebody who knows better rather than argued with.
+
+**Over the real month this finds 17 short-crewed jobs.** The board says so
+the evening before, when it costs nothing to fix.
+
+### Keeping the warnings worth reading
+
+The first version flagged 94 trade mismatches and 56 crews with no driver —
+noise that would train people to ignore the panel. Both were wrong:
+
+- A multi technician handles a paint touch-up perfectly well. Only **pool
+  work and a full repaint** are strict; the rest is a preference the
+  suggester uses and the checker stays quiet about. That took 94 down to
+  **11 real ones** — pool jobs given to people who are not the pool cleaner.
+- All 56 driver warnings came from **one unrecorded licence**. An unknown
+  licence is a gap in the team list, not a dispatch problem, so it is
+  surfaced once on the team list instead of on every job.
+
+### Suggestions now know who people are
+
+Asking for a suggestion on an unassigned job considers **everyone rostered
+today**, not only those who already have work — the painter was previously
+invisible for a painting job precisely because his diary was empty.
+
+Real output for a full repaint: **Khaled — "is the painter · cannot drive ·
+9h still free"**. For a pool: **Resty — "is the pool · already at Gemz by
+Danube today"**, then Faizal — *"is the pool · based in Fujairah"*.
+
+Every factor is named, including the awkward ones.

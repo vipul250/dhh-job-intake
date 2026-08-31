@@ -15,6 +15,8 @@ import {
 import { parseWorkReport, fmtMin } from "../lib/workReport.js";
 import { checkAgainstSchedule } from "../lib/roster.js";
 import { storageGet } from "../lib/storage.js";
+import { staffIndex, seedStaff, TRADE_LABEL } from "../lib/staff.js";
+import { jobRequirement, checkCrew, checkDayCrewing } from "../lib/crewing.js";
 import { RETURN_REASONS, FAMILY_LABEL } from "../lib/faultFamily.js";
 import {
   readDay, mutateDay, upsert, removeJob, migrateDay, needsMigration,
@@ -97,6 +99,7 @@ export default function LiveBoard({
   const [closeOutFor, setCloseOutFor] = useState(null);
   const [nightLog, setNightLog] = useState(false);
   const [roster, setRoster] = useState(null);
+  const [staff, setStaff] = useState(null);
   const watcher = useRef(null);
 
   const jobs = useMemo(() => (rows ? liveJobs(rows) : []), [rows]);
@@ -149,10 +152,36 @@ export default function LiveBoard({
     return () => { cancelled = true; };
   }, [selectedDate]);
 
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const raw = await storageGet("staff");
+      if (cancelled) return;
+      try { setStaff(raw ? JSON.parse(raw) : seedStaff()); } catch { setStaff(seedStaff()); }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
   const rosterCheck = useMemo(
     () => (roster ? checkAgainstSchedule(roster, jobs) : null),
     [roster, jobs]
   );
+  const staffIdx = useMemo(() => (staff ? staffIndex(staff) : null), [staff]);
+  const crewing = useMemo(
+    () => (staffIdx ? checkDayCrewing(jobs, staffIdx) : null),
+    [staffIdx, jobs]
+  );
+
+  /* Everyone who could take a job today: the rostered technicians when a
+     roster is saved, otherwise the field staff on the team list. */
+  const candidates = useMemo(() => {
+    if (rosterCheck) {
+      const s = rosterCheck.summary;
+      return Array.from(new Set([...s.onShift, ...s.standby]));
+    }
+    if (staff) return staff.filter((x) => x.role !== "office" && x.active !== false).map((x) => x.name);
+    return [];
+  }, [rosterCheck, staff]);
 
   /* --------------------------- live refresh --------------------------- */
   useEffect(() => {
@@ -398,6 +427,7 @@ export default function LiveBoard({
       />
 
       {rosterCheck && <RosterStrip check={rosterCheck} />}
+      {crewing && <CrewStrip crewing={crewing} />}
 
       {rollover && (
         <RolloverBanner
@@ -456,6 +486,7 @@ export default function LiveBoard({
           onAdvance={advance} onEdit={edit} onTogglePms={togglePms}
           onMove={setMoveFor} onOutcome={setOutcomeFor} onTrail={setTrailFor}
           onEditFull={onEditFull} showToast={showToast} onCloseOut={setCloseOutFor}
+          staffIdx={staffIdx} candidates={candidates}
           onMoveMany={(list, reason) => moveStranded(list, addDays(selectedDate, 1), reason)}
         />
       ))}
@@ -743,7 +774,7 @@ function ParsePreview({ fields }) {
 
 /* ========================= team group ========================= */
 
-function TeamGroup({ group, me, allJobs, selectedDate, onAdvance, onEdit, onTogglePms, onMove, onOutcome, onTrail, onEditFull, showToast, onMoveMany, onCloseOut }) {
+function TeamGroup({ group, me, allJobs, selectedDate, onAdvance, onEdit, onTogglePms, onMove, onOutcome, onTrail, onEditFull, showToast, onMoveMany, onCloseOut, staffIdx, candidates }) {
   const [open, setOpen] = useState(true);
   const [showPlan, setShowPlan] = useState(false);
   const g = group;
@@ -824,11 +855,65 @@ function TeamGroup({ group, me, allJobs, selectedDate, onAdvance, onEdit, onTogg
               onAdvance={onAdvance} onEdit={onEdit} onTogglePms={onTogglePms}
               onMove={onMove} onOutcome={onOutcome} onTrail={onTrail}
               onEditFull={onEditFull} showToast={showToast} onCloseOut={onCloseOut}
+              staffIdx={staffIdx} candidates={candidates}
               suggestFrom={g.team === "Unassigned" ? allJobs : null}
             />
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/* ==================== crewing, on the board ==================== *
+ * The complaint this answers: a water heater needs two people, one gets
+ * assigned, and the second is fetched off other work mid-shift. In the
+ * real month that happened 17 times. Saying so the evening before costs
+ * nothing; discovering it at 11am costs two people's afternoons.
+ * ============================================================== */
+
+function CrewStrip({ crewing }) {
+  const { short, wrongTrade, noDriver, peopleShort } = crewing;
+  if (!short.length && !wrongTrade.length && !noDriver.length) return null;
+
+  return (
+    <div className="rounded-lg border border-red-300 bg-red-50 p-2.5">
+      <div className="flex items-center gap-1.5 text-xs font-medium text-red-900">
+        <Users className="w-3.5 h-3.5" /> Crewing
+      </div>
+      <ul className="mt-1 space-y-1 text-xs text-red-900">
+        {short.length > 0 && (
+          <li>
+            <span className="font-medium">
+              {short.length} job{short.length === 1 ? "" : "s"} short-crewed
+            </span>{" "}
+            ({peopleShort} more {peopleShort === 1 ? "person" : "people"} needed).
+            <span className="text-red-800"> Fix it now, or somebody gets pulled off their own work at 11am.</span>
+            <ul className="mt-0.5 ml-3 space-y-0.5 text-red-800">
+              {short.slice(0, 6).map((x, i) => (
+                <li key={i} className="truncate">
+                  {x.job.property} {x.job.unit} — <span className="font-medium">{x.crew.length} of {x.requirement.people}</span>
+                  {" · "}{x.requirement.why}
+                  {x.job.team && <span className="text-red-700"> ({x.job.team})</span>}
+                </li>
+              ))}
+              {short.length > 6 && <li>+{short.length - 6} more</li>}
+            </ul>
+          </li>
+        )}
+        {noDriver.length > 0 && (
+          <li className="font-medium">
+            {noDriver.length} crew{noDriver.length === 1 ? "" : "s"} with nobody who can drive —{" "}
+            {noDriver.slice(0, 3).map((x) => x.job.team).join("; ")}
+          </li>
+        )}
+        {wrongTrade.length > 0 && (
+          <li>
+            {wrongTrade.length} job{wrongTrade.length === 1 ? "" : "s"} want a specialist who is not on the crew —{" "}
+            {wrongTrade.slice(0, 3).map((x) => `${x.job.property} ${x.job.unit}`).join(", ")}
+          </li>
+        )}
+      </ul>
     </div>
   );
 }
@@ -1058,7 +1143,8 @@ const STATE_CHIP = {
   cancelled: "bg-slate-100 text-slate-400 line-through",
 };
 
-function JobRow({ job, me, onAdvance, onEdit, onTogglePms, onMove, onOutcome, onTrail, onEditFull, showToast, suggestFrom, onCloseOut }) {
+function JobRow({ job, me, onAdvance, onEdit, onTogglePms, onMove, onOutcome, onTrail, onEditFull, showToast, suggestFrom, onCloseOut, staffIdx, candidates }) {
+  const crew = useMemo(() => checkCrew(job, staffIdx), [job, staffIdx]);
   const [expanded, setExpanded] = useState(false);
   const [suggestions, setSuggestions] = useState(null);
   const mins = jobMinutes(job);
@@ -1116,6 +1202,26 @@ function JobRow({ job, me, onAdvance, onEdit, onTogglePms, onMove, onOutcome, on
               <span title={`Finishes work started on ${job.followUpOf.date}`}
                     className="text-[10px] rounded px-1.5 py-0.5 bg-blue-50 text-blue-700 border border-blue-200 inline-flex items-center gap-0.5">
                 <CornerDownRight className="w-2.5 h-2.5" /> follow-up from {job.followUpOf.date}
+              </span>
+            )}
+            {crew.requirement.people > 1 && (
+              <span title={`${crew.requirement.why} (${crew.requirement.source === "text" ? "from the task text" : crew.requirement.source === "override" ? "set on the job" : "rule"})`}
+                    className={`text-[10px] rounded px-1.5 py-0.5 border ${
+                      crew.short ? "bg-red-100 text-red-800 border-red-300 font-medium"
+                                 : "bg-slate-50 text-slate-600 border-slate-200"}`}>
+                {crew.crew.length}/{crew.requirement.people} people
+              </span>
+            )}
+            {crew.issues.some((i) => i.id === "trade") && (
+              <span title={crew.issues.find((i) => i.id === "trade").text}
+                    className="text-[10px] rounded px-1.5 py-0.5 bg-amber-50 text-amber-800 border border-amber-200">
+                wants a {TRADE_LABEL[crew.requirement.trade] || crew.requirement.trade}
+              </span>
+            )}
+            {crew.issues.some((i) => i.id === "driver") && (
+              <span title={crew.issues.find((i) => i.id === "driver").text}
+                    className="text-[10px] rounded px-1.5 py-0.5 bg-red-100 text-red-800 border border-red-300 font-medium">
+                no driver
               </span>
             )}
             {needsFollowUp(job.state) && !job.followUpJobId && (
@@ -1178,7 +1284,7 @@ function JobRow({ job, me, onAdvance, onEdit, onTogglePms, onMove, onOutcome, on
           )}
           {suggestFrom && (
             <IconBtn title="Suggest a technician using the scheduling rule"
-                     onClick={() => setSuggestions(suggestions ? null : suggestTechnician(job, suggestFrom))}
+                     onClick={() => setSuggestions(suggestions ? null : suggestTechnician(job, suggestFrom, { staffIdx, requirement: crew.requirement, candidates }))}
                      tone="slate">
               <Wand2 className="w-3.5 h-3.5" />
             </IconBtn>
@@ -1198,8 +1304,11 @@ function JobRow({ job, me, onAdvance, onEdit, onTogglePms, onMove, onOutcome, on
       {suggestions && (
         <div className="mt-2 pt-2 border-t border-slate-100">
           <p className="text-[11px] text-slate-500 mb-1">
-            By the rule — already going to that building, then room in the shift, then whether the
-            shift covers the requested time:
+            By the rule — the right trade and somebody who can drive, then already going to that
+            building, then room in the shift.
+            {crew.requirement.people > 1 && (
+              <span className="text-amber-700"> This job needs {crew.requirement.people} people — {crew.requirement.why}.</span>
+            )}
           </p>
           {suggestions.length === 0 && <p className="text-xs text-slate-400">Nobody is scheduled today yet.</p>}
           <div className="space-y-1">
@@ -1228,6 +1337,14 @@ function JobRow({ job, me, onAdvance, onEdit, onTogglePms, onMove, onOutcome, on
           <InlineField label="Unit state" value={job.status} onSave={(v) => onEdit(job, { status: v })} />
           <InlineField label="Priority" value={job.priority} onSave={(v) => onEdit(job, { priority: v })} placeholder="P2-High" />
           <InlineField label="Material" value={job.materialDetails} onSave={(v) => onEdit(job, { materialDetails: v, materialNeeded: v ? "Y" : job.materialNeeded })} placeholder="item + qty" />
+          <label className="block text-[11px] text-slate-500">
+            People needed
+            <input type="number" min="1" max="8"
+                   value={job.crewNeeded ?? ""}
+                   onChange={(e) => onEdit(job, { crewNeeded: e.target.value === "" ? "" : Number(e.target.value) })}
+                   placeholder={`${crew.requirement.people} — ${crew.requirement.why}`}
+                   className="mt-0.5 w-full border border-slate-300 rounded-md px-2 py-1 text-sm" />
+          </label>
           <InlineSelect label="Where it came from" value={job.source}
                         options={[["", "not set"], ...JOB_SOURCES.map((x) => [x.id, x.label])]}
                         onSave={(v) => onEdit(job, { source: v })} />
