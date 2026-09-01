@@ -182,6 +182,7 @@ export default function Dashboard({ selectedDate, knownDates, onOpenDate }) {
           />
           <Containment m={m} onOpenDate={onOpenDate} />
           <Demand m={m} />
+          <WhyThisDay m={m} />
           <Judgement m={m} onOpenDate={onOpenDate} />
           <Movement m={m} onOpenDate={onOpenDate} />
           <WhyWeGoBack m={m} />
@@ -573,6 +574,63 @@ function Demand({ m }) {
 }
 
 /* ============== the coordinator's calls ============== */
+
+/* Why a job is on the day it is on — the question the department could not
+   answer at all until the queue existed. */
+function WhyThisDay({ m }) {
+  const b = m.schedulingBasis;
+  if (!b || !b.placed) return null;
+  const LABEL = {
+    vacancy: "Unit was empty",
+    checkout: "Guest checked out that day",
+    appointment: "Guest agreed that time",
+    urgent: "P1 — first day possible",
+    overdueNow: "Already past due, and reachable",
+    deadline: "Last day inside the response time",
+    earliest: "Earliest the access window allowed",
+    batched: "Crew already in that building",
+    conflict: "No day met both the deadline and access",
+    overruled: "Coordinator chose a different day",
+  };
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-4">
+      <h2 className="text-sm font-semibold text-slate-900">Why each job is on the day it is on</h2>
+      <p className="text-xs text-slate-500 mt-0.5 mb-3 max-w-3xl">
+        Asked how a day gets chosen, the honest answer was that the coordinator assesses the issue
+        and picks one. Jobs booked through the queue now carry the reason with them. The figure to
+        watch is not how often the rule was followed — a coordinator who never overrules it is
+        following a script, not exercising judgement — but how much of the board was placed for a
+        reason anybody can name.
+      </p>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <Tile label="Placed with a stated reason" value={`${b.coverage.pct}%`}
+              sub={`${b.placed} of ${b.total} jobs`}
+              coverage="the rest predate the queue or were typed straight onto a day"
+              tone={b.coverage.pct >= 50 ? "good" : "neutral"} />
+        <Tile label="Into an empty unit" value={b.cleanAccessPct == null ? "—" : `${b.cleanAccessPct}%`}
+              sub={`${b.cleanAccess} of ${b.placed} placed jobs`}
+              coverage="no guest to ask, no door that fails to open"
+              tone={b.cleanAccessPct >= 30 ? "good" : "neutral"} />
+        <Tile label="Coordinator overruled the rule" value={b.overruled}
+              sub={b.overruledPct == null ? "" : `${b.overruledPct}% of placed jobs`}
+              coverage="a recorded choice, which is the point" />
+        <Tile label="Booked knowing it breaches" value={b.conflicts}
+              sub="deadline already past, access later"
+              coverage="these used to sit in the queue instead"
+              tone={b.conflicts > 0 ? "warn" : "neutral"} icon={b.conflicts ? AlertTriangle : undefined} />
+      </div>
+
+      {b.byBasis.length > 0 && (
+        <div className="mt-4 max-w-xl">
+          <h3 className="text-xs font-medium text-slate-700 mb-1.5">On what basis</h3>
+          <HBars items={b.byBasis.map(([k, n]) => ({ label: LABEL[k] || k, value: n, display: String(n) }))} />
+        </div>
+      )}
+    </div>
+  );
+}
 
 function Judgement({ m, onOpenDate }) {
   const d = m.displacement;

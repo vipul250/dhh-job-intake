@@ -309,7 +309,11 @@ export function toISODate(v) {
   const s = squash(v);
   let m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
   if (m) return `${m[1]}-${m[2]}-${m[3]}`;
-  m = s.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/); // DD/MM/YYYY as used in the sheet
+  // DD/MM/YYYY as used in the sheet, optionally followed by a time — the
+  // PMS issues list writes "04-08-2026 12:00 PM", and dropping the whole
+  // date because of the clock on the end is how a breached due date turns
+  // into "no deadline recorded".
+  m = s.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})(?:[ T].*)?$/);
   if (m) return `${m[3]}-${String(m[2]).padStart(2, "0")}-${String(m[1]).padStart(2, "0")}`;
   return "";
 }
