@@ -636,3 +636,78 @@ Rows that already have a unit are never touched.
 
 Stored days are corrected as they are opened, so this repairs the month
 already in the database rather than only new imports.
+
+## Why is this job on this day?
+
+Asked what they do when an issue is logged in PMS, a coordinator says they
+assess it and schedule it for a future day, or the same day if possible.
+That is an honest description of a decision with no stated basis — and the
+queue shows the cost of it. 189 maintenance issues waiting, the oldest
+reported four months ago, several with due dates that passed in early
+August. Nothing was going wrong on any particular day; there was simply no
+rule, so nothing was ever definitely late.
+
+The information needed to decide is already in PMS and is not being used.
+Every issue carries a priority, a reported date, a due date, and the one
+that matters most: the unit's occupancy — "Vacant", or "Occupied until
+2026-09-08 11:00". A unit that empties on the 8th is a three-hour job's
+best day of the month and nothing points that out.
+
+### The rule
+
+**1. When can we get in?** The hard constraint, and the unused one.
+
+| Occupancy | What it means for the day |
+|---|---|
+| Vacant | Any day. No guest to ask, no access risk. |
+| Occupied until D | Work needing the unit empty — duct cleaning, painting, water off, anything over 3 hours — cannot happen before D. **That checkout is the first clean day.** Lighter work can happen around the guest, but only with an agreed time. |
+| Checkout / B2B on D | D is the window, and it is hours wide, not a day. |
+| Occupied, no end date | Cannot be planned at all until somebody speaks to the guest. |
+
+**2. When must it be done by?** The PMS due date where there is one;
+otherwise the reported date plus the band the priority implies — P1 same
+day, P2 three days, P3 seven, P4 fourteen. These are written down here so
+they can be argued with. That is the point of having them.
+
+**3. Do those two overlap?** If not it is a conflict with no right answer:
+a PPM due in July in a unit whose guest leaves in late September. Two ways
+out — agree a time with the guest inside the deadline, or accept the slip
+and record why. What it must not do is keep waiting, which is what happens
+now.
+
+**4. Which day inside the window?** A checkout or a vacancy wins. Otherwise
+the earliest day with room in the shift. Ties go to the day the crew is
+already in that building.
+
+Ordering jobs *within* the chosen day is a separate rule and was already in
+the app: confirmed appointment, then P1, then batch by building. This one
+picks the day; that one picks the hour.
+
+### What it looks like on the real queue
+
+Fifteen issues copied from the Issues screen, run through the rule:
+
+- **Three vacant units with work 29–53 days overdue and nothing at all
+  stopping them.** Water tank cleaning at Palm Villa F30, a replenishment at
+  Claren Tower 1 1301, AC grill cleaning at Golf Promenade 2A 606. The unit
+  is empty, the deadline has passed, and no constraint explains the wait.
+- **Six waiting on a checkout that is already in PMS.** The date the unit
+  empties is on the record; nobody was reading it.
+- **Five blocked on a guest** — occupied, no time agreed. They cannot be
+  scheduled and should not look schedulable.
+- **Two genuine conflicts**: the access window opens after the deadline has
+  already gone. Those need a decision, not a date.
+
+### It recommends; it does not schedule
+
+The coordinator takes the day or overrules it, and overruling is one click
+with the reason recorded. That is the change: not that a machine picks the
+day, but that picking a different one is now a visible choice instead of the
+only thing that ever happens.
+
+Every job booked this way carries `scheduledBasis` — the reason the day was
+chosen — and the dashboard reads it back under **why each job is on the day
+it is on**. The figure to watch there is not how often the rule was
+followed. A coordinator who never overrules it is following a script, not
+exercising judgement. The figure to watch is coverage: how much of the board
+was placed for a reason anybody can name.

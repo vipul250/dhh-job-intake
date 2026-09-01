@@ -3,7 +3,7 @@ import {
   Plus, Check, AlertTriangle, Trash2, Copy, Download, X,
   ClipboardList, LayoutGrid, Database, BarChart3, Loader2,
   ChevronDown, ChevronRight, ChevronLeft, RefreshCw, Edit3, UploadCloud, TrendingUp, Briefcase, Clock, Building2, Printer,
-  Table2, Radio, Users
+  Table2, Radio, Users, Inbox
 } from "lucide-react";
 import { storageGet, storageSet, storageList } from "./lib/storage.js";
 import Dashboard from "./views/Dashboard.jsx";
@@ -11,6 +11,7 @@ import SheetImport from "./views/SheetImport.jsx";
 import LiveBoard from "./views/LiveBoard.jsx";
 import Projects from "./views/Projects.jsx";
 import Roster from "./views/Roster.jsx";
+import Backlog from "./views/Backlog.jsx";
 import SignIn from "./views/SignIn.jsx";
 import {
   isAuthRequired, currentSession, onAuthChange, identityFor, signOut,
@@ -844,6 +845,13 @@ export default function App() {
             onCommit={commitSheetImport}
           />
         )}
+        {activeTab === "backlog" && (
+          <Backlog
+            knownDates={knownDates}
+            selectedDate={selectedDate} setSelectedDate={setSelectedDate}
+            setActiveTab={setActiveTab} showToast={showToast}
+          />
+        )}
         {activeTab === "jobcards" && <Projects knownDates={knownDates} showToast={showToast} />}
         {activeTab === "import" && (
           <ImportView
@@ -891,6 +899,7 @@ function Header({ selectedDate, setSelectedDate, knownDates, activeTab, setActiv
      reference table, so it leads and the rest follow. */
   const tabs = [
     { id: "live", label: "Live Board", icon: Radio },
+    { id: "backlog", label: "Queue", icon: Inbox },
     { id: "roster", label: "Roster", icon: Users },
     { id: "dashboard", label: "Dashboard", icon: TrendingUp },
     { id: "sheetimport", label: "Import Sheet", icon: Table2 },

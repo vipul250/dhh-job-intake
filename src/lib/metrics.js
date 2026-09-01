@@ -927,6 +927,48 @@ export function computeChurn(jobs) {
   };
 }
 
+/* --------------- 16. Was there a reason for the day? ------------------ *
+ * The department could not answer "why is this job on this day". Now every
+ * job booked through the queue carries the basis it was chosen on, and the
+ * coordinator overruling the rule is itself recorded.
+ *
+ * The number to watch is not agreement — a coordinator who never overrules
+ * a rule is not exercising judgement, they are following a script, and the
+ * rule is not good enough to deserve that. The number to watch is coverage:
+ * how much of the board was placed for a reason anybody can name.
+ * -------------------------------------------------------------------- */
+export function computeSchedulingBasis(jobs) {
+  const placed = jobs.filter((j) => squash(j.scheduledBasis));
+  const byBasis = {};
+  placed.forEach((j) => {
+    const b = squash(j.scheduledBasis);
+    byBasis[b] = (byBasis[b] || 0) + 1;
+  });
+  const overruled = placed.filter((j) => j.scheduledBasis === "overruled").length;
+  const fromQueue = jobs.filter((j) => j.source === "pms-queue").length;
+
+  /* Access is the constraint the rule exists to respect, so respecting it
+     is the thing worth counting: work booked into an empty unit or a
+     changeover needs no guest and cannot be turned away at the door. */
+  const cleanAccess = placed.filter((j) =>
+    j.scheduledBasis === "vacancy" || j.scheduledBasis === "checkout").length;
+
+  return {
+    total: jobs.length,
+    placed: placed.length,
+    fromQueue,
+    coverage: coverage(placed.length, jobs.length),
+    overruled,
+    overruledPct: pct(overruled, placed.length),
+    followed: placed.length - overruled,
+    cleanAccess,
+    cleanAccessPct: pct(cleanAccess, placed.length),
+    conflicts: byBasis.conflict || 0,
+    overdueAtBooking: byBasis.overdueNow || 0,
+    byBasis: Object.entries(byBasis).sort((a, b) => b[1] - a[1]),
+  };
+}
+
 /* ====================================================================== *
  * Mix, concentration, and the daily series behind the charts
  * ====================================================================== */
@@ -1089,6 +1131,7 @@ export function computeAll(jobs, opts = {}) {
     containment: computeContainment(jobs, { ...opts, asOfDate: asOf }),
     demand: computeDemand(jobs),
     displacement: computeDisplacement(jobs, opts),
+    schedulingBasis: computeSchedulingBasis(jobs),
     churn: computeChurn(jobs),
     techTimes: computeTechTimes(jobs, opts),
     series: computeDailySeries(jobs, opts),
