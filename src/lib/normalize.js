@@ -355,7 +355,7 @@ export const WORK_TYPE_LABEL = {
   project: "Project / onboarding",
   inspection: "Inspection",
   logistics: "Logistics",
-  other: "Other",
+  other: "Not classified",
 };
 
 export function workType(description, faultCode) {

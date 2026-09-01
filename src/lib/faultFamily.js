@@ -37,7 +37,7 @@ export const FAULT_FAMILIES = [
 ];
 
 export const FAMILY_LABEL = Object.fromEntries(
-  FAULT_FAMILIES.map(([k, label]) => [k, label]).concat([["other", "Other / unclassified"]])
+  FAULT_FAMILIES.map(([k, label]) => [k, label]).concat([["other", "Not classified from the task text"]])
 );
 
 export function faultFamily(description, faultCode) {

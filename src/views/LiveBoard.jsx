@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import {
   Plus, Play, Check, X, ArrowRight, Clipboard, History, AlertTriangle,
-  Loader2, RefreshCw, ChevronDown, ChevronRight, Users, CircleDot, Trash2,
+  Loader2, RefreshCw, ChevronDown, ChevronRight, Users, CircleDot, Ban,
   CalendarClock, Wand2, Pin, Moon, ShieldAlert, CornerDownRight, FileText,
   Lock, Unlock, ClipboardPaste, ListChecks,
 } from "lucide-react";
@@ -10,7 +10,7 @@ import {
   isTombstone, liveJobs, tombstones, jobMinutes, isOpen, pushSeverity,
   needsGuestConfirm, pmsText, parseQuickAdd, splitQuickAddLines, findReturn,
   actualDuration, makeFollowUp, needsFollowUp, isResolved,
-  STATE_META, NOT_DONE_REASONS, MOVE_REASONS, MOVE_REASON_LABEL,
+  STATE_META, NOT_DONE_REASONS, MOVE_REASONS, MOVE_REASON_LABEL, SAY_WHAT_HAPPENED,
   moveReasonDisplaces, CANCEL_REASONS, EVENT_LABEL,
   OUTCOME_OPTIONS, JOB_SOURCES, SOURCE_LABEL, HOW_REPORTED,
 } from "../lib/job.js";
@@ -1366,7 +1366,9 @@ function PostBar({ lock, post, date, jobCount, onPost }) {
 function ChangeReasonDialog({ lock, job, patch, onCancel, onConfirm }) {
   const [reason, setReason] = useState(CHANGE_REASONS[0]);
   const [other, setOther] = useState("");
-  const final = reason === "Other" ? (squash(other) || "Other") : reason;
+  const saying = reason === SAY_WHAT_HAPPENED;
+  const final = saying ? squash(other) : reason;
+  const ready = !!final;
   const fields = Object.keys(patch || {});
 
   return (
@@ -1386,18 +1388,19 @@ function ChangeReasonDialog({ lock, job, patch, onCancel, onConfirm }) {
         <select value={reason} onChange={(e) => setReason(e.target.value)}
                 className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm">
           {CHANGE_REASONS.map((r) => <option key={r} value={r}>{r}</option>)}
+          <option value={SAY_WHAT_HAPPENED}>None of these — say what happened</option>
         </select>
       </label>
-      {reason === "Other" && (
+      {saying && (
         <input autoFocus value={other} onChange={(e) => setOther(e.target.value)}
-               placeholder="What happened?"
+               placeholder="In your own words — this is what gets counted"
                className="mt-2 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
       )}
       <div className="flex justify-end gap-2 mt-4">
         <button onClick={onCancel} className="text-sm border border-slate-300 px-3 py-1.5 rounded-md">
           Leave it as it was
         </button>
-        <button onClick={() => onConfirm(final)}
+        <button onClick={() => onConfirm(final)} disabled={!ready}
                 className="text-sm bg-slate-900 text-white px-3 py-1.5 rounded-md">
           Save the change
         </button>
@@ -1917,7 +1920,7 @@ function JobRow({ job, me, onAdvance, onEdit, onTogglePms, onMove, onOutcome, on
             {job.state !== "cancelled" && !isResolved(job.state) && (
               <button onClick={() => onOutcome({ job, kind: "cancel" })}
                       className="text-xs text-red-700 border border-red-200 rounded-md px-2 py-1 hover:bg-red-50 flex items-center gap-1">
-                <Trash2 className="w-3 h-3" /> Cancel this job
+                <Ban className="w-3 h-3" /> Cancel this job
               </button>
             )}
             {isResolved(job.state) && (
@@ -2147,9 +2150,10 @@ function OutcomeDialog({ job, kind, selectedDate, onCancel, onConfirm }) {
      is recorded as such. */
   const [rebook, setRebook] = useState("");
   const [when, setWhen] = useState(addDays(selectedDate, 1));
-  const final = reason === "Other" ? (other.trim() || "Other") : reason;
+  const saying = reason === SAY_WHAT_HAPPENED;
+  const final = saying ? squash(other) : reason;
   const asking = kind !== "cancel";
-  const ready = !asking || rebook !== "";
+  const ready = !!final && (!asking || rebook !== "");
 
   return (
     <Modal title={kind === "cancel" ? `Cancel ${job.property} ${job.unit}` : `Not done — ${job.property} ${job.unit}`} onCancel={onCancel}>
@@ -2161,10 +2165,11 @@ function OutcomeDialog({ job, kind, selectedDate, onCancel, onConfirm }) {
       <select value={reason} onChange={(e) => setReason(e.target.value)}
               className="mt-3 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm">
         {list.map((r) => <option key={r} value={r}>{r}</option>)}
+        <option value={SAY_WHAT_HAPPENED}>None of these — say what happened</option>
       </select>
-      {reason === "Other" && (
+      {saying && (
         <input autoFocus value={other} onChange={(e) => setOther(e.target.value)}
-               placeholder="What happened?"
+               placeholder="In your own words — this is what gets counted"
                className="mt-2 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
       )}
 
