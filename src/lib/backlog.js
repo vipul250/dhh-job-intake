@@ -653,3 +653,69 @@ export function readTitlePrefix(title) {
   // An unrecognised prefix is left inside the description rather than lost.
   return { rest: s };
 }
+
+/* ---------------------------------------------------------------------- *
+ * One paste box, two sources.
+ *
+ * The coordinator's live Google Sheet and the PMS task list are different
+ * tables with different headings, and asking somebody at 10pm to remember
+ * which button matches which clipboard is a small stupid tax. So the box
+ * works out which it is looking at.
+ *
+ * The sheet is recognised by the columns only it has — Task Description /
+ * Scope of Work, Estimated Time, Guest Confirmed, Material Needed. The PMS
+ * task list is recognised by Title plus a task Number or Subcategory. If
+ * neither is a clear match nothing is guessed at, because importing thirty
+ * rows into the wrong shape is far worse than saying "I could not read
+ * this".
+ * -------------------------------------------------------------------- */
+const SHEET_MARKERS = ["task description", "scope of work", "estimated time", "guest confirmed", "material needed"];
+const TASK_MARKERS = ["title", "subcategory", "task summary"];
+
+export function detectPasteFormat(text) {
+  const first = String(text || "").split(/\r?\n/).find((l) => l.trim()) || "";
+  const cells = (first.includes("\t") ? first.split("\t") : first.split(/\s*\|\s*/))
+    .map((c) => canonKey(c));
+  const hit = (list) => list.filter((m) => cells.some((c) => c.includes(m))).length;
+  const sheet = hit(SHEET_MARKERS);
+  const task = hit(TASK_MARKERS);
+  if (sheet >= 2 && sheet >= task) return "sheet";
+  if (task >= 1 && cells.some((c) => /number|task|title/.test(c))) return "pms";
+  if (sheet >= 1) return "sheet";
+  return "";
+}
+
+/**
+ * Parse a paste of either kind and hand back jobs already carrying the day
+ * they belong on.
+ *
+ * The sheet carries its own Date column, and that is trusted over whichever
+ * day happens to be open on the board: the evening coordinator builds
+ * tomorrow while looking at today, and silently landing tomorrow's schedule
+ * on today would be the worst possible failure of this whole exercise.
+ */
+export function parseAnyPaste(text, fallbackDate, sheetParser) {
+  const format = detectPasteFormat(text);
+  if (!format) {
+    return { jobs: [], format: "", dates: [], skipped: 0,
+      error: "Could not tell what this is. Copy the table including its heading row — either the daily sheet (Date, Property, Task Description…) or the PMS task list (Number, Title, Property…)." };
+  }
+  if (format === "pms") {
+    const r = parseTaskPaste(text, fallbackDate);
+    return { ...r, format: "pms", dates: r.jobs.length ? [fallbackDate] : [] };
+  }
+  const r = sheetParser(text, fallbackDate);
+  /* The importer prefixes the sheet's own PMS columns with an underscore
+     because, coming off a spreadsheet, they are the admin's note rather
+     than a confirmed fact. Here they are the tie to the PMS task and are
+     promoted — the reference is checkable, which is the whole point of
+     keeping it. */
+  const jobs = (r.jobs || []).map((j) => ({
+    ...j,
+    source: j.source || "sheet",
+    pmsRef: j.pmsRef || j._sheetPmsRef || "",
+    inPms: j.inPms !== undefined ? j.inPms : j._sheetInPms,
+  }));
+  const dates = Array.from(new Set(jobs.map((j) => j._date).filter(Boolean))).sort();
+  return { jobs, format: "sheet", dates, skipped: r.skipped || 0, error: r.error || "" };
+}
