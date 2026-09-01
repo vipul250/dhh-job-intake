@@ -732,6 +732,18 @@ on a change to the *plan* — adding, moving, cancelling, editing — is logged
 with a reason. Recording what *happened* is never locked and never asks for
 a justification; that would be punishing the person doing the review.
 
+**The board opens on tomorrow.** That is right for the evening
+coordinator, who is building the next day — and wrong for the morning
+coordinator, who has today to close out and would otherwise have to
+remember to click back for it. So whenever any other day is on screen and
+today still has jobs without an outcome, the board says so:
+
+> **Today (2026-09-01) still has 31 jobs with no outcome** — of 31 on the
+> day. Say how they went before you leave.  *[Go to today]*
+
+The second touchpoint of the rule cannot depend on somebody remembering it
+exists. The banner disappears the moment the last job is answered.
+
 **Morning coordinator — before leaving, say how the day went.** One list,
 one line per job, and the count of jobs with no outcome sits on the button
 so nobody has to go looking. A clean fix is one click. Anything else opens

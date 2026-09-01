@@ -136,6 +136,7 @@ export default function LiveBoard({
   const [taskPaste, setTaskPaste] = useState(false);
   const [dayReview, setDayReview] = useState(false);
   const [showLog, setShowLog] = useState(false);
+  const [todayOpen, setTodayOpen] = useState(null);
   const [roster, setRoster] = useState(null);
   const [loadError, setLoadError] = useState("");
   const [post, setPost] = useState(null);
@@ -227,6 +228,27 @@ export default function LiveBoard({
   }, []);
 
   useEffect(() => { load(selectedDate); }, [selectedDate, load]);
+
+  /* The board opens on tomorrow, which is right for the evening coordinator
+     building the next day — and wrong for the morning coordinator, who has
+     today to close out and would have to remember to click back for it. So
+     when any other day is on screen, today's outstanding count is fetched
+     and shown. The second touchpoint of the department's rule cannot depend
+     on somebody remembering it exists. */
+  useEffect(() => {
+    let cancelled = false;
+    const today = new Date().toISOString().slice(0, 10);
+    if (selectedDate === today) { setTodayOpen(null); return undefined; }
+    (async () => {
+      try {
+        const rows = liveJobs(migrateDay(await readDay(today), today));
+        if (cancelled) return;
+        const open = rows.filter((j) => !isResolved(j.state) && j.state !== "cancelled");
+        setTodayOpen(open.length ? { date: today, count: open.length, total: rows.length } : null);
+      } catch { if (!cancelled) setTodayOpen(null); }
+    })();
+    return () => { cancelled = true; };
+  }, [selectedDate, rows]);
   useEffect(() => { loadRollover(selectedDate); }, [selectedDate, loadRollover]);
   useEffect(() => {
     let cancelled = false;
@@ -702,6 +724,20 @@ export default function LiveBoard({
         counts={counts} busy={busy} liveNote={liveNote}
         onRefresh={() => load(selectedDate)}
       />
+
+      {todayOpen && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 flex flex-wrap items-center gap-2">
+          <ListChecks className="w-4 h-4 text-amber-700 shrink-0" />
+          <span className="text-xs text-amber-900">
+            <b>Today ({todayOpen.date}) still has {todayOpen.count} job{todayOpen.count === 1 ? "" : "s"} with no outcome</b>
+            {" "}— of {todayOpen.total} on the day. Say how they went before you leave.
+          </span>
+          <button onClick={() => setSelectedDate(todayOpen.date)}
+                  className="ml-auto text-xs bg-amber-600 text-white rounded-md px-2.5 py-1.5 shrink-0">
+            Go to today
+          </button>
+        </div>
+      )}
 
       <PostBar
         lock={lock} post={post} date={selectedDate}
