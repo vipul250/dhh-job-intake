@@ -15,7 +15,8 @@ import {
   OUTCOME_OPTIONS, JOB_SOURCES, SOURCE_LABEL, HOW_REPORTED,
 } from "../lib/job.js";
 import { parseWorkReport, fmtMin } from "../lib/workReport.js";
-import { parseTaskPaste } from "../lib/backlog.js";
+import { parseAnyPaste } from "../lib/backlog.js";
+import { parseSheetPaste } from "../lib/importSheet.js";
 import { checkAgainstSchedule } from "../lib/roster.js";
 import { storageGet } from "../lib/storage.js";
 import { staffIndex, seedStaff, TRADE_LABEL } from "../lib/staff.js";
@@ -274,20 +275,58 @@ export default function LiveBoard({
      rule from today is that they are in here too, and that has to cost one
      paste rather than thirty entries. Anything already on the day with the
      same TSK reference is left alone, so pasting twice is safe. */
-  async function addFromPms(rows) {
-    const seen = new Set(jobs.map((j) => canonKey(j.pmsRef)).filter(Boolean));
-    const fresh = rows.filter((r) => !r.pmsRef || !seen.has(canonKey(r.pmsRef)));
-    const created = fresh.map((r) => {
-      const j = newJob(r, selectedDate, who);
-      return lock.locked ? withEvent(j, "added_late", who, { lock: lock.kind }) : j;
+  /* Rows land on the day the paste says they belong to, never on whichever
+     day happens to be open. The evening coordinator builds tomorrow while
+     looking at today, and silently dropping tomorrow's schedule onto today
+     would be the worst failure this app could have. */
+  async function addFromPaste(rows) {
+    const byDay = new Map();
+    rows.forEach((r) => {
+      const d = r._date || selectedDate;
+      if (!byDay.has(d)) byDay.set(d, []);
+      byDay.get(d).push(r);
     });
-    if (!created.length) {
-      showToast("Every one of those is already on this day.", "warn");
-      setTaskPaste(false);
-      return;
+
+    let added = 0, dupes = 0;
+    for (const [day, list] of byDay) {
+      const existing = day === selectedDate ? jobs : liveJobs(migrateDay(await readDay(day), day));
+      /* A TSK reference is the reliable key, but the coordinator's sheet
+         only carries one on about four rows in ten. Without a second key on
+         the content itself, re-pasting a sheet — which people do, because
+         they added two more jobs at the bottom — would duplicate most of
+         the day. */
+      const refKey = (j) => canonKey(j.pmsRef);
+      const bodyKey = (j) =>
+        `${canonKey(j.property)}|${canonKey(j.unit)}|${canonKey(j.description).slice(0, 40)}`;
+      const seenRefs = new Set(existing.map(refKey).filter(Boolean));
+      const seenBodies = new Set(existing.map(bodyKey));
+      const dayLock = lockState(day, day === selectedDate ? post : await readPost(day));
+      const created = [];
+      list.forEach((r) => {
+        const ref = refKey(r), body = bodyKey(r);
+        if ((ref && seenRefs.has(ref)) || seenBodies.has(body)) { dupes++; return; }
+        if (ref) seenRefs.add(ref);
+        seenBodies.add(body);
+        const j = newJob(r, day, who);
+        created.push(dayLock.locked ? withEvent(j, "added_late", who, { lock: dayLock.kind }) : j);
+      });
+      if (!created.length) continue;
+      added += created.length;
+      if (day === selectedDate) await change(day, (cur) => [...cur, ...created]);
+      else await mutateDay(day, (cur) => [...cur, ...created]);
     }
-    await change(selectedDate, (cur) => [...cur, ...created],
-      `${created.length} task(s) mirrored from PMS.${rows.length - created.length ? ` ${rows.length - created.length} already here.` : ""}`);
+
+    if (!added) {
+      showToast(dupes ? "Every one of those is already in the app." : "Nothing to add.", "warn");
+    } else {
+      const days = Array.from(byDay.keys()).sort();
+      showToast(
+        `${added} job(s) added to ${days.length === 1 ? days[0] : `${days.length} days (${days[0]} – ${days[days.length - 1]})`}.` +
+        (dupes ? ` ${dupes} already here.` : ""),
+        "ok"
+      );
+      if (!byDay.has(selectedDate) && days.length === 1) setSelectedDate(days[0]);
+    }
     setTaskPaste(false);
   }
 
@@ -671,7 +710,7 @@ export default function LiveBoard({
       <div className="flex flex-wrap items-center gap-2 -mt-1">
         <button onClick={() => setTaskPaste(true)}
                 className="flex items-center gap-1.5 text-xs bg-slate-900 text-white rounded-md px-2.5 py-1.5">
-          <ClipboardPaste className="w-3.5 h-3.5" /> Mirror the PMS task list
+          <ClipboardPaste className="w-3.5 h-3.5" /> Paste the day in (sheet or PMS)
         </button>
         {lock.locked && jobs.length > 0 && (
           <button onClick={() => setDayReview(true)}
@@ -790,7 +829,7 @@ export default function LiveBoard({
         <TaskPasteDialog
           date={selectedDate}
           onCancel={() => setTaskPaste(false)}
-          onCommit={addFromPms}
+          onCommit={addFromPaste}
         />
       )}
       {dayReview && (
@@ -2468,20 +2507,23 @@ function TaskPasteDialog({ date, onCancel, onCommit }) {
   function read(v) {
     setText(v);
     if (!squash(v)) { setPreview(null); return; }
-    setPreview(parseTaskPaste(v, date));
+    setPreview(parseAnyPaste(v, date, parseSheetPaste));
   }
 
   const rows = preview?.jobs || [];
+  const dates = preview?.dates || [];
+  const elsewhere = dates.filter((d) => d && d !== date);
   const withTime = rows.filter((r) => squash(r.timeOfVisit)).length;
   const withOcc = rows.filter((r) => squash(r.status)).length;
   const withTech = rows.filter((r) => squash(r.team)).length;
 
   return (
-    <Modal title={`Mirror the PMS task list onto ${date}`} onCancel={onCancel} wide>
+    <Modal title="Paste the day in" onCancel={onCancel} wide>
       <p className="text-xs text-slate-600">
-        In PMS, open the task list for this day, select the table including its headings, and paste
-        it here. Column order does not matter. Anything already on the day with the same TSK
-        reference is skipped, so pasting twice is safe.
+        Two things paste in here and the box works out which is which: <b>the daily Google Sheet</b>
+        exactly as the coordinator fills it, or <b>the PMS task list</b>. Select the table including
+        its heading row and paste. Column order does not matter, and anything already in the app
+        with the same TSK reference is skipped — so pasting the same thing twice is safe.
       </p>
       <textarea autoFocus value={text} onChange={(e) => read(e.target.value)} rows={7}
                 placeholder="Number	Title	Property	Subcategory	Priority	Status	Assignees	Due date	Duration"
@@ -2496,17 +2538,29 @@ function TaskPasteDialog({ date, onCancel, onCommit }) {
       {rows.length > 0 && (
         <div className="mt-3">
           <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs text-slate-600">
+            <span className="rounded px-1.5 bg-slate-900 text-white text-[11px]">
+              {preview.format === "sheet" ? "daily sheet" : "PMS task list"}
+            </span>
             <span><b className="text-slate-900">{rows.length}</b> task(s) read</span>
             <span><b>{withTech}</b> already have a technician</span>
             <span><b>{withOcc}</b> carry the unit state</span>
             <span><b>{withTime}</b> have a confirmed time</span>
             {preview.skipped > 0 && <span className="text-amber-700">{preview.skipped} row(s) unreadable</span>}
           </div>
-          <p className="text-[11px] text-slate-500 mt-1">
-            Unit state and appointment times are read out of the title prefix — <code>GC 2-4pm</code>,
-            <code> vacant</code>, <code>B2B</code>, <code>WC</code> — so they do not have to be typed again.
-            A confirmed time is the first thing the day gets planned around.
-          </p>
+          {preview.format === "pms" && (
+            <p className="text-[11px] text-slate-500 mt-1">
+              Unit state and appointment times are read out of the title prefix — <code>GC 2-4pm</code>,
+              <code> vacant</code>, <code>B2B</code>, <code>WC</code> — so they do not have to be typed
+              again. A confirmed time is the first thing the day gets planned around.
+            </p>
+          )}
+          {elsewhere.length > 0 && (
+            <p className="mt-2 text-xs text-slate-800 bg-slate-100 border border-slate-200 rounded px-2 py-1.5">
+              These rows carry their own dates and will go to {dates.join(", ")} — not to {date}.
+              The sheet is trusted over whichever day happens to be open, because the evening
+              coordinator builds tomorrow while looking at today.
+            </p>
+          )}
           <div className="mt-2 max-h-64 overflow-y-auto border border-slate-200 rounded-md divide-y divide-slate-100">
             {rows.map((r, i) => (
               <div key={i} className="px-2 py-1.5 text-xs flex flex-wrap items-baseline gap-x-2">
@@ -2527,7 +2581,7 @@ function TaskPasteDialog({ date, onCancel, onCommit }) {
         <button onClick={onCancel} className="text-sm border border-slate-300 px-3 py-1.5 rounded-md">Cancel</button>
         <button onClick={() => onCommit(rows)} disabled={!rows.length}
                 className="text-sm bg-slate-900 text-white px-3 py-1.5 rounded-md disabled:opacity-40">
-          Add {rows.length || ""} to {date}
+          Add {rows.length || ""} to {dates.length === 1 ? dates[0] : dates.length > 1 ? `${dates.length} days` : date}
         </button>
       </div>
     </Modal>

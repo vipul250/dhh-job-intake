@@ -768,3 +768,27 @@ So the PMS value is stored as it was chosen, for reconciliation, and the
 app classifies more finely from the task text on top of it — at no typing
 cost, because it is inferred rather than asked. The two never disagree;
 one is simply the summary of the other.
+
+### One paste box, two sources
+
+The coordinator's live Google Sheet and the PMS task list are different
+tables with different headings, and asking somebody at 10pm to remember
+which button matches which clipboard is a small stupid tax. So **Paste the
+day in** works out which it is looking at: the sheet by the columns only it
+has (Task Description / Scope of Work, Estimated Time, Guest Confirmed), the
+PMS list by Title plus a task Number or Subcategory. If neither is a clear
+match it says so rather than guessing — importing thirty rows into the wrong
+shape is far worse than a refusal.
+
+**Rows land on the day the paste says they belong to, never on whichever day
+is open.** The evening coordinator builds tomorrow while looking at today,
+and silently dropping tomorrow's schedule onto today would be the worst
+failure this app could have. A sheet covering several days is split across
+them.
+
+**Re-pasting is safe, and it is the expected way to work.** The coordinator
+keeps adding to the sheet all evening; they paste again and only the new
+rows land. Matching is on the TSK reference where there is one and on
+property + unit + task where there is not — necessary, because the real
+sheet carries a reference on only about four rows in ten, and without the
+second key a re-paste would duplicate most of the day.
