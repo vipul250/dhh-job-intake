@@ -36,6 +36,29 @@ and the *who did what* table split down the middle.
 The Access panel counts them for you and will not let you forget the
 coordinators, who are the people who will use this most.
 
+These addresses are already on the team list, so this step is done for the
+office:
+
+| Person | Work email | |
+|---|---|---|
+| Haris | haris@deluxehomes.com | coordinator |
+| Kaja | kajamohideen@deluxehomes.com | coordinator |
+| Tiyana | tiyana@deluxehomes.com | coordinator |
+| Monish | monishraj@deluxehomes.com | manager |
+| Vipul | vipul@deluxehomes.com | **administrator** |
+
+They are filled in on any list that does not already have them, without
+overwriting anything typed by hand. Everyone else — the technicians — has a
+blank Work email box waiting, and **Add someone** on the team list takes a
+person who is not on it at all.
+
+**The administrator is the only one who can switch sign-in back off.**
+Everything else in the app stays open to everybody on purpose: a maintenance
+department does not need permission tiers to schedule a job, and every
+action already carries a name. This one control is different because getting
+it wrong shuts the whole team out. Mark another administrator by ticking
+`admin` on their team row.
+
 ## 1. Add the people who are allowed in
 
 In the Supabase dashboard: **Authentication → Users → Add user → Send

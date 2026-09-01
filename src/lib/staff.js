@@ -72,13 +72,19 @@ export const STAFF_SEED = [
   { name: "Anthony",     trade: "multi_tech", base: "Dubai",    licence: true,  role: "field", note: "First day 01/09/2026" },
 
   { name: "Haris",  trade: "coordinator", base: "Dubai", licence: null, role: "office",
-    shift: "08:00-17:00", note: "Newest team member. Also responsible for stock availability for the teams." },
+    email: "haris@deluxehomes.com", shift: "08:00-17:00",
+    note: "Newest team member. Also responsible for stock availability for the teams." },
   { name: "Kaja",   trade: "coordinator", base: "Dubai", licence: null, role: "office",
-    shift: "08:00-17:00", note: "Also responsible for all projects end to end." },
+    email: "kajamohideen@deluxehomes.com", shift: "08:00-17:00",
+    note: "Also responsible for all projects end to end." },
   { name: "Tiyana", trade: "coordinator", base: "Dubai", licence: null, role: "office",
-    shift: "14:00-23:00", note: "Longest-serving coordinator. Also reviews blocked properties and major operational issues." },
+    email: "tiyana@deluxehomes.com", shift: "14:00-23:00",
+    note: "Longest-serving coordinator. Also reviews blocked properties and major operational issues." },
   { name: "Monish", trade: "manager", base: "Dubai", licence: null, role: "office",
-    note: "Assistant Maintenance Manager." },
+    email: "monishraj@deluxehomes.com", note: "Assistant Maintenance Manager." },
+  { name: "Vipul",  trade: "manager", base: "Dubai", licence: null, role: "office",
+    email: "vipul@deluxehomes.com", admin: true,
+    note: "Administrator — can turn sign-in on and off." },
 ];
 
 export function normaliseStaff(rec) {
@@ -94,6 +100,12 @@ export function normaliseStaff(rec) {
        Mugusin" while every schedule says "Kaja" — one person, two histories,
        and the who-did-what table split in half. */
     email: squash(rec.email).toLowerCase(),
+    /* An administrator is the only one who can switch sign-in back OFF once
+       it is on. Everything else in the app is open to everybody on purpose —
+       a maintenance department does not need permission tiers to schedule a
+       job, and every action already carries a name. This one control is
+       different because getting it wrong shuts the whole team out. */
+    admin: rec.admin === true,
     shift: squash(rec.shift),
     phone: squash(rec.phone),
     note: squash(rec.note),
@@ -103,6 +115,41 @@ export function normaliseStaff(rec) {
 
 export function seedStaff() {
   return STAFF_SEED.map(normaliseStaff);
+}
+
+/* ---------------------------------------------------------------------- *
+ * Backfilling contact details onto a list that is already stored.
+ *
+ * The team list was saved to the database before it had an email column, so
+ * changing the seed alone would reach nobody — seedStaff() only runs when
+ * there is no stored list at all. This fills in what is missing without
+ * touching what somebody has typed:
+ *
+ *   - an email is only written where the stored record has none;
+ *   - the admin flag is only ever raised from the seed, never lowered, so
+ *     an administrator added by hand in the app is not demoted on reload;
+ *   - a seeded person absent from the list is appended, matched on name,
+ *     so nobody is duplicated;
+ *   - a person the department added themselves is left completely alone.
+ * -------------------------------------------------------------------- */
+export function backfillStaff(stored) {
+  const list = (stored || []).map(normaliseStaff);
+  const byName = new Map(list.map((r) => [canonTech(r.name), r]));
+  let changed = false;
+
+  STAFF_SEED.forEach((seedRec) => {
+    const key = canonTech(seedRec.name);
+    const rec = byName.get(key);
+    if (!rec) {
+      list.push(normaliseStaff(seedRec));
+      changed = true;
+      return;
+    }
+    if (!rec.email && seedRec.email) { rec.email = squash(seedRec.email).toLowerCase(); changed = true; }
+    if (seedRec.admin === true && !rec.admin) { rec.admin = true; changed = true; }
+  });
+
+  return { list, changed };
 }
 
 export function staffIndex(list) {

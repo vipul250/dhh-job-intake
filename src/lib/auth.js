@@ -131,6 +131,9 @@ export function identityFor(session, staff) {
     role: rec && rec.trade === "manager" ? "admin"
         : rec && rec.trade === "coordinator" ? "coordinator"
         : "field",
+    /* Explicitly flagged on the team list, not inferred from a trade. The
+       one thing it controls is switching sign-in back off. */
+    admin: !!(rec && rec.admin),
     staff: rec || null,
     // True identity, not a typed-in name.
     verified: true,

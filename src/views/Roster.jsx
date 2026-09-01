@@ -3,16 +3,16 @@ import {
   Users, Loader2, Check, AlertTriangle, Phone, Clock, Plane, Save, X,
 } from "lucide-react";
 import { storageGet, storageSet } from "../lib/storage.js";
-import { squash } from "../lib/normalize.js";
+import { squash, canonKey } from "../lib/normalize.js";
 import { readDay, migrateDay } from "../lib/jobStore.js";
 import { liveJobs } from "../lib/job.js";
 import { parseRosterMessage, rosterSummary, checkAgainstSchedule } from "../lib/roster.js";
 import {
-  seedStaff, staffIndex, parseStaffMessage, mergeStaff, normaliseStaff,
+  seedStaff, backfillStaff, staffIndex, parseStaffMessage, mergeStaff, normaliseStaff,
   TRADES, TRADE_LABEL, describeStaff,
 } from "../lib/staff.js";
 import { checkDayCrewing } from "../lib/crewing.js";
-import { sendCode, verifyCode, setAuthRequired as persistAuthRequired, signOut } from "../lib/auth.js";
+import { sendCode, verifyCode, setAuthRequired as persistAuthRequired, signOut, identityFor } from "../lib/auth.js";
 
 /* ---------------------------------------------------------------------- *
  * Roster.jsx — who is actually available today.
@@ -318,7 +318,12 @@ function AccessPanel({ authRequired, setAuthRequired, session, showToast }) {
     const read = async () => {
       const raw = await storageGet("staff");
       if (off) return;
-      try { setStaff(raw ? JSON.parse(raw) : seedStaff()); } catch { setStaff(seedStaff()); }
+      try {
+        const list = raw ? JSON.parse(raw) : null;
+        // An empty stored list means the same thing as no stored list: the
+        // seed is what the team list will show, so count against that.
+        setStaff(list && list.length ? list : seedStaff());
+      } catch { setStaff(seedStaff()); }
     };
     read();
     window.addEventListener("dhh-staff-saved", read);
@@ -326,6 +331,14 @@ function AccessPanel({ authRequired, setAuthRequired, session, showToast }) {
   }, []);
 
   const people = (staff || []).filter((x) => x.active !== false);
+  /* Turning sign-in ON is open to anybody, because until it is on there is
+     no verified identity to check and the "prove a code arrives" gate is
+     the real protection. Turning it OFF once it is on is the one control
+     restricted to an administrator — otherwise anyone signed in could
+     quietly reopen the app to the world. */
+  const me = session ? identityFor(session, staff || []) : null;
+  const canTurnOff = !!(me && me.admin);
+  const admins = people.filter((x) => x.admin).map((x) => x.name);
   const withEmail = people.filter((x) => squash(x.email));
   const officeNoEmail = people.filter((x) => x.role === "office" && !squash(x.email));
 
@@ -370,7 +383,7 @@ function AccessPanel({ authRequired, setAuthRequired, session, showToast }) {
           </span>
           <span className={authRequired ? "text-emerald-800" : "text-amber-800"}>
             {authRequired
-              ? "Only people with an address added in Supabase can open the app."
+              ? `Only people with an address added in Supabase can open the app. Switching it back off is ${admins.length ? `${admins.join(", ")}'s` : "an administrator's"} to do.`
               : "Anyone with the link can open the app and change the board."}
           </span>
           <div className="ml-auto flex gap-1.5">
@@ -382,8 +395,10 @@ function AccessPanel({ authRequired, setAuthRequired, session, showToast }) {
               </button>
             )}
             {authRequired && (
-              <button onClick={() => toggle(false)}
-                      className="text-xs border border-slate-300 bg-white rounded-md px-2.5 py-1">
+              <button onClick={() => toggle(false)} disabled={!canTurnOff}
+                      title={canTurnOff ? "" :
+                        `Only an administrator can switch sign-in off${admins.length ? ` — ${admins.join(", ")}` : ""}. If nobody can, see docs/ACCESS.md for the one-line SQL.`}
+                      className="text-xs border border-slate-300 bg-white rounded-md px-2.5 py-1 disabled:opacity-40">
                 Turn it off
               </button>
             )}
@@ -487,10 +502,33 @@ function Team({ jobs, showToast }) {
       if (!list || !list.length) {
         list = seedStaff();
         await storageSet("staff", JSON.stringify(list));
+        window.dispatchEvent(new CustomEvent("dhh-staff-saved"));
+      } else {
+        /* The list was stored before it had an email column, so the seed
+           alone would never reach it. Fill in what is missing, leave alone
+           what somebody typed, and write back only if anything changed. */
+        const back = backfillStaff(list);
+        list = back.list;
+        if (back.changed) {
+          await storageSet("staff", JSON.stringify(list));
+          window.dispatchEvent(new CustomEvent("dhh-staff-saved"));
+        }
       }
       setStaff(list);
     })();
   }, []);
+
+  /* Somebody joins, and there is no reason that should need a developer. */
+  function addPerson() {
+    const name = squash(window.prompt("Name of the person to add") || "");
+    if (!name) return;
+    if ((staff || []).some((x) => canonKey(x.name) === canonKey(name))) {
+      showToast(`${name} is already on the team list.`, "warn");
+      return;
+    }
+    save([...(staff || []), normaliseStaff({ name, trade: "multi_tech", base: "Dubai", licence: null, role: "field" })]);
+    showToast(`${name} added. Set their trade, licence and work email on the row.`, "ok");
+  }
 
   const idx = useMemo(() => (staff ? staffIndex(staff) : null), [staff]);
   const crewing = useMemo(() => (idx ? checkDayCrewing(jobs, idx) : null), [idx, jobs]);
@@ -531,10 +569,16 @@ function Team({ jobs, showToast }) {
             This is the same list for every day; the roster above is who is in today.
           </p>
         </div>
-        <button onClick={() => setShowPaste((v) => !v)}
-                className="text-xs border border-slate-300 rounded-md px-2.5 py-1.5 hover:bg-slate-50 shrink-0">
-          {showPaste ? "Close" : "Paste team details"}
-        </button>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <button onClick={addPerson}
+                  className="text-xs bg-slate-900 text-white rounded-md px-2.5 py-1.5">
+            Add someone
+          </button>
+          <button onClick={() => setShowPaste((v) => !v)}
+                  className="text-xs border border-slate-300 rounded-md px-2.5 py-1.5 hover:bg-slate-50">
+            {showPaste ? "Close" : "Paste team details"}
+          </button>
+        </div>
       </div>
 
       {showPaste && (
