@@ -35,7 +35,8 @@ export const PROJECT_TYPES = [
   ["onboarding", "Onboarding — approved quotation"],
   ["quoted-existing", "Approved quotation — existing unit"],
   ["snag", "Snag / rectification"],
-  ["other", "Other"],
+  ["handover", "Pre-handover works"],
+  ["landlord", "Landlord-requested works"],
 ];
 
 export function newProject(fields = {}, by = "unknown") {
@@ -168,12 +169,18 @@ export function projectCost(project, linkedJobs, rates) {
     unpricedJobs++;
   });
 
-  const extraHours = (project.extraLabour || []).reduce((s, l) => s + (Number(l.hours) || 0), 0);
+  /* Voided lines stay on the record and stop counting. Nothing in this app
+     is deleted, so "wrong entry" is a state rather than an erasure. */
+  const extraHours = (project.extraLabour || [])
+    .filter((l) => !l.void)
+    .reduce((s, l) => s + (Number(l.hours) || 0), 0);
   const boardHours = (measuredMinutes + estimatedMinutes) / 60;
   const labourHours = boardHours + extraHours;
   const labourCost = labourHours * hourly;
 
-  const materialCost = (project.materials || []).reduce((s, m) => s + (Number(m.total) || 0), 0);
+  const materialCost = (project.materials || [])
+    .filter((m) => !m.void)
+    .reduce((s, m) => s + (Number(m.total) || 0), 0);
   const selfCost = labourCost + materialCost;
 
   const quoted = Number(project.quotedAmount);

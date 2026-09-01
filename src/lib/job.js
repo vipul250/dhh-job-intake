@@ -113,13 +113,26 @@ export const SOURCE_LABEL = Object.fromEntries(JOB_SOURCES.map((s) => [s.id, s.l
    does not control. */
 export const REACTIVE_SOURCES = ["guest", "hk", "gro", "emergency"];
 
+/* No "Other" on any of these lists.
+ *
+ * An "Other" option is the cheapest thing on a dropdown to click and the
+ * most expensive thing to have clicked: it costs one second and it makes
+ * the row permanently uncountable. Over a month it becomes the biggest
+ * bucket on every chart and says nothing.
+ *
+ * Where a list genuinely cannot be exhaustive there is instead a free-text
+ * answer that has to be typed. It takes a few seconds longer, which is the
+ * point — the answer that gets stored is what actually happened, in words,
+ * rather than a shrug. The constant below marks that option so the UI can
+ * require the text and refuse to save an empty one. */
+export const SAY_WHAT_HAPPENED = "__say__";
+
 export const HOW_REPORTED = [
   "Google Chat — maintenance group",
   "PMS task",
   "Phone call",
   "In person",
   "Email",
-  "Other",
 ];
 
 /* A state that means the job still needs somebody to do something about it.
@@ -132,7 +145,8 @@ export const NOT_DONE_REASONS = [
   "Material not available",
   "Ran out of time",
   "Needs contractor / out of scope",
-  "Other",
+  "Technician did not reach the unit",
+  "Wrong unit or wrong information on the job",
 ];
 
 /* `displaces: true` means something else took this job's place. Those are
@@ -151,7 +165,8 @@ export const MOVE_REASONS = [
   { id: "material", label: "Material not ready", displaces: false },
   { id: "tech-unavailable", label: "Technician unavailable", displaces: false },
   { id: "out-of-time", label: "Ran out of time", displaces: false },
-  { id: "other", label: "Other", displaces: false },
+  { id: "material-late", label: "Material arriving later", displaces: false },
+  { id: "building-permit", label: "Building access or permit not granted", displaces: false },
 ];
 
 export const MOVE_REASON_LABEL = Object.fromEntries(MOVE_REASONS.map((r) => [r.id, r.label]));
@@ -172,8 +187,9 @@ export const CANCEL_REASONS = [
   "Duplicate of another job",
   "Resolved without a visit",
   "Cancelled by owner / PM",
+  "Cancelled by the guest",
   "Raised in error",
-  "Other",
+  "No longer our responsibility",
 ];
 
 export const uid = () =>

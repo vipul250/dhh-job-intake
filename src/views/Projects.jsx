@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from "react";
 import {
-  Briefcase, Plus, Loader2, Link2, Trash2, ExternalLink, Package,
+  Briefcase, Plus, Loader2, Link2, ExternalLink, Package,
   AlertTriangle, CheckCircle2, Clock, X, Wand2, Search, CalendarDays, Users,
 } from "lucide-react";
 import { storageGet, storageSet } from "../lib/storage.js";
@@ -193,10 +193,11 @@ export default function Projects({ knownDates, showToast }) {
         <ProjectCard
           key={p.id} project={p} allJobs={allJobs} rates={rates} priceBook={priceBook}
           onChange={upsert} onEdit={() => setEditing(p)} showToast={showToast}
-          onDelete={() => {
-            if (!window.confirm(`Delete project "${p.title || p.property}"? Material lines and links are lost. The daily jobs are not affected.`)) return;
-            save(projects.filter((x) => x.id !== p.id));
-          }}
+          /* Nothing is deleted in this app. A project that should not have
+             been raised is cancelled, keeping its quotation reference, its
+             material lines and the hours already booked against it — which
+             is exactly the evidence somebody will want later. */
+          onCancelProject={() => upsert({ ...p, status: "cancelled" })}
         />
       ))}
 
@@ -377,7 +378,7 @@ function Stat({ label, value, sub, tone }) {
 
 /* ========================= project card ========================= */
 
-function ProjectCard({ project, allJobs, rates, priceBook, onChange, onEdit, onDelete, showToast }) {
+function ProjectCard({ project, allJobs, rates, priceBook, onChange, onEdit, onCancelProject, showToast }) {
   const [tab, setTab] = useState(null);
   const linked = jobsFor(project, allJobs);
   const cost = projectCost(project, linked, rates);
@@ -458,7 +459,13 @@ function ProjectCard({ project, allJobs, rates, priceBook, onChange, onEdit, onD
         ))}
         <div className="ml-auto flex gap-1.5">
           <button onClick={onEdit} className="text-xs border border-slate-300 rounded px-2 py-1 hover:bg-slate-50">Edit</button>
-          <button onClick={onDelete} className="text-xs text-red-700 border border-red-200 rounded px-2 py-1 hover:bg-red-50">Delete</button>
+          {project.status !== "cancelled" && (
+            <button onClick={onCancelProject}
+                    title="The project stays on record with its costs and hours — nothing is removed"
+                    className="text-xs text-slate-600 border border-slate-300 rounded px-2 py-1 hover:bg-slate-50">
+              Cancel project
+            </button>
+          )}
         </div>
       </div>
 
@@ -567,11 +574,19 @@ function MaterialLog({ project, priceBook, currency, onChange, showToast }) {
     onChange({ ...project, materials: [...(project.materials || []), line] });
     setItem(""); setQty("1"); setUnitCost(""); setTouchedCost(false);
   }
-  function remove(id) {
-    onChange({ ...project, materials: (project.materials || []).filter((m) => m.id !== id) });
+  /* A material line entered by mistake is voided, not removed. It stops
+     counting towards the cost and stays visible, struck through — because a
+     figure that was once in the project's cost and then vanished is exactly
+     the kind of thing somebody will need to account for later. Voiding is
+     reversible; deleting never is. */
+  function toggleVoid(id) {
+    onChange({
+      ...project,
+      materials: (project.materials || []).map((m) => (m.id === id ? { ...m, void: !m.void } : m)),
+    });
   }
 
-  const total = (project.materials || []).reduce((s, m) => s + (m.total || 0), 0);
+  const total = (project.materials || []).reduce((s, m) => s + (m.void ? 0 : m.total || 0), 0);
 
   return (
     <div className="border-t border-slate-100 p-3 bg-slate-50">
@@ -611,12 +626,16 @@ function MaterialLog({ project, priceBook, currency, onChange, showToast }) {
 
       <ul className="mt-3 space-y-1">
         {(project.materials || []).map((m) => (
-          <li key={m.id} className="flex items-center gap-2 text-xs">
+          <li key={m.id} className={`flex items-center gap-2 text-xs ${m.void ? "opacity-45 line-through" : ""}`}>
             <span className="text-slate-400 tabular-nums shrink-0">{m.date}</span>
             <span className="text-slate-800 flex-1 truncate">{m.item}</span>
             <span className="text-slate-500 tabular-nums shrink-0">{m.qty} × {m.unitCost}</span>
             <span className="text-slate-900 tabular-nums shrink-0 w-20 text-right">{currency} {m.total.toLocaleString()}</span>
-            <button onClick={() => remove(m.id)} className="text-slate-400 hover:text-red-600 shrink-0"><Trash2 className="w-3 h-3" /></button>
+            <button onClick={() => toggleVoid(m.id)}
+                    title={m.void ? "Put it back in the cost" : "Stop it counting — the line stays on record"}
+                    className="text-[11px] text-slate-400 hover:text-slate-900 shrink-0 no-underline">
+              {m.void ? "restore" : "void"}
+            </button>
           </li>
         ))}
       </ul>
@@ -667,12 +686,15 @@ function ExtraLabour({ project, onChange }) {
       </div>
       <ul className="mt-3 space-y-1">
         {(project.extraLabour || []).map((l) => (
-          <li key={l.id} className="flex items-center gap-2 text-xs">
+          <li key={l.id} className={`flex items-center gap-2 text-xs ${l.void ? "opacity-45 line-through" : ""}`}>
             <span className="text-slate-400 tabular-nums shrink-0">{l.date}</span>
             <span className="text-slate-900 shrink-0">{l.hours}h</span>
             <span className="text-slate-600 flex-1 truncate">{l.note}</span>
-            <button onClick={() => onChange({ ...project, extraLabour: project.extraLabour.filter((x) => x.id !== l.id) })}
-                    className="text-slate-400 hover:text-red-600"><Trash2 className="w-3 h-3" /></button>
+            <button onClick={() => onChange({ ...project, extraLabour: project.extraLabour.map((x) => (x.id === l.id ? { ...x, void: !x.void } : x)) })}
+                    title={l.void ? "Put it back in the cost" : "Stop it counting — the line stays on record"}
+                    className="text-[11px] text-slate-400 hover:text-slate-900">
+              {l.void ? "restore" : "void"}
+            </button>
           </li>
         ))}
       </ul>

@@ -834,3 +834,50 @@ rather than trusted at an unknown age.
 Real sign-in, with an emailed code, is already built and switched off until
 email delivery is proven — see `docs/ACCESS.md`. Turning it on replaces the
 typed name with a verified one everywhere, and nothing else changes.
+
+## Three rules the app holds itself to
+
+**Nothing is deleted. Anywhere.**
+
+A record that can vanish cannot be trusted, and "where did that go" is the
+question this whole system exists to answer. So every screen offers a state
+instead of an erasure:
+
+| Instead of | It does |
+|---|---|
+| Delete a job | Cancel it, with a reason. It stays on the day, greyed, in "Left this day". |
+| Delete a project | Cancel it, keeping the quotation reference, materials and hours already booked — the evidence somebody will want later. |
+| Delete a material or labour line | **Void** it. It stops counting towards the cost and stays visible, struck through. A figure that was once in a project's cost and then disappeared is precisely what has to be accountable. Voiding is reversible; deleting never is. |
+| Drop something from the queue | Take it off with a reason, into a list you can open and put it back from. |
+
+The bin icon is gone from the interface entirely, including from *Cancel
+this job* — cancelling is not deleting and it should not look like it.
+
+**No "Other" on any dropdown.**
+
+"Other" is the cheapest option on a list to click and the most expensive to
+have clicked: one second to choose, and the row is permanently uncountable.
+Over a month it becomes the biggest bucket on every chart and says nothing.
+
+The lists were widened with the answers that were actually hiding under
+"Other" — *cancelled by the guest*, *no longer our responsibility*, *building
+access or permit not granted*, *material arriving later*, *wrong unit or
+wrong information on the job*, *asked for by the landlord* — and where a
+list genuinely cannot be exhaustive there is a final option, **"None of
+these — say what happened"**, which requires the words and will not save
+without them. What gets stored is the sentence, not a shrug.
+
+Computed buckets are a different thing and are labelled honestly: where the
+app cannot classify a task from its text it says *not classified from the
+task text*, which is a coverage statement, not a choice anybody made.
+
+**One screen per job, and no more.**
+
+Import Sheet, Print / Export and AI Import are gone. The daily sheet now
+pastes straight onto the board, the Dashboard exports rows, and every tab
+that remains answers a question somebody actually asks:
+
+Live Board · Queue · Roster · Dashboard · Projects · Insights (today) ·
+Fault Codes · Properties
+
+Removing them took about 900 lines of unreachable code out with them.

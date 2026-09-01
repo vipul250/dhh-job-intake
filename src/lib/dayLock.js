@@ -95,5 +95,6 @@ export const CHANGE_REASONS = [
   "Technician unavailable",
   "Correcting a mistake in the entry",
   "Material or access problem",
-  "Other",
+  "Project work took priority",
+  "Asked for by the landlord or owner",
 ];

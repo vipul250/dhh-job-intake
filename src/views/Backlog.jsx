@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from "react";
 import {
   Inbox, Loader2, AlertTriangle, CalendarCheck, Clock, ClipboardPaste,
-  ChevronDown, ChevronRight, CheckCircle2, HelpCircle, Trash2, Search,
+  ChevronDown, ChevronRight, CheckCircle2, HelpCircle, Search,
 } from "lucide-react";
 import { storageGet, storageSet } from "../lib/storage.js";
 import { readDays, mutateDay, migrateDay } from "../lib/jobStore.js";
@@ -86,7 +86,7 @@ export default function Backlog({ knownDates, selectedDate, setSelectedDate, set
   });
 
   const rows = useMemo(
-    () => (items ? triage(items, ctx).map((r) => ({
+    () => (items ? triage(items.filter((i) => !i.dismissed), ctx).map((r) => ({
       item: r.item, rec: recommendDay(r.item, ctxFor(r.item)),
     })) : []),
     [items, ctx]
@@ -210,11 +210,35 @@ export default function Backlog({ knownDates, selectedDate, setSelectedDate, set
             open={openRow === item.id}
             onToggle={() => setOpenRow(openRow === item.id ? null : item.id)}
             onSchedule={(d) => schedule(item, rec, d)}
-            onDrop={() => save(items.filter((i) => i.id !== item.id))}
+            onDismiss={(why) => save(items.map((i) =>
+              (i.id === item.id ? { ...i, dismissed: { at: Date.now(), why } } : i)))}
             onOpenDay={(d) => { setSelectedDate(d); setActiveTab("live"); }}
           />
         ))}
       </div>
+
+      {items.some((i) => i.dismissed) && (
+        <details className="rounded-lg border border-slate-200 bg-white p-4">
+          <summary className="text-sm font-medium text-slate-800 cursor-pointer">
+            Taken off the queue ({items.filter((i) => i.dismissed).length})
+          </summary>
+          <p className="text-xs text-slate-500 mt-1">
+            Nothing is deleted here. These are off the working list with a reason against them, and
+            they can be put back.
+          </p>
+          <ul className="mt-2 space-y-1">
+            {items.filter((i) => i.dismissed).map((i) => (
+              <li key={i.id} className="text-xs text-slate-600 flex flex-wrap items-baseline gap-2">
+                <span className="font-medium text-slate-800">{i.property} {i.unit}</span>
+                <span className="flex-1 min-w-0 truncate">{i.description}</span>
+                <span className="text-slate-500 italic">{i.dismissed.why}</span>
+                <button onClick={() => save(items.map((x) => (x.id === i.id ? { ...x, dismissed: null } : x)))}
+                        className="text-slate-400 underline underline-offset-2">put it back</button>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
 
       {items.some((i) => i.scheduledFor) && (
         <details className="rounded-lg border border-slate-200 bg-white p-4">
@@ -292,7 +316,7 @@ const Step = ({ n, title, children }) => (
   </div>
 );
 
-function QueueRow({ item, rec, open, onToggle, onSchedule, onDrop, onOpenDay, busy }) {
+function QueueRow({ item, rec, open, onToggle, onSchedule, onDismiss, onOpenDay, busy }) {
   const [pick, setPick] = useState("");
   const tone = rec.conflict ? "border-red-300 bg-red-50/50"
     : rec.blocked ? "border-amber-300 bg-amber-50/50"
@@ -366,9 +390,16 @@ function QueueRow({ item, rec, open, onToggle, onSchedule, onDrop, onOpenDay, bu
               another day
             </button>
           </div>
-          <button onClick={onDrop} className="text-[11px] text-slate-400 hover:text-red-600 inline-flex items-center gap-1">
-            <Trash2 className="w-3 h-3" /> not ours
-          </button>
+          <select value="" onChange={(e) => { if (e.target.value) onDismiss(e.target.value); }}
+                  title="It stays in the record with the reason — nothing is deleted here"
+                  className="text-[11px] text-slate-400 border border-slate-200 rounded px-1 py-0.5 bg-white">
+            <option value="">take it off the queue…</option>
+            <option value="Not a maintenance job">Not a maintenance job</option>
+            <option value="Already done">Already done</option>
+            <option value="Duplicate of another issue">Duplicate of another issue</option>
+            <option value="Handled by a contractor">Handled by a contractor</option>
+            <option value="Landlord or owner is dealing with it">Landlord or owner is dealing with it</option>
+          </select>
         </div>
       </div>
     </div>

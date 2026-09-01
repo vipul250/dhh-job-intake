@@ -1234,7 +1234,7 @@ function WhereWorkGoes({ m }) {
     { label: WORK_TYPE_LABEL.ppm, value: mix.workTypes.ppm, color: C.s1 },
     { label: WORK_TYPE_LABEL.project, value: mix.workTypes.project, color: C.s3 },
     { label: WORK_TYPE_LABEL.inspection, value: mix.workTypes.inspection, color: C.s4 },
-    { label: "Other / unclassified", value: mix.workTypes.other + mix.workTypes.logistics, color: "#94a3b8" },
+    { label: "Not classified from the task text", value: mix.workTypes.other + mix.workTypes.logistics, color: "#94a3b8" },
   ];
 
   const propItems = mix.topProperties.slice(0, 10).map((p) => ({

@@ -1,25 +1,21 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import {
-  Plus, Check, AlertTriangle, Trash2, Copy, Download, X,
-  ClipboardList, LayoutGrid, Database, BarChart3, Loader2,
-  ChevronDown, ChevronRight, ChevronLeft, RefreshCw, Edit3, UploadCloud, TrendingUp, Briefcase, Clock, Building2, Printer,
-  Table2, Radio, Users, Inbox
+  Plus, Check, AlertTriangle, X,
+  ClipboardList, Database, BarChart3, Loader2,
+  ChevronRight, ChevronLeft, RefreshCw, TrendingUp, Briefcase, Clock, Building2, Radio, Users, Inbox
 } from "lucide-react";
 import { storageGet, storageSet, storageList } from "./lib/storage.js";
 import Dashboard from "./views/Dashboard.jsx";
-import SheetImport from "./views/SheetImport.jsx";
 import LiveBoard from "./views/LiveBoard.jsx";
 import Projects from "./views/Projects.jsx";
 import Roster from "./views/Roster.jsx";
 import Backlog from "./views/Backlog.jsx";
 import SignIn from "./views/SignIn.jsx";
-import {
-  isAuthRequired, currentSession, onAuthChange, identityFor, signOut,
-} from "./lib/auth.js";
+import { isAuthRequired, currentSession, onAuthChange, signOut } from "./lib/auth.js";
 import { mutateDay } from "./lib/jobStore.js";
-import { newJob } from "./lib/job.js";
+
 import { needsGuestConfirmation, squash } from "./lib/normalize.js";
-import { computeCapacity, computeAccessRisk, computeMaterialReadiness } from "./lib/metrics.js";
+
 
 /* ---------------------------------------------------------------------- *
  * SEED DATA — the Fault Code Master, ships pre-loaded on first run.
@@ -159,89 +155,6 @@ const norm = (s) => (s || "").trim().toLowerCase().replace(/\s+/g, " ");
  * ---------------------------------------------------------------------- */
 const FIELD_MAP = { sh: "shift", tm: "team", pr: "property", un: "unit", st: "status", fc: "faultCode", ds: "description", pi: "priority", nt: "notes" };
 
-function expandCompactJob(compact) {
-  const out = {};
-  Object.entries(FIELD_MAP).forEach(([short, full]) => { out[full] = compact[short] ?? ""; });
-  return out;
-}
-
-async function parseScheduleText(rawText, faultMaster) {
-  const codeList = faultMaster.map((f) => `${f.code}: ${f.description}`).join("\n");
-  const instructions = `You are extracting structured maintenance job entries from a raw WhatsApp-style daily schedule message for a short-term rental operations team in Dubai.
-
-Return ONLY a JSON array, no prose, no markdown code fences. Keep it compact — use these SHORT keys exactly (not the full names) to save output length:
-- sh: shift, e.g. "09:00-18:00" (infer from time-range headers, empty string if none in this chunk)
-- tm: team/technician names for this task
-- pr: property name
-- un: unit/villa number, empty string if none
-- st: status, one of: Vacant, Occupied - GC, Check-in, Checkout, B2B, Onboarding, Owner-Prep, Handover, Property-Blocked, Other
-- fc: fault code — the single closest match from the list below, exactly as written; "NEEDS-REVIEW" if nothing fits; "SCOPE-UNKNOWN" if the task depends on an external document not included here (e.g. "refer inspection report")
-- ds: short task description — keep concrete details (quantities/dimensions/product codes) but keep it brief
-- pi: priority, one of PRI-1 (safety-critical), PRI-2 (active defect + guest present/water risk/approved works), PRI-3 (vacant-unit defect or time-sensitive prep), PRI-4 (routine/cosmetic)
-- nt: brief flag only if something is ambiguous (possible duplicate, unclear status word, missing detail) — empty string otherwise, don't pad this field
-
-Fault code list:
-${codeList}
-
-Do not invent details not present in the text. Be terse in every field — this will be parsed programmatically and truncation breaks it, so shorter is better than complete sentences.`;
-
-  let response;
-  try {
-    response = await fetch("/api/parse", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ instructions, rawText }),
-    });
-  } catch (networkErr) {
-    throw new Error(`NETWORK: fetch to /api/parse failed (${networkErr.message || networkErr}). Is the serverless function deployed and ANTHROPIC_API_KEY set in Vercel?`);
-  }
-
-  const bodyText = await response.text();
-  let data;
-  try {
-    data = JSON.parse(bodyText);
-  } catch {
-    throw new Error(`HTTP ${response.status}: response body wasn't JSON — first 200 chars: ${bodyText.slice(0, 200)}`);
-  }
-  if (!response.ok) throw new Error(`API ${response.status}: ${data?.error?.message || data?.error || JSON.stringify(data).slice(0, 300)}`);
-  if (data?.type === "error") throw new Error(`API error: ${data.error?.message || JSON.stringify(data)}`);
-  if (data?.stop_reason === "max_tokens") {
-    throw new Error("TRUNCATED: response hit the token limit before finishing. This chunk has too many jobs for one call — it will be split smaller automatically.");
-  }
-
-  const textBlocks = (data.content || []).filter((b) => b.type === "text").map((b) => b.text);
-  if (textBlocks.length === 0) throw new Error(`Model returned no text block. Raw: ${JSON.stringify(data.content).slice(0, 300)}`);
-  const raw = textBlocks.join("\n");
-  const cleaned = raw.replace(/```json|```/g, "").trim();
-
-  let parsed;
-  try {
-    parsed = JSON.parse(cleaned);
-  } catch {
-    const start = cleaned.indexOf("[");
-    const end = cleaned.lastIndexOf("]");
-    if (start === -1) throw new Error(`No JSON array found in the reply. First 200 chars: ${cleaned.slice(0, 200)}`);
-    if (end === -1 || end < start) throw new Error("TRUNCATED: found the opening bracket but no closing one — response was cut off before finishing.");
-    try {
-      parsed = JSON.parse(cleaned.slice(start, end + 1));
-    } catch {
-      throw new Error("TRUNCATED: array structure broke midway — response was cut off before finishing.");
-    }
-  }
-  if (!Array.isArray(parsed)) throw new Error("Model returned valid JSON but it wasn't an array.");
-  return parsed.map(expandCompactJob);
-}
-
-function chunkScheduleText(rawText, unitsPerChunk = 4) {
-  const byParagraph = rawText.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
-  const units = byParagraph.length > 1 ? byParagraph : rawText.split("\n").map((l) => l.trim()).filter(Boolean);
-  const chunks = [];
-  for (let i = 0; i < units.length; i += unitsPerChunk) {
-    chunks.push(units.slice(i, i + unitsPerChunk).join("\n\n"));
-  }
-  return chunks.length ? chunks : [rawText];
-}
-
 export default function App() {
   /* The sign-in gate.
    *
@@ -278,10 +191,6 @@ export default function App() {
   const [showForm, setShowForm] = useState(false);
   const [editingJob, setEditingJob] = useState(null);
   const [toast, setToast] = useState(null);
-  const [parsedJobs, setParsedJobs] = useState([]);
-  const [parsing, setParsing] = useState(false);
-  const [parseError, setParseError] = useState("");
-  const [parseProgress, setParseProgress] = useState("");
 
   const showToast = useCallback((msg, kind = "info") => {
     setToast({ msg, kind });
@@ -472,24 +381,6 @@ export default function App() {
     else showToast("Job saved.", "ok");
   }
 
-  async function setJobStatus(job, newStatus, extra) {
-    const updated = jobs.map((j) => {
-      if (j.id !== job.id) return j;
-      const patch = { jobStatus: newStatus };
-      if (newStatus === "Completed") patch.completedAt = Date.now();
-      else patch.completedAt = null;
-      if (newStatus === "Blocked") patch.blockReason = (extra && extra.blockReason) || j.blockReason || BLOCK_REASON_OPTIONS[0];
-      else patch.blockReason = "";
-      return { ...j, ...patch };
-    });
-    await persistJobs(selectedDate, updated);
-  }
-
-  async function logActualTime(job, field) {
-    const updated = jobs.map((j) => (j.id === job.id ? { ...j, [field]: Date.now() } : j));
-    await persistJobs(selectedDate, updated);
-  }
-
   /* Hard delete is gone.
    *
    * A job that has been logged is a record of what the department planned
@@ -514,80 +405,6 @@ export default function App() {
     showToast(`Added property ${entry.name}`, "ok");
   }
 
-  async function handleParse(rawText) {
-    setParsing(true);
-    setParseError("");
-    setParsedJobs([]);
-    const chunks = chunkScheduleText(rawText, 4);
-    let accumulated = [];
-    const failedChunks = [];
-    for (let i = 0; i < chunks.length; i++) {
-      setParseProgress(chunks.length > 1 ? `Parsing part ${i + 1} of ${chunks.length}…` : "Parsing…");
-      try {
-        const extracted = await parseScheduleText(chunks[i], faultMaster);
-        accumulated = accumulated.concat(extracted.map((j) => ({ ...j, _id: uid(), include: true })));
-        setParsedJobs([...accumulated]);
-      } catch (e) {
-        console.error(`Import parse failed on chunk ${i + 1}/${chunks.length}:`, e, "\nChunk text:", chunks[i]);
-        failedChunks.push({ index: i + 1, text: chunks[i], error: e.message || String(e) });
-      }
-    }
-    setParseProgress("");
-    setParsing(false);
-    if (failedChunks.length > 0) {
-      setParseError(
-        `${accumulated.length} job(s) parsed OK. ${failedChunks.length} part(s) failed and were skipped — ` +
-        `part ${failedChunks.map((f) => f.index).join(", ")}: "${failedChunks[0].error}". ` +
-        `The skipped text starts with: "${failedChunks[0].text.slice(0, 80)}…" — paste just that part again separately.`
-      );
-    }
-  }
-
-  async function commitParsedJobs(jobsToAdd) {
-    const existing = jobsByDate[selectedDate] || [];
-    const combined = [...existing];
-    jobsToAdd.forEach((pj) => {
-      const fault = faultByCode[pj.faultCode];
-      const job = {
-        shift: pj.shift || "",
-        team: pj.team || "",
-        property: pj.property || "",
-        unit: pj.unit || "",
-        status: pj.status || "Other",
-        faultCode: pj.faultCode || "NEEDS-REVIEW",
-        description: pj.description || "",
-        priority: PRIORITY_OPTIONS.includes(pj.priority) ? pj.priority : "PRI-4",
-        notes: pj.notes || "",
-        ownerTeam: fault ? fault.defaultOwnerTeam : "Maintenance",
-        warehousePickup: "N",
-        skuRef: "",
-        vehicle: "",
-        costCenter: "",
-        quotationRef: "",
-        estimatedCompletionDate: "",
-        scheduledTime: "",
-        slaApplies: false,
-        slaDeadline: null,
-        id: uid(),
-        tools: fault ? fault.tools : "Fault code not matched — review in Fault Codes tab or reassign",
-        materials: fault ? fault.materials : "Fault code not matched — review in Fault Codes tab or reassign",
-        jobStatus: "Open",
-        createdAt: Date.now(),
-      };
-      const dup = combined.filter(
-        (j) => norm(j.property) === norm(job.property) && norm(j.unit) === norm(job.unit) && j.faultCode === job.faultCode
-      );
-      job.dupFlag = dup.length > 0 ? `Duplicate: also listed for ${dup.map((d) => d.team).join(", ")}` : "";
-      const carry = findCarryover(job);
-      job.carryFlag = carry ? `Carryover: open since ${carry.sinceDate} (${carry.sourceJob.team})` : "";
-      combined.push(job);
-    });
-    await persistJobs(selectedDate, combined);
-    setParsedJobs([]);
-    setActiveTab("board");
-    showToast(`Imported ${jobsToAdd.length} job${jobsToAdd.length === 1 ? "" : "s"} into ${selectedDate}.`, "ok");
-  }
-
   /* The standalone verification pass and the "post schedule" stamp both
      lived here. Both are gone, and neither was replaced by an equivalent
      elsewhere — they were the double-entry.
@@ -602,80 +419,6 @@ export default function App() {
   /* ------------------------------------------------------------------ *
    * Bulk import from the pasted workbook.
    * ------------------------------------------------------------------ */
-  async function commitSheetImport(groupedJobs, mode) {
-    let total = 0;
-    const dates = [];
-    for (const [date, rows] of groupedJobs) {
-      if (!date || date === "(no date)") continue;
-      const mapped = rows.map((r) => {
-        const fault = faultByCode[r.faultCode];
-        return {
-          ...newJob({}, date, "import"),
-          shift: r.shift,
-          team: r.team,
-          property: r.property,
-          unit: r.unit,
-          parking: r.parking,
-          status: r.status,
-          timeOfVisit: r.timeOfVisit,
-          guestConfirmed: r.guestConfirmed,
-          description: r.description,
-          materialNeeded: r.materialNeeded,
-          materialDetails: r.materialDetails,
-          estimatedTime: r.estimatedTime,
-          pending: r.pending,
-          pendingDetails: r.pendingDetails,
-          priority: r.priority || "",
-          notes: r.notes,
-          // Imported rows carry no fault code — the sheet has no such column.
-          // They are still fully measurable: every Tier A metric reads the
-          // description and the intake fields, not the code.
-          faultCode: r.faultCode || "",
-          tools: fault ? fault.tools : "",
-          materials: fault ? fault.materials : "",
-          ownerTeam: "Maintenance",
-          importedAt: Date.now(),
-          // The sheet's own PMS/change columns are kept for reference but
-          // are not treated as a confirmed outcome — see the Live Board.
-          sheetInPms: r._sheetInPms,
-          sheetPmsRef: r._sheetPmsRef,
-          sheetChanged: r._sheetChanged,
-          sheetWhatChanged: r._sheetWhatChanged,
-        };
-      });
-
-      /* Through the same version-guarded write as everything else: an
-         import is exactly when somebody else is most likely to be editing
-         that day, and a bulk overwrite is the most destructive thing that
-         could land on top of them. */
-      const next = await mutateDay(date, (cur) =>
-        mode === "replace" ? mapped : [...cur, ...mapped]
-      );
-      setJobsByDate((prev) => ({ ...prev, [date]: next }));
-      total += mapped.length;
-      dates.push(date);
-    }
-    setKnownDates((prev) => Array.from(new Set([...prev, ...dates])).sort((a, b) => (a < b ? 1 : -1)));
-    const sorted = dates.slice().sort();
-    showToast(`Imported ${total} job(s) across ${dates.length} date(s).`, "ok");
-    return { jobs: total, dates: dates.length, first: sorted[0], last: sorted[sorted.length - 1] };
-  }
-
-  const existingCounts = useMemo(() => {
-    const m = {};
-    Object.entries(jobsByDate).forEach(([d, arr]) => { m[d] = arr.length; });
-    return m;
-  }, [jobsByDate]);
-
-  const groupedByTeam = useMemo(() => {
-    const groups = {};
-    jobs.forEach((j) => {
-      const key = `${j.shift || "—"} · ${j.team || "Unassigned"}`;
-      if (!groups[key]) groups[key] = [];
-      groups[key].push(j);
-    });
-    return Object.entries(groups).sort((a, b) => a[0].localeCompare(b[0]));
-  }, [jobs]);
 
   const openCarryovers = useMemo(() => {
     const out = [];
@@ -695,47 +438,6 @@ export default function App() {
     jobs.forEach((j) => { if (c[j.priority] !== undefined) c[j.priority]++; });
     return c;
   }, [jobs]);
-
-  function copyAsText() {
-    const lines = [`DHH Job Schedule — ${selectedDate}`, ""];
-    groupedByTeam.forEach(([label, teamJobs]) => {
-      lines.push(`*${label}*`);
-      teamJobs.forEach((j) => {
-        const flag = [j.dupFlag, j.carryFlag].filter(Boolean).join(" | ");
-        lines.push(
-          `${j.property}${j.unit ? " " + j.unit : ""} - ${j.status || ""} - ${j.description || faultByCode[j.faultCode]?.description || j.faultCode} (${j.faultCode}, ${j.priority})` +
-          (flag ? `  ⚠ ${flag}` : "")
-        );
-        lines.push(`   Tools: ${j.tools}`);
-        lines.push(`   Materials: ${j.materials}`);
-      });
-      lines.push("");
-    });
-    const text = lines.join("\n");
-    navigator.clipboard?.writeText(text).then(
-      () => showToast("Copied formatted schedule to clipboard.", "ok"),
-      () => showToast("Couldn't copy automatically — select and copy manually.", "warn")
-    );
-  }
-
-  function downloadCSV() {
-    const headers = ["Date", "Shift", "Team", "Owner Team", "Property", "Unit", "Status", "Fault Code", "Priority", "Tools", "Materials", "Job Status", "Block Reason", "Quotation Ref", "Est. Completion", "SLA Deadline", "Duplicate Flag", "Carryover Flag", "Notes"];
-    const rows = jobs.map((j) => [
-      selectedDate, j.shift, j.team, j.ownerTeam, j.property, j.unit, j.status,
-      j.faultCode, j.priority, j.tools, j.materials, j.jobStatus, j.blockReason, j.quotationRef, j.estimatedCompletionDate,
-      j.slaDeadline ? new Date(j.slaDeadline).toISOString() : "", j.dupFlag, j.carryFlag, j.notes,
-    ]);
-    const csv = [headers, ...rows]
-      .map((r) => r.map((v) => `"${String(v || "").replace(/"/g, '""')}"`).join(","))
-      .join("\n");
-    const blob = new Blob([csv], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `DHH_Schedule_${selectedDate}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }
 
   if (loading) {
     return (
@@ -781,21 +483,6 @@ export default function App() {
       )}
 
       <main className="max-w-6xl mx-auto px-4 py-5">
-        {activeTab === "board" && (
-          <BoardView
-            selectedDate={selectedDate}
-            groupedByTeam={groupedByTeam}
-            priorityCounts={priorityCounts}
-            dupFlagsCount={dupFlags.length}
-            carryCount={openCarryovers.length}
-            onEdit={(job) => { setEditingJob(job); setShowForm(true); }}
-            onSetStatus={setJobStatus}
-            onLogActualTime={logActualTime}
-            onCopy={copyAsText}
-            onDownload={downloadCSV}
-            jobs={jobs}
-          />
-        )}
         {activeTab === "insights" && (
           <InsightsView
             carryovers={openCarryovers}
@@ -838,13 +525,6 @@ export default function App() {
             onEditFull={(job) => { setEditingJob(job); setShowForm(true); }}
           />
         )}
-        {activeTab === "sheetimport" && (
-          <SheetImport
-            defaultDate={selectedDate}
-            existingCounts={existingCounts}
-            onCommit={commitSheetImport}
-          />
-        )}
         {activeTab === "backlog" && (
           <Backlog
             knownDates={knownDates}
@@ -853,19 +533,6 @@ export default function App() {
           />
         )}
         {activeTab === "jobcards" && <Projects knownDates={knownDates} showToast={showToast} />}
-        {activeTab === "import" && (
-          <ImportView
-            faultMaster={faultMaster}
-            parsing={parsing}
-            parseError={parseError}
-            parseProgress={parseProgress}
-            parsedJobs={parsedJobs}
-            setParsedJobs={setParsedJobs}
-            onParse={handleParse}
-            onCommit={commitParsedJobs}
-            selectedDate={selectedDate}
-          />
-        )}
       </main>
 
       {showForm && (
@@ -902,11 +569,8 @@ function Header({ selectedDate, setSelectedDate, knownDates, activeTab, setActiv
     { id: "backlog", label: "Queue", icon: Inbox },
     { id: "roster", label: "Roster", icon: Users },
     { id: "dashboard", label: "Dashboard", icon: TrendingUp },
-    { id: "sheetimport", label: "Import Sheet", icon: Table2 },
     { id: "jobcards", label: "Projects", icon: Briefcase },
-    { id: "board", label: "Print / Export", icon: LayoutGrid },
     { id: "insights", label: "Insights (today)", icon: BarChart3 },
-    { id: "import", label: "AI Import", icon: UploadCloud },
     { id: "faultcodes", label: "Fault Codes", icon: Database },
     { id: "properties", label: "Properties", icon: Building2 },
   ];
@@ -981,276 +645,6 @@ function Header({ selectedDate, setSelectedDate, knownDates, activeTab, setActiv
           );
         })}
       </div>
-    </div>
-  );
-}
-
-function BoardView({ selectedDate, groupedByTeam, priorityCounts, dupFlagsCount, carryCount, onEdit, onSetStatus, onLogActualTime, onCopy, onDownload, jobs }) {
-  /* Count the jobs, not the priorities. The header used to sum the four
-     priority buckets, so a day of jobs with the priority left blank read
-     "0 jobs for 2026-09-01" above a full board. Priority is unset on a
-     quarter of the real rows, so this was not a rare case. */
-  const total = jobs ? jobs.length : Object.values(priorityCounts).reduce((a, b) => a + b, 0);
-  const priorityUnset = Math.max(0, total - Object.values(priorityCounts).reduce((a, b) => a + b, 0));
-
-  /* The same three checks the dashboard runs, shown while the schedule is
-     still being built. A warning after the fact is a report; a warning
-     during is a fix. */
-  const readiness = useMemo(() => {
-    if (!jobs || !jobs.length) return null;
-    const day = jobs.map((j) => ({ ...j, _date: selectedDate }));
-    return {
-      cap: computeCapacity(day),
-      access: computeAccessRisk(day),
-      mat: computeMaterialReadiness(day),
-    };
-  }, [jobs, selectedDate]);
-
-  return (
-    <div>
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-        <div>
-          <h1 className="text-lg font-semibold">{total} job{total === 1 ? "" : "s"} for {selectedDate}</h1>
-          <div className="flex flex-wrap gap-3 mt-1 text-xs text-slate-500">
-            {Object.entries(priorityCounts).map(([p, c]) => (
-              <span key={p} className="flex items-center gap-1">
-                <span className={`w-2 h-2 rounded-full ${PRIORITY_COLORS[p].dot}`} /> {p}: {c}
-              </span>
-            ))}
-            {priorityUnset > 0 && (
-              <span className="flex items-center gap-1 text-slate-400">
-                <span className="w-2 h-2 rounded-full bg-slate-300" /> no priority set: {priorityUnset}
-              </span>
-            )}
-            {dupFlagsCount > 0 && (
-              <span className="flex items-center gap-1 text-red-600 font-medium">
-                <AlertTriangle size={12} /> {dupFlagsCount} duplicate flag{dupFlagsCount === 1 ? "" : "s"}
-              </span>
-            )}
-            {carryCount > 0 && (
-              <span className="flex items-center gap-1 text-orange-600 font-medium">
-                <RefreshCw size={12} /> {carryCount} carried over
-              </span>
-            )}
-          </div>
-        </div>
-        <div className="flex gap-2">
-          <button onClick={onCopy} className="flex items-center gap-1.5 text-sm bg-white border border-slate-300 hover:bg-slate-50 px-3 py-1.5 rounded-md">
-            <Copy size={14} /> Copy formatted
-          </button>
-          <button onClick={onDownload} className="flex items-center gap-1.5 text-sm bg-white border border-slate-300 hover:bg-slate-50 px-3 py-1.5 rounded-md">
-            <Download size={14} /> Download CSV
-          </button>
-        </div>
-      </div>
-
-      {readiness && (
-        <div className="mb-4 grid sm:grid-cols-3 gap-2">
-          <ReadinessChip
-            tone={readiness.cap.overloaded.length ? "bad" : readiness.cap.tight.length ? "warn" : "ok"}
-            label={
-              readiness.cap.overloaded.length
-                ? `${readiness.cap.overloaded.length} tech${readiness.cap.overloaded.length === 1 ? "" : "s"} booked past the shift`
-                : readiness.cap.tight.length
-                ? `${readiness.cap.tight.length} tech${readiness.cap.tight.length === 1 ? "" : "s"} near capacity`
-                : "Everyone inside their shift"
-            }
-            detail={
-              readiness.cap.overloaded.length
-                ? readiness.cap.overloaded.map((r) => `${r.tech} ${r.loadPct}%`).join(" · ")
-                : `${readiness.cap.utilisationPct ?? 0}% of rostered hours committed`
-            }
-          />
-          <ReadinessChip
-            tone={readiness.access.atRiskCount ? "warn" : "ok"}
-            label={
-              readiness.access.needingConfirmation === 0
-                ? "No occupied units today"
-                : readiness.access.atRiskCount
-                ? `${readiness.access.atRiskCount} occupied unit${readiness.access.atRiskCount === 1 ? "" : "s"} unconfirmed`
-                : "All occupied units confirmed"
-            }
-            detail={`${readiness.access.confirmed} of ${readiness.access.needingConfirmation} occupied visits confirmed`}
-          />
-          <ReadinessChip
-            tone={readiness.mat.notReadyCount ? "warn" : "ok"}
-            label={
-              readiness.mat.notReadyCount
-                ? `${readiness.mat.notReadyCount} job${readiness.mat.notReadyCount === 1 ? "" : "s"} without a material list`
-                : "Material specified where needed"
-            }
-            detail={`${readiness.mat.buckets.specified} specified · ${readiness.mat.buckets.vague} vague · ${readiness.mat.buckets.missing} blank`}
-          />
-        </div>
-      )}
-
-      {groupedByTeam.length === 0 && (
-        <div className="bg-white border border-dashed border-slate-300 rounded-lg p-10 text-center text-slate-400">
-          No jobs entered for this date yet. Click "New Job" to start building tomorrow's board.
-        </div>
-      )}
-
-      <div className="space-y-6">
-        {groupedByTeam.map(([label, teamJobs]) => (
-          <div key={label}>
-            <h2 className="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-2">{label}</h2>
-            <div className="space-y-2">
-              {teamJobs.map((job) => (
-                <JobCard key={job.id} job={job} onEdit={onEdit} onSetStatus={onSetStatus} onLogActualTime={onLogActualTime} />
-              ))}
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function ReadinessChip({ tone, label, detail }) {
-  const tones = {
-    ok: "border-emerald-200 bg-emerald-50 text-emerald-800",
-    warn: "border-amber-300 bg-amber-50 text-amber-800",
-    bad: "border-red-300 bg-red-50 text-red-800",
-  };
-  const Icon = tone === "ok" ? Check : AlertTriangle;
-  return (
-    <div className={`rounded-md border px-3 py-2 ${tones[tone]}`}>
-      <div className="flex items-center gap-1.5 text-xs font-medium">
-        <Icon size={13} /> {label}
-      </div>
-      <div className="text-[11px] opacity-75 mt-0.5">{detail}</div>
-    </div>
-  );
-}
-
-function JobCard({ job, onEdit, onSetStatus, onLogActualTime }) {
-  const [expanded, setExpanded] = useState(false);
-  const pc = PRIORITY_COLORS[job.priority] || PRIORITY_COLORS["PRI-4"];
-  const done = job.jobStatus === "Completed";
-  const ownerColor = OWNER_TEAM_COLORS[job.ownerTeam] || OWNER_TEAM_COLORS["Maintenance"];
-  const slaBreached = job.slaDeadline && !done && Date.now() > job.slaDeadline;
-  const estOverdue = job.estimatedCompletionDate && !done && job.estimatedCompletionDate < todayISO();
-
-  function handleStatusChange(e) {
-    const val = e.target.value;
-    if (val === "Blocked") {
-      onSetStatus(job, "Blocked", { blockReason: job.blockReason || BLOCK_REASON_OPTIONS[0] });
-    } else {
-      onSetStatus(job, val);
-    }
-  }
-
-  return (
-    <div className={`rounded-lg border ${pc.border} ${done ? "bg-slate-100 opacity-70" : pc.bg} p-3`}>
-      <div className="flex items-start justify-between gap-3">
-        <button className="flex items-start gap-2 text-left flex-1 min-w-0" onClick={() => setExpanded((e) => !e)}>
-          {expanded ? <ChevronDown size={16} className="mt-0.5 shrink-0" /> : <ChevronRight size={16} className="mt-0.5 shrink-0" />}
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className={`text-xs font-semibold px-1.5 py-0.5 rounded ${pc.text} bg-white/70 border ${pc.border}`}>{job.priority}</span>
-              {job.ownerTeam && <span className={`text-xs font-medium px-1.5 py-0.5 rounded border ${ownerColor}`}>{job.ownerTeam}</span>}
-              <span className={`font-medium truncate ${done ? "line-through text-slate-400" : ""}`}>{job.property}{job.unit ? ` · ${job.unit}` : ""}</span>
-              <span className="text-xs text-slate-500">{job.status}</span>
-              {slaBreached && <span className="text-xs font-semibold px-1.5 py-0.5 rounded bg-red-600 text-white">SLA BREACHED</span>}
-              {estOverdue && <span className="text-xs font-semibold px-1.5 py-0.5 rounded bg-red-100 text-red-700 border border-red-300">OVERDUE</span>}
-            </div>
-            <div className="text-sm text-slate-600 truncate">{job.description || job.faultCode}</div>
-            {job.jobStatus === "Blocked" && job.blockReason && (
-              <div className="text-xs text-amber-700 mt-0.5">Blocked — {job.blockReason}</div>
-            )}
-            {(job.dupFlag || job.carryFlag) && (
-              <div className="mt-1 flex flex-col gap-0.5">
-                {job.dupFlag && <span className="text-xs text-red-600 flex items-center gap-1"><AlertTriangle size={11} /> {job.dupFlag}</span>}
-                {job.carryFlag && <span className="text-xs text-orange-600 flex items-center gap-1"><RefreshCw size={11} /> {job.carryFlag}</span>}
-              </div>
-            )}
-          </div>
-        </button>
-        <div className="flex items-center gap-1 shrink-0">
-          <select
-            value={job.jobStatus || "Open"}
-            onChange={handleStatusChange}
-            onClick={(e) => e.stopPropagation()}
-            className="text-xs border border-slate-300 rounded-md px-1.5 py-1.5 bg-white"
-          >
-            {JOB_STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
-          </select>
-          <button onClick={() => onEdit(job)} title="Edit" className="p-1.5 rounded-md border bg-white border-slate-300 text-slate-500 hover:bg-slate-50">
-            <Edit3 size={14} />
-          </button>
-        </div>
-      </div>
-      {job.jobStatus === "Blocked" && (
-        <div className="mt-2 pl-6">
-          <label className="text-xs text-amber-700">
-            Block reason:
-            <select
-              value={job.blockReason || BLOCK_REASON_OPTIONS[0]}
-              onChange={(e) => onSetStatus(job, "Blocked", { blockReason: e.target.value })}
-              className="ml-2 text-xs border border-amber-300 rounded-md px-1.5 py-1 bg-amber-50"
-            >
-              {BLOCK_REASON_OPTIONS.map((r) => <option key={r} value={r}>{r}</option>)}
-            </select>
-          </label>
-        </div>
-      )}
-      {expanded && (
-        <div className="mt-3 pl-6 grid sm:grid-cols-2 gap-3 text-sm">
-          <div>
-            <div className="text-xs font-semibold text-slate-500 uppercase mb-0.5">Tools required</div>
-            <div className="text-slate-700">{job.tools}</div>
-          </div>
-          <div>
-            <div className="text-xs font-semibold text-slate-500 uppercase mb-0.5">Materials required</div>
-            <div className="text-slate-700">{job.materials}</div>
-          </div>
-          {job.notes && (
-            <div className="sm:col-span-2">
-              <div className="text-xs font-semibold text-slate-500 uppercase mb-0.5">Notes</div>
-              <div className="text-slate-700 whitespace-pre-wrap">{job.notes}</div>
-            </div>
-          )}
-          {(job.quotationRef || job.estimatedCompletionDate) && (
-            <div className="sm:col-span-2 flex flex-wrap gap-x-4 text-xs text-slate-500">
-              {job.quotationRef && <span>Quotation: {job.quotationRef}</span>}
-              {job.estimatedCompletionDate && <span className={estOverdue ? "text-red-600 font-semibold" : ""}>Est. completion: {job.estimatedCompletionDate}</span>}
-            </div>
-          )}
-          {job.slaApplies && (
-            <div className="sm:col-span-2 text-xs">
-              <span className={slaBreached ? "text-red-600 font-semibold" : "text-slate-500"}>
-                External SLA deadline: {job.slaDeadline ? new Date(job.slaDeadline).toLocaleString() : "—"} (48h landlord-facing reply)
-              </span>
-            </div>
-          )}
-          <div className="sm:col-span-2">
-            <div className="text-xs font-semibold text-slate-500 uppercase mb-1">Actual timing (admin-logged)</div>
-            <div className="flex flex-wrap items-center gap-2 text-xs">
-              {job.scheduledTime && <span className="text-slate-500">Scheduled: {job.scheduledTime}</span>}
-              {job.actualStartAt ? (
-                <span className="text-slate-600">Started: {new Date(job.actualStartAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
-              ) : (
-                <button onClick={() => onLogActualTime(job, "actualStartAt")} className="px-2 py-1 rounded border border-slate-300 bg-white hover:bg-slate-50 flex items-center gap-1">
-                  <Clock size={11} /> Log start now
-                </button>
-              )}
-              {job.actualCompleteAt ? (
-                <span className="text-slate-600">Completed: {new Date(job.actualCompleteAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
-              ) : (
-                <button onClick={() => onLogActualTime(job, "actualCompleteAt")} className="px-2 py-1 rounded border border-slate-300 bg-white hover:bg-slate-50 flex items-center gap-1">
-                  <Clock size={11} /> Log completion now
-                </button>
-              )}
-            </div>
-          </div>
-          <div className="text-xs text-slate-400 sm:col-span-2 flex flex-wrap gap-x-4">
-            <span>Warehouse pickup: {job.warehousePickup || "N"}</span>
-            {job.skuRef && <span>SKU: {job.skuRef}</span>}
-            {job.vehicle && <span>Vehicle: {job.vehicle}</span>}
-            {job.costCenter && <span>Cost center: {job.costCenter}</span>}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -1504,355 +898,6 @@ function PropertiesView({ propertyMaster, onAdd }) {
             </div>
           ))
         )}
-      </div>
-    </div>
-  );
-}
-
-function ImportView({ faultMaster, parsing, parseError, parseProgress, parsedJobs, setParsedJobs, onParse, onCommit, selectedDate }) {
-  const [rawText, setRawText] = useState("");
-
-  function updateJob(idx, patch) {
-    setParsedJobs((prev) => prev.map((j, i) => (i === idx ? { ...j, ...patch } : j)));
-  }
-  function toggleInclude(idx) {
-    setParsedJobs((prev) => prev.map((j, i) => (i === idx ? { ...j, include: !j.include } : j)));
-  }
-  const includedCount = parsedJobs.filter((j) => j.include).length;
-
-  return (
-    <div>
-      <h1 className="text-lg font-semibold mb-1">Import — for jobs PMS doesn't capture</h1>
-      <p className="text-sm text-slate-500 mb-3">
-        This is <span className="font-medium">not</span> where the main day's schedule comes from — that's
-        still PMS's Issues tab and the drag-drop timetable, same as today. Use this specifically for the
-        cases that fall outside that system: landlord-support requests, external chat threads, or anything
-        a coordinator would otherwise have to manually recreate as a PMS task from memory. Paste that text,
-        Claude will split it into jobs and match each one to a fault code. Nothing is added to the board
-        until you review it below and click "Add to board" — jobs will be added to <span className="font-medium">{selectedDate}</span>.
-        When reviewing, match the Property field to the exact spelling used in the Properties tab —
-        the AI can't validate that against the master automatically, so a quick manual check here
-        prevents the same building splitting into two names in later reports.
-      </p>
-      <textarea
-        rows={12}
-        value={rawText}
-        onChange={(e) => setRawText(e.target.value)}
-        placeholder="Paste the raw daily schedule text here…"
-        className="w-full border border-slate-300 rounded-md p-3 text-sm font-mono"
-      />
-      <div className="flex items-center justify-between mt-2">
-        {parseError && <span className="text-sm text-red-600 flex items-start gap-1 max-w-md"><AlertTriangle size={14} className="mt-0.5 shrink-0" /> {parseError}</span>}
-        {!parseError && parseProgress && <span className="text-sm text-slate-500 flex items-center gap-1"><Loader2 size={14} className="animate-spin" /> {parseProgress}</span>}
-        <div className="ml-auto">
-          <button
-            onClick={() => onParse(rawText)}
-            disabled={parsing || !rawText.trim()}
-            className={`flex items-center gap-1.5 text-sm px-4 py-2 rounded-md text-white ${
-              parsing || !rawText.trim() ? "bg-slate-300 cursor-not-allowed" : "bg-slate-900 hover:bg-slate-800"
-            }`}
-          >
-            {parsing ? <Loader2 size={14} className="animate-spin" /> : <UploadCloud size={14} />}
-            {parsing ? "Parsing…" : "Parse with AI"}
-          </button>
-        </div>
-      </div>
-
-      {parsedJobs.length > 0 && (
-        <div className="mt-6">
-          <div className="flex items-center justify-between mb-2">
-            <h2 className="text-sm font-semibold text-slate-600 uppercase tracking-wide">
-              Review {parsedJobs.length} extracted job{parsedJobs.length === 1 ? "" : "s"} — nothing saved yet
-            </h2>
-            <button
-              onClick={() => onCommit(parsedJobs.filter((j) => j.include))}
-              disabled={includedCount === 0}
-              className={`text-sm px-4 py-2 rounded-md text-white ${includedCount === 0 ? "bg-slate-300" : "bg-emerald-600 hover:bg-emerald-500"}`}
-            >
-              Add {includedCount} to board
-            </button>
-          </div>
-          <div className="space-y-2">
-            {parsedJobs.map((job, idx) => {
-              const needsReview = job.faultCode === "NEEDS-REVIEW" || job.faultCode === "SCOPE-UNKNOWN";
-              return (
-                <div key={job._id} className={`rounded-lg border p-3 ${needsReview ? "border-amber-300 bg-amber-50" : "border-slate-200 bg-white"} ${!job.include ? "opacity-50" : ""}`}>
-                  <div className="flex items-start gap-2">
-                    <input type="checkbox" checked={job.include} onChange={() => toggleInclude(idx)} className="mt-1.5" />
-                    <div className="flex-1 grid sm:grid-cols-3 gap-2 text-sm">
-                      <Field label="Team" value={job.team} onChange={(v) => updateJob(idx, { team: v })} />
-                      <Field label="Property" value={job.property} onChange={(v) => updateJob(idx, { property: v })} />
-                      <Field label="Unit" value={job.unit} onChange={(v) => updateJob(idx, { unit: v })} />
-                      <label className="block text-xs">
-                        <span className="text-slate-500">Fault code {needsReview && <span className="text-amber-600 font-semibold">— needs review</span>}</span>
-                        <select
-                          value={job.faultCode}
-                          onChange={(e) => updateJob(idx, { faultCode: e.target.value })}
-                          className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm"
-                        >
-                          <option value="NEEDS-REVIEW">NEEDS-REVIEW — pick manually</option>
-                          {faultMaster.map((f) => <option key={f.code} value={f.code}>{f.code} — {f.description}</option>)}
-                        </select>
-                      </label>
-                      <label className="block text-xs">
-                        <span className="text-slate-500">Priority</span>
-                        <select value={job.priority} onChange={(e) => updateJob(idx, { priority: e.target.value })} className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm">
-                          {PRIORITY_OPTIONS.map((p) => <option key={p} value={p}>{p}</option>)}
-                        </select>
-                      </label>
-                      <label className="block text-xs">
-                        <span className="text-slate-500">Status</span>
-                        <select value={job.status} onChange={(e) => updateJob(idx, { status: e.target.value })} className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm">
-                          {STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
-                        </select>
-                      </label>
-                      <Field label="Description" value={job.description} onChange={(v) => updateJob(idx, { description: v })} full />
-                      {job.notes && (
-                        <div className="sm:col-span-3 text-xs text-amber-700 flex items-start gap-1">
-                          <AlertTriangle size={12} className="mt-0.5 shrink-0" /> {job.notes}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* The old TrendsView lived here. It has been replaced by views/Dashboard.jsx.
- *
- * It was removed rather than kept alongside, because most of what it
- * reported was not measuring the department. Its "clean rate" was
- * (jobs - duplicate/carryover flags) / jobs, and those flags were only
- * ever set against the ~14 dates cached in memory — so it read close to
- * 100% no matter what was happening. Its schedule-variance and
- * safety-close-time figures were averaged over actualStartAt /
- * completedAt timestamps that required somebody to press buttons in the
- * app during the working day, which nobody was doing, so those samples
- * were empty or a handful of rows presented as a trend.
- *
- * The replacement computes from the fields the coordinator already
- * fills in, and states its coverage next to every rate.
- */
-
-function JobCardsView({ faultMaster, knownDates }) {
-  const [loading, setLoading] = useState(true);
-  const [projects, setProjects] = useState([]);
-  const [filter, setFilter] = useState("all");
-  const [printJob, setPrintJob] = useState(null);
-
-  useEffect(() => {
-    (async () => {
-      setLoading(true);
-      const dates = knownDates.slice(0, 90);
-      const collected = [];
-      for (const date of dates) {
-        const v = await storageGet(`schedule:${date}`);
-        let arr = [];
-        try { arr = v ? JSON.parse(v) : []; } catch { arr = []; }
-        arr.forEach((j) => {
-          if (j.faultCode === "WORKS-QUOTED" || j.faultCode === "INSPECTION-ONB" || j.estimatedCompletionDate || j.quotationRef) {
-            collected.push({ ...j, _date: date });
-          }
-        });
-      }
-      setProjects(collected);
-      setLoading(false);
-    })();
-  }, [knownDates]);
-
-  const today = todayISO();
-  const filtered = projects.filter((p) => {
-    const overdue = p.estimatedCompletionDate && p.jobStatus !== "Completed" && p.estimatedCompletionDate < today;
-    if (filter === "overdue") return overdue;
-    if (filter === "open") return p.jobStatus !== "Completed";
-    if (filter === "completed") return p.jobStatus === "Completed";
-    return true;
-  });
-
-  return (
-    <div>
-      <h1 className="text-lg font-semibold mb-1">Job Cards — onboarding & quotation-driven projects</h1>
-      <p className="text-sm text-slate-500 mb-4">
-        Every WORKS-QUOTED or onboarding-inspection job across recent dates, with its quotation reference
-        and estimated completion date in one place — the timeline visibility from the Jul-13 meeting.
-        Jobs missing an estimated completion date show as "not set" — that's a gap to close, not a normal state.
-      </p>
-
-      <div className="flex gap-2 mb-4">
-        {["all", "open", "overdue", "completed"].map((f) => (
-          <button
-            key={f}
-            onClick={() => setFilter(f)}
-            className={`text-sm px-3 py-1.5 rounded-md border capitalize ${filter === f ? "bg-slate-900 text-white border-slate-900" : "bg-white border-slate-300 text-slate-600"}`}
-          >
-            {f}
-          </button>
-        ))}
-      </div>
-
-      {loading ? (
-        <div className="flex items-center gap-2 text-slate-500 text-sm"><Loader2 size={14} className="animate-spin" /> Loading projects…</div>
-      ) : filtered.length === 0 ? (
-        <div className="bg-white border border-dashed border-slate-300 rounded-lg p-10 text-center text-slate-400">
-          No projects match this filter.
-        </div>
-      ) : (
-        <div className="space-y-3">
-          {filtered.map((p) => {
-            const overdue = p.estimatedCompletionDate && p.jobStatus !== "Completed" && p.estimatedCompletionDate < today;
-            const noDate = !p.estimatedCompletionDate;
-            return (
-              <div key={p.id} className={`rounded-lg border p-4 ${overdue ? "border-red-300 bg-red-50" : noDate ? "border-amber-300 bg-amber-50" : "border-slate-200 bg-white"}`}>
-                <div className="flex items-start justify-between gap-3 flex-wrap">
-                  <div>
-                    <div className="font-medium">{p.property}{p.unit ? ` · ${p.unit}` : ""}</div>
-                    <div className="text-sm text-slate-600">{p.description || p.faultCode}</div>
-                  </div>
-                  <div className="flex items-center gap-2 flex-wrap text-xs">
-                    <span className={`px-2 py-1 rounded border ${OWNER_TEAM_COLORS[p.ownerTeam] || OWNER_TEAM_COLORS["Maintenance"]}`}>{p.ownerTeam || "Maintenance"}</span>
-                    <span className={`px-2 py-1 rounded border ${p.jobStatus === "Completed" ? "bg-emerald-50 border-emerald-300 text-emerald-700" : "bg-slate-50 border-slate-300 text-slate-600"}`}>{p.jobStatus}</span>
-                    {overdue && <span className="px-2 py-1 rounded bg-red-600 text-white font-semibold">OVERDUE</span>}
-                    {noDate && <span className="px-2 py-1 rounded bg-amber-100 border border-amber-300 text-amber-700 font-semibold">NO TIMELINE SET</span>}
-                  </div>
-                </div>
-                <div className="mt-2 flex flex-wrap gap-x-6 gap-y-1 text-xs text-slate-500">
-                  <span>Logged: {p._date}</span>
-                  <span>Quotation ref: {p.quotationRef || "—"}</span>
-                  <span className={overdue ? "text-red-600 font-semibold" : ""}>Est. completion: {p.estimatedCompletionDate || "not set"}</span>
-                  <span>Team: {p.team || "—"}</span>
-                </div>
-                <div className="mt-3">
-                  <button
-                    onClick={() => setPrintJob(p)}
-                    className="flex items-center gap-1.5 text-sm bg-slate-900 hover:bg-slate-800 text-white px-3 py-1.5 rounded-md"
-                  >
-                    <Printer size={14} /> Job Card (PDF)
-                  </button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {printJob && <PrintableJobCard project={printJob} onClose={() => setPrintJob(null)} />}
-    </div>
-  );
-}
-
-function PrintableJobCard({ project, onClose }) {
-  const jcRef = `JC-${project._date}-${(project.id || "").slice(0, 6).toUpperCase()}`;
-  const today = todayISO();
-  const overdue = project.estimatedCompletionDate && project.jobStatus !== "Completed" && project.estimatedCompletionDate < today;
-  const noDate = !project.estimatedCompletionDate;
-
-  const row = (label, value) => (
-    <div className="flex border-b border-slate-200 py-2 text-sm">
-      <div className="w-44 shrink-0 font-semibold text-slate-500">{label}</div>
-      <div className="text-slate-800">{value || "—"}</div>
-    </div>
-  );
-
-  return (
-    <div className="print-card-overlay fixed inset-0 bg-white z-50 overflow-y-auto">
-      <style>{`
-        @media print {
-          body * { visibility: hidden; }
-          .print-card-overlay, .print-card-overlay * { visibility: visible; }
-          .print-card-overlay { position: absolute; left: 0; top: 0; width: 100%; }
-          .no-print { display: none !important; }
-          @page { margin: 16mm; }
-        }
-      `}</style>
-
-      <div className="no-print sticky top-0 z-10 bg-slate-900 text-white px-6 py-3 flex items-center justify-between">
-        <span className="text-sm font-medium">Job Card Preview — {jcRef}</span>
-        <div className="flex gap-2">
-          <button onClick={() => window.print()} className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 px-3 py-1.5 rounded-md text-sm">
-            <Printer size={14} /> Print / Save as PDF
-          </button>
-          <button onClick={onClose} className="flex items-center gap-1.5 border border-slate-600 hover:bg-slate-800 px-3 py-1.5 rounded-md text-sm">
-            <X size={14} /> Close
-          </button>
-        </div>
-      </div>
-
-      <div className="max-w-3xl mx-auto p-10 text-slate-900">
-        <div className="flex items-start justify-between border-b-2 border-slate-900 pb-4 mb-6">
-          <div>
-            <div className="text-2xl font-bold tracking-tight">Deluxe Holiday Homes</div>
-            <div className="text-sm text-slate-500">Maintenance Job Card</div>
-          </div>
-          <div className="text-right text-xs text-slate-500">
-            <div><span className="font-semibold text-slate-700">Job Card Ref:</span> {jcRef}</div>
-            <div><span className="font-semibold text-slate-700">Generated:</span> {new Date().toLocaleString()}</div>
-          </div>
-        </div>
-
-        {(overdue || noDate) && (
-          <div className={`mb-6 rounded-md px-4 py-2 text-sm font-semibold ${overdue ? "bg-red-600 text-white" : "bg-amber-100 text-amber-800 border border-amber-300"}`}>
-            {overdue ? `OVERDUE — estimated completion was ${project.estimatedCompletionDate}` : "NO ESTIMATED COMPLETION DATE SET"}
-          </div>
-        )}
-
-        <h1 className="text-xl font-bold mb-4">{project.property}{project.unit ? ` — ${project.unit}` : ""}</h1>
-
-        <div className="mb-6">
-          <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Reference details</div>
-          {row("Fault code / project type", project.faultCode)}
-          {row("Quotation reference", project.quotationRef)}
-          {row("Owner team", project.ownerTeam)}
-          {row("Priority", project.priority)}
-          {row("Current status", project.jobStatus)}
-          {row("Logged date", project._date)}
-          {row("Estimated completion (ETA)", project.estimatedCompletionDate || "not set")}
-          {row("Assigned team / technician", project.team)}
-        </div>
-
-        <div className="mb-6">
-          <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Scope of work</div>
-          <p className="text-sm text-slate-800 whitespace-pre-wrap border border-slate-200 rounded-md p-3 bg-slate-50">
-            {project.description || "No description recorded — update this job before sharing the card further."}
-          </p>
-        </div>
-
-        <div className="grid sm:grid-cols-2 gap-4 mb-6">
-          <div>
-            <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Materials needed</div>
-            <p className="text-sm text-slate-800 border border-slate-200 rounded-md p-3">{project.materials || "—"}</p>
-          </div>
-          <div>
-            <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Tools required</div>
-            <p className="text-sm text-slate-800 border border-slate-200 rounded-md p-3">{project.tools || "—"}</p>
-          </div>
-        </div>
-
-        {project.notes && (
-          <div className="mb-6">
-            <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Notes</div>
-            <p className="text-sm text-slate-800 whitespace-pre-wrap">{project.notes}</p>
-          </div>
-        )}
-
-        <div className="mt-10 grid grid-cols-3 gap-6 text-sm">
-          {["Prepared by", "Reviewed by", "Approved by"].map((r) => (
-            <div key={r}>
-              <div className="border-b border-slate-400 h-10" />
-              <div className="text-xs text-slate-500 mt-1">{r} — name / date</div>
-            </div>
-          ))}
-        </div>
-
-        <div className="mt-10 pt-3 border-t border-slate-200 text-xs text-slate-400 flex justify-between">
-          <span>Generated by DHH Job Intake System</span>
-          <span>{jcRef}</span>
-        </div>
       </div>
     </div>
   );

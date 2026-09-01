@@ -432,15 +432,6 @@ export function computeMovement(jobs, opts = {}) {
  * daily, every number below is reported over `coverage`, never over the
  * full row count.
  * -------------------------------------------------------------------- */
-export const NOT_DONE_REASONS = [
-  "No access / guest refused",
-  "Guest not reachable",
-  "Material not available",
-  "Ran out of time",
-  "Needs contractor / out of scope",
-  "Other",
-];
-
 /* A job's outcome now lives on the job itself, as a state advanced on the
    board by whoever is looking at it. The old shape — a separate `verify`
    blob written in a separate tab the following day — is still read here so
