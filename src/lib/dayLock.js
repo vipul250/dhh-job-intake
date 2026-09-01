@@ -43,7 +43,19 @@ const isoToday = () => new Date().toISOString().slice(0, 10);
 
 /**
  * What editing this day means right now.
- * @returns {{locked:boolean, kind:"open"|"posted"|"past", label:string, why:string}}
+ *
+ * Three locked states, not two. The department's own rule is that the
+ * schedule closes when the date changes — the evening coordinator builds
+ * tomorrow, and at midnight tomorrow becomes the field team's day whether
+ * or not anybody remembered to press Post. Waiting for the button meant a
+ * day nobody posted could be rewritten all morning with no trace.
+ *
+ * Recording what HAPPENED is never locked. Marking a job fixed, made safe
+ * or not done is the day running its course, and the morning coordinator
+ * doing the end-of-day review must never be asked to justify it. The lock
+ * is on changing the PLAN: adding, moving, cancelling, editing.
+ *
+ * @returns {{locked:boolean, kind:"open"|"posted"|"started"|"past", label:string, why:string}}
  */
 export function lockState(date, post) {
   const today = isoToday();
@@ -61,6 +73,14 @@ export function lockState(date, post) {
       kind: "posted",
       label: `Posted ${new Date(post.at).toLocaleString()} by ${post.by}`,
       why: "The field team has this schedule. Every change from here is logged with a reason — that is how schedule churn gets measured.",
+    };
+  }
+  if (date === today) {
+    return {
+      locked: true,
+      kind: "started",
+      label: "Today — the schedule closed when the date changed",
+      why: "Nobody posted this one, but the day has begun and the field team is working to it. Changes are still allowed and still logged.",
     };
   }
   return { locked: false, kind: "open", label: "Not posted yet", why: "" };

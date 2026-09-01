@@ -711,3 +711,60 @@ it is on**. The figure to watch there is not how often the rule was
 followed. A coordinator who never overrules it is following a script, not
 exercising judgement. The figure to watch is coverage: how much of the board
 was placed for a reason anybody can name.
+
+## The operating rule, from 1 September
+
+Two touchpoints a day, each by somebody already at a desk. Nothing else is
+asked of anyone.
+
+**Evening coordinator — every task created in PMS is also here.** They have
+just finished creating those tasks in PMS; keying them again would be the
+double entry this whole project exists to remove. So it is *one paste*.
+**Mirror the PMS task list** takes the task table straight off the PMS
+screen and builds the day from it: title, property, unit, technician,
+priority, duration and the TSK reference that ties the two systems together
+for good. Pasting the same list twice is safe — anything already on the day
+with that reference is skipped.
+
+**The schedule closes when the date changes.** Not when somebody remembers
+to press Post. At midnight the day becomes the field team's, and from then
+on a change to the *plan* — adding, moving, cancelling, editing — is logged
+with a reason. Recording what *happened* is never locked and never asks for
+a justification; that would be punishing the person doing the review.
+
+**Morning coordinator — before leaving, say how the day went.** One list,
+one line per job, and the count of jobs with no outcome sits on the button
+so nobody has to go looking. A clean fix is one click. Anything else opens
+the full close-out, because *made safe*, *diagnosed* and *not done* each
+have a question behind them that decides whether the work comes back.
+
+### What the paste reads that nobody was reading
+
+The department already encodes the two most valuable planning facts in the
+first characters of the PMS task title, and until now they were decoration:
+
+| Title | Read as |
+|---|---|
+| `GC 2-4pm - Clogged Sink GR B` | guest confirmed, 14:00–16:00 |
+| `GC 12.30 Pm - (Below unit tenant)` | guest confirmed, 12:30 |
+| `vacant - Laundry room door is broken` | unit empty |
+| `B2B- Paint touch up` | changeover day |
+| `checkin - None of the sockets working` | guest arrives that day |
+| `WC - Water leak from our unit` | occupied, no time agreed |
+
+A confirmed appointment is the first thing the day gets planned around —
+it is step one of the scheduling rule — and it was sitting in plain text.
+An unrecognised prefix is left in the description rather than discarded.
+
+### On PMS's own categories
+
+PMS classifies with seven Maintenance subcategories: AC Cleaning/Servicing,
+Carpentry Works, Plumbing Works, Electrical Works, Pool Works, Gardening
+Works, General Inspection, Others, Appliances, Pre Handover. That is right
+for a dropdown a person has to pick from under time pressure, and far too
+coarse to answer "why do we keep going back to Palm Villa".
+
+So the PMS value is stored as it was chosen, for reconciliation, and the
+app classifies more finely from the task text on top of it — at no typing
+cost, because it is inferred rather than asked. The two never disagree;
+one is simply the summary of the other.
