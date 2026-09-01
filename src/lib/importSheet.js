@@ -15,7 +15,7 @@
  * distinctive substring survives that.
  * ---------------------------------------------------------------------- */
 
-import { squash, canonKey, toISODate, canonPriority, parseYN } from "./normalize.js";
+import { squash, canonKey, toISODate, canonPriority, parseYN, splitTrailingUnit } from "./normalize.js";
 
 /* Each target field lists substrings to look for, most specific first. */
 const COLUMN_MATCHERS = [
@@ -174,12 +174,17 @@ export function parseSheetPaste(text, fallbackDate) {
     const date = normaliseDate(get(row, "_date"), lastDate);
     lastDate = date;
 
+    /* A quarter of the real rows leave the unit column empty and write the
+       unit on the end of the building instead. Split it here so the job
+       arrives with a building that groups and a unit that matches. */
+    const place = splitTrailingUnit(property, tidyUnit(get(row, "unit")));
+
     jobs.push({
       _date: date,
       shift: get(row, "shift"),
       team: get(row, "team"),
-      property,
-      unit: tidyUnit(get(row, "unit")),
+      property: place.property,
+      unit: place.unit,
       status: get(row, "status"),
       parking: get(row, "parking"),
       timeOfVisit: get(row, "timeOfVisit"),

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from "react";
 import {
   Briefcase, Plus, Loader2, Link2, Trash2, ExternalLink, Package,
-  AlertTriangle, CheckCircle2, Clock, X, Wand2,
+  AlertTriangle, CheckCircle2, Clock, X, Wand2, Search, CalendarDays, Users,
 } from "lucide-react";
 import { storageGet, storageSet } from "../lib/storage.js";
 import { readDays, parseDay, migrateDay } from "../lib/jobStore.js";
@@ -9,10 +9,11 @@ import { liveJobs, actualDuration } from "../lib/job.js";
 import {
   newProject, materialLine, projectCost, projectDuration, buildPriceBook,
   lookupPrice, findJobsForProject, extractQuotationRef,
+  discoverProjects, candidateProjects, adoptProject,
   PROJECT_STATUS, PROJECT_STATUS_LABEL, PROJECT_TYPES,
 } from "../lib/project.js";
 import { DEFAULT_RATES } from "../lib/cost.js";
-import { squash, formatMinutes } from "../lib/normalize.js";
+import { squash, formatMinutes, parseDurationMinutes } from "../lib/normalize.js";
 
 /* ---------------------------------------------------------------------- *
  * Projects.jsx — quoted work, and whether it made money.
@@ -63,6 +64,21 @@ export default function Projects({ knownDates, showToast }) {
     [jobsByDate]
   );
   const priceBook = useMemo(() => buildPriceBook(projects || []), [projects]);
+
+  /* Projects the department has already run, read back out of the schedule
+     they were written into. A discovered project stops being shown here the
+     moment it is adopted — matched on the quotation reference, or on the
+     jobs it is built from where there is no reference. */
+  const found = useMemo(() => discoverProjects(allJobs), [allJobs]);
+  const candidates = useMemo(() => candidateProjects(allJobs, found), [allJobs, found]);
+  const unadopted = useMemo(() => {
+    const refs = new Set((projects || []).map((p) => squash(p.quotationRef).toUpperCase()).filter(Boolean));
+    const linked = new Set((projects || []).flatMap((p) => p.linkedJobIds || []));
+    return found.filter((f) => {
+      if (f.ref && refs.has(f.ref)) return false;
+      return !(f.jobIds || []).some((id) => linked.has(id));
+    });
+  }, [found, projects]);
 
   async function save(next) {
     setSaving(true);
@@ -136,6 +152,23 @@ export default function Projects({ knownDates, showToast }) {
         </div>
       )}
 
+      {unadopted.length > 0 && (
+        <Discovered
+          items={unadopted} candidates={candidates} rates={rates}
+          onAdopt={(f) => {
+            const p = adoptProject(f, "coordinator");
+            upsert(p);
+            setEditing(p);
+            showToast?.(`"${p.title}" added. Attach the approved quotation to see the margin.`, "ok");
+          }}
+          onAdoptAll={() => {
+            const made = unadopted.map((f) => adoptProject(f, "coordinator"));
+            save([...(projects || []), ...made]);
+            showToast?.(`${made.length} project(s) brought in from the schedule.`, "ok");
+          }}
+        />
+      )}
+
       <div className="flex gap-1.5">
         {[["open", "Open"], ["all", "All"], ["completed", "Completed"], ["losing", "Over cost"]].map(([id, label]) => (
           <button key={id} onClick={() => setFilter(id)}
@@ -149,7 +182,9 @@ export default function Projects({ knownDates, showToast }) {
       {filtered.length === 0 && (
         <div className="rounded-lg border border-dashed border-slate-300 bg-white p-8 text-center text-sm text-slate-500">
           {projects.length === 0
-            ? "No projects yet. Create one from an approved quotation, then link the daily jobs that belong to it."
+            ? (unadopted.length
+                ? "Nothing added by hand yet — but the projects above were found in the schedule. Bring one in to attach its quotation."
+                : "No projects yet. Create one from an approved quotation, then link the daily jobs that belong to it.")
             : "No projects match this filter."}
         </div>
       )}
@@ -180,6 +215,154 @@ function jobsFor(project, allJobs) {
   const ids = new Set(project.linkedJobIds || []);
   return allJobs.filter((j) => ids.has(j.id));
 }
+
+/* ====================================================================== *
+ * Projects found in the schedule.
+ *
+ * The tab used to be empty because it only listed projects somebody had
+ * typed into it — while the projects themselves were in the daily schedule
+ * the whole time, identified by the quotation number the coordinator
+ * writes into the task: "Approved - Quotation - PC-2026-08-23 -
+ * Maintenance work", the same reference appearing on each day the crew was
+ * there. Reading it back is what turns three separate job rows into one
+ * project that ran for three days.
+ *
+ * These are shown but not silently created. What the app can read is the
+ * work and the hours; what it cannot read is the amount the client
+ * approved, and a project list carrying costs with no prices against them
+ * would be worse than none. So each one is offered, and adopting it opens
+ * the form on the one field only a person has.
+ * ====================================================================== */
+function Discovered({ items, candidates, rates, onAdopt, onAdoptAll }) {
+  const [open, setOpen] = useState(true);
+  const cur = rates.currency || "AED";
+  const hourly = Number(rates.techCostPerHour) || 25;
+
+  const rows = items.map((f) => {
+    let minutes = 0, measured = 0;
+    (f.jobs || []).forEach((j) => {
+      // Person-hours, not elapsed: five people on a four-hour job is twenty
+      // hours of our cost, and cost is what this column feeds.
+      const crew = splitLen(j.team);
+      const act = actualDuration(j);
+      if (act.minutes != null) { minutes += act.minutes * crew; measured += act.minutes * crew; return; }
+      const est = parseDurationMinutes(j.estimatedTime);
+      if (est != null) minutes += est * crew;
+    });
+    const hours = Math.round((minutes / 60) * 10) / 10;
+    return { f, hours, measuredHours: Math.round((measured / 60) * 10) / 10, labour: Math.round(hours * hourly) };
+  });
+
+  const totalHours = Math.round(rows.reduce((s, r) => s + r.hours, 0) * 10) / 10;
+  const totalLabour = rows.reduce((s, r) => s + r.labour, 0);
+
+  return (
+    <div className="rounded-lg border border-amber-300 bg-amber-50/60 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold text-slate-900 flex items-center gap-1.5">
+            <Search className="w-4 h-4 text-amber-700" />
+            {items.length} project{items.length === 1 ? "" : "s"} found in the schedule
+          </h2>
+          <p className="text-xs text-slate-600 mt-1 max-w-3xl">
+            These were never missing — they were written into the daily tasks with their quotation
+            number, which is how the department has always recorded them. The days, the crews and
+            the hours are read straight from the board. What is not in the schedule anywhere is the
+            amount the client approved, so that is the one thing adopting a project asks you for.
+          </p>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <button onClick={() => setOpen(!open)}
+                  className="text-xs border border-slate-300 bg-white px-2.5 py-1.5 rounded-md">
+            {open ? "hide" : "show"}
+          </button>
+          <button onClick={onAdoptAll}
+                  className="text-xs bg-slate-900 text-white px-2.5 py-1.5 rounded-md">
+            Bring in all {items.length}
+          </button>
+        </div>
+      </div>
+
+      <div className="mt-3 flex flex-wrap gap-x-6 gap-y-1 text-xs text-slate-700">
+        <span><b>{totalHours}h</b> of crew time already booked against them</span>
+        <span>≈ <b>{cur} {totalLabour.toLocaleString()}</b> of our cost, before material</span>
+        <span><b>{items.filter((f) => f.days > 1).length}</b> ran more than one day</span>
+      </div>
+
+      {open && (
+        <div className="mt-3 space-y-2">
+          {rows.map(({ f, hours, measuredHours, labour }) => (
+            <div key={f.key} className="rounded-md border border-amber-200 bg-white p-3">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-sm font-medium text-slate-900">{f.title}</span>
+                    {f.ref && <span className="text-[11px] font-mono bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5">{f.ref}</span>}
+                    {f.revision != null && <span className="text-[11px] text-slate-500">rev {f.revision}</span>}
+                    <span className="text-[11px] rounded px-1.5 py-0.5 bg-slate-100 text-slate-600">
+                      {f.type === "onboarding" ? "Onboarding" : f.type === "snag" ? "Snag" : "Quoted"}
+                    </span>
+                    {!f.ref && (
+                      <span className="text-[11px] rounded px-1.5 py-0.5 bg-amber-100 text-amber-800 border border-amber-200">
+                        no quotation number written
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-xs text-slate-600 mt-1">{f.units.join(" · ")}</div>
+                  <div className="text-xs text-slate-500 mt-1 flex flex-wrap gap-x-4 gap-y-0.5">
+                    <span className="inline-flex items-center gap-1">
+                      <CalendarDays className="w-3 h-3" />
+                      {f.days} day{f.days === 1 ? "" : "s"}: {f.dates.join(", ")}
+                      {f.continued && " · marked as continued"}
+                    </span>
+                    <span className="inline-flex items-center gap-1">
+                      <Users className="w-3 h-3" /> {f.crew.join(", ") || "no crew recorded"}
+                    </span>
+                    <span className="inline-flex items-center gap-1">
+                      <Clock className="w-3 h-3" />
+                      {hours}h of crew time {measuredHours > 0 ? `(${measuredHours}h measured)` : "(from estimates)"}
+                      {" · ≈ "}{cur} {labour.toLocaleString()} labour
+                    </span>
+                  </div>
+                </div>
+                <button onClick={() => onAdopt(f)}
+                        className="text-xs border border-slate-800 bg-white text-slate-900 px-2.5 py-1.5 rounded-md shrink-0">
+                  Bring it in
+                </button>
+              </div>
+            </div>
+          ))}
+
+          {candidates.length > 0 && (
+            <div className="pt-2">
+              <h3 className="text-xs font-medium text-slate-700">
+                Worth a look — approved work with no quotation number
+              </h3>
+              <p className="text-xs text-slate-500 mt-0.5 max-w-3xl">
+                These say approved but carry no reference, so nothing here can tell whether they are
+                quoted work whose number nobody wrote down or a guest agreeing to an ordinary
+                repair. Guessing either way would be wrong — put the reference on the job and it
+                joins its project on the next load.
+              </p>
+              <ul className="mt-1.5 space-y-1">
+                {candidates.slice(0, 8).map((c) => (
+                  <li key={c.id} className="text-xs text-slate-600">
+                    <span className="text-slate-400">{c.date}</span>{" · "}
+                    <b>{c.property} {c.unit}</b>{" — "}{c.description}
+                    {c.team ? <span className="text-slate-400"> · {c.team}</span> : null}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const splitLen = (team) =>
+  Math.max(1, squash(team).split(/\s*(?:,|&|\+|\/|\band\b)\s*/i).filter(Boolean).length);
 
 function Stat({ label, value, sub, tone }) {
   const t = tone === "bad" ? "text-red-700" : tone === "good" ? "text-emerald-700" : "text-slate-900";

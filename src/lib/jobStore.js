@@ -22,6 +22,7 @@ import {
   storageGet, storageSet, storageList, storageGetVersioned, storageCompareAndSet,
 } from "./storage.js";
 import { isTombstone } from "./job.js";
+import { splitTrailingUnit } from "./normalize.js";
 
 const key = (date) => `schedule:${date}`;
 
@@ -177,37 +178,51 @@ export function createDayWatcher({ intervalMs = 10000, quietMs = 4000 } = {}) {
  * -------------------------------------------------------------------- */
 export function migrateRow(row, date) {
   if (isTombstone(row)) return row;
-  if (row.state && row.events) return row;
+
+  /* Runs on every row, migrated or not: a quarter of the stored month has
+     the unit written on the end of the building with the unit column empty,
+     and until it is split those rows each count as a building of their own. */
+  const fixed = splitUnitIfStuck(row);
+  if (fixed.state && fixed.events) return fixed;
+  const row_ = fixed;
 
   // The previous build recorded outcomes under `verify`; carry them across
   // rather than dropping work the admin already did.
   let state = "scheduled";
   let outcomeReason = "";
-  const v = row.verify;
+  const v = row_.verify;
   if (v && v.outcome === "done") state = "fixed";
   else if (v && v.outcome === "not-done") { state = "not_done"; outcomeReason = v.reason || ""; }
   else if (v && v.outcome === "partial") { state = "not_done"; outcomeReason = v.reason || "Partially completed"; }
 
   const events = [];
-  if (row.createdAt) events.push({ at: row.createdAt, kind: "created", by: row.importedAt ? "import" : "unknown" });
+  if (row_.createdAt) events.push({ at: row_.createdAt, kind: "created", by: row_.importedAt ? "import" : "unknown" });
   if (v && v.verifiedAt) {
     events.push({ at: v.verifiedAt, kind: state === "done" ? "done" : "not_done", by: v.verifiedBy || "admin", reason: outcomeReason });
   }
   if (!events.length) events.push({ at: Date.now(), kind: "created", by: "unknown" });
 
   return {
-    ...row,
+    ...row_,
     state,
     outcomeReason,
-    scheduledDate: row.scheduledDate || date,
-    originDate: row.originDate || date,
-    pushCount: row.pushCount || 0,
-    inPms: row.inPms !== undefined ? row.inPms : (v ? v.inPms : (row.sheetInPms ?? null)),
-    pmsRef: row.pmsRef || (v ? v.pmsRef : "") || row.sheetPmsRef || "",
-    actualMinutes: row.actualMinutes ?? (v ? v.actualMinutes : null) ?? null,
-    createdBy: row.createdBy || "unknown",
+    scheduledDate: row_.scheduledDate || date,
+    originDate: row_.originDate || date,
+    pushCount: row_.pushCount || 0,
+    inPms: row_.inPms !== undefined ? row_.inPms : (v ? v.inPms : (row_.sheetInPms ?? null)),
+    pmsRef: row_.pmsRef || (v ? v.pmsRef : "") || row_.sheetPmsRef || "",
+    actualMinutes: row_.actualMinutes ?? (v ? v.actualMinutes : null) ?? null,
+    createdBy: row_.createdBy || "unknown",
     events,
   };
+}
+
+/* Only ever writes back a property that lost its trailing unit, and only
+   when the unit column was empty. See splitTrailingUnit for why that is the
+   one shape safe to move. */
+function splitUnitIfStuck(row) {
+  const s = splitTrailingUnit(row.property, row.unit);
+  return s.split ? { ...row, property: s.property, unit: s.unit } : row;
 }
 
 export function migrateDay(rows, date) {
@@ -217,5 +232,6 @@ export function migrateDay(rows, date) {
 /* Does this day need writing back after migration? Only if something
    actually changed, so opening an already-migrated day is a pure read. */
 export function needsMigration(rows) {
-  return (rows || []).some((r) => !isTombstone(r) && (!r.state || !r.events));
+  return (rows || []).some((r) => !isTombstone(r) &&
+    (!r.state || !r.events || splitTrailingUnit(r.property, r.unit).split));
 }
