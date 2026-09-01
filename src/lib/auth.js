@@ -124,6 +124,10 @@ export function identityFor(session, staff) {
   return {
     email,
     name: rec ? rec.name : titleish(local),
+    /* Whether the name came from the team list or was guessed at from the
+       address. A guessed name still works, but it will not match the name
+       on the schedules, so the team list should carry the address. */
+    matched: byEmail ? "email" : byName ? "name" : "guessed",
     role: rec && rec.trade === "manager" ? "admin"
         : rec && rec.trade === "coordinator" ? "coordinator"
         : "field",

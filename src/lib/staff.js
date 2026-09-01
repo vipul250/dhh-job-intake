@@ -88,6 +88,12 @@ export function normaliseStaff(rec) {
     base: squash(rec.base) || "Dubai",
     licence: rec.licence === true ? true : rec.licence === false ? false : null,
     role: rec.role || "field",
+    /* The work email, which is what ties a signed-in session to the name
+       this person has on the board. Without it, signing in as
+       kajamohideen.mugusin@… would file her work under "Kajamohideen
+       Mugusin" while every schedule says "Kaja" — one person, two histories,
+       and the who-did-what table split in half. */
+    email: squash(rec.email).toLowerCase(),
     shift: squash(rec.shift),
     phone: squash(rec.phone),
     note: squash(rec.note),
