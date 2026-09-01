@@ -3,6 +3,7 @@ import {
   Users, Loader2, Check, AlertTriangle, Phone, Clock, Plane, Save, X,
 } from "lucide-react";
 import { storageGet, storageSet } from "../lib/storage.js";
+import { squash } from "../lib/normalize.js";
 import { readDay, migrateDay } from "../lib/jobStore.js";
 import { liveJobs } from "../lib/job.js";
 import { parseRosterMessage, rosterSummary, checkAgainstSchedule } from "../lib/roster.js";
@@ -301,6 +302,32 @@ function AccessPanel({ authRequired, setAuthRequired, session, showToast }) {
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
   const [proved, setProved] = useState(!!session);
+  const [staff, setStaff] = useState(null);
+
+  /* Read the team list so the panel can say, before the switch is thrown,
+     whether signing in will land people under the names the board already
+     uses. It is the one thing that cannot be undone quietly: a coordinator
+     whose address does not match their team row starts writing history
+     under a different name, and their past work stops adding up.
+     
+     The team list sits further down the same screen, so it is re-read when
+     that list announces a save — otherwise the count sits at zero while
+     somebody types addresses in directly below it and wonders why. */
+  useEffect(() => {
+    let off = false;
+    const read = async () => {
+      const raw = await storageGet("staff");
+      if (off) return;
+      try { setStaff(raw ? JSON.parse(raw) : seedStaff()); } catch { setStaff(seedStaff()); }
+    };
+    read();
+    window.addEventListener("dhh-staff-saved", read);
+    return () => { off = true; window.removeEventListener("dhh-staff-saved", read); };
+  }, []);
+
+  const people = (staff || []).filter((x) => x.active !== false);
+  const withEmail = people.filter((x) => squash(x.email));
+  const officeNoEmail = people.filter((x) => x.role === "office" && !squash(x.email));
 
   async function test() {
     setBusy(true); setErr(""); setMsg("");
@@ -371,10 +398,38 @@ function AccessPanel({ authRequired, setAuthRequired, session, showToast }) {
         )}
       </div>
 
+      {staff && (
+        <div className="mt-2 rounded-md border border-slate-200 bg-slate-50 p-2.5">
+          <div className="text-[11px] font-medium text-slate-700">Before you turn it on</div>
+          <ul className="mt-1 space-y-0.5 text-[11px]">
+            <li className={withEmail.length === people.length ? "text-emerald-800" : "text-amber-800"}>
+              {withEmail.length === people.length ? "✓" : "!"}{" "}
+              <b>{withEmail.length} of {people.length}</b> on the team have a work email recorded.
+              {withEmail.length < people.length && (
+                <> Without it, signing in files their work under a name taken from the address —
+                  so <i>kajamohideen.mugusin@…</i> becomes “Kajamohideen Mugusin” while every
+                  schedule says “Kaja”, and the two never add up. Add them in the <b>Work email</b> column of the team list above.</>
+              )}
+            </li>
+            {officeNoEmail.length > 0 && (
+              <li className="text-amber-800">
+                ! The coordinators are the ones who will use this most:{" "}
+                <b>{officeNoEmail.map((x) => x.name).join(", ")}</b> still have no address.
+              </li>
+            )}
+            <li className="text-slate-600">
+              · Everyone who should get in must also be invited in Supabase — the app only sends a
+              code to an address that already exists there.
+            </li>
+          </ul>
+        </div>
+      )}
+
       <div className="mt-2 flex flex-wrap items-end gap-2">
         <label className="text-[11px] text-slate-500 flex-1 min-w-[200px]">
           Send a test code to
-          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)}
+          <input type="email" name="access-test-email" value={email}
+                 onChange={(e) => setEmail(e.target.value)}
                  placeholder="you@deluxehomes.com"
                  className="mt-0.5 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
         </label>
@@ -444,6 +499,8 @@ function Team({ jobs, showToast }) {
     setSaving(true);
     setStaff(next);
     await storageSet("staff", JSON.stringify(next));
+    // The sign-in readiness check above this list counts recorded emails.
+    window.dispatchEvent(new CustomEvent("dhh-staff-saved"));
     setSaving(false);
   }
 
@@ -531,6 +588,7 @@ function Team({ jobs, showToast }) {
               <th className="text-left font-medium py-1.5">Trade</th>
               <th className="text-left font-medium py-1.5">Based</th>
               <th className="text-left font-medium py-1.5">Drives</th>
+              <th className="text-left font-medium py-1.5">Work email</th>
               <th className="text-left font-medium py-1.5">Note</th>
             </tr>
           </thead>
@@ -570,6 +628,12 @@ function StaffRow({ rec, onChange }) {
           <option value="y">yes</option>
           <option value="n">no</option>
         </select>
+      </td>
+      <td className="py-1">
+        <input type="email" value={rec.email || ""} onChange={(e) => onChange({ email: e.target.value })}
+               placeholder="—"
+               className={`border rounded px-1 py-0.5 text-xs w-44 bg-transparent ${
+                 rec.role === "office" && !rec.email ? "border-amber-300" : "border-transparent hover:border-slate-200 focus:border-slate-300"}`} />
       </td>
       <td className="py-1 text-slate-500">
         <input value={rec.note} onChange={(e) => onChange({ note: e.target.value })}

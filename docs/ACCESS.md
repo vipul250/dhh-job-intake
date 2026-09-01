@@ -21,6 +21,21 @@ flip it.
 
 ---
 
+## 0. Put everyone's work email on the team list first
+
+**Roster → Team → Work email.** Do this before anything else, because it is
+the one step that cannot be undone quietly.
+
+A signed-in session gives the app an email address. To write history under
+the name the board already uses, it has to match that address to a team row.
+Where it cannot, it falls back to the address itself — so
+`kajamohideen.mugusin@…` starts filing work under "Kajamohideen Mugusin"
+while every schedule ever written says "Kaja". One person, two histories,
+and the *who did what* table split down the middle.
+
+The Access panel counts them for you and will not let you forget the
+coordinators, who are the people who will use this most.
+
 ## 1. Add the people who are allowed in
 
 In the Supabase dashboard: **Authentication → Users → Add user → Send
