@@ -16,6 +16,7 @@ import {
 } from "../lib/job.js";
 import { parseWorkReport, fmtMin } from "../lib/workReport.js";
 import { parseAnyPaste } from "../lib/backlog.js";
+import { dayActivity, attributionLine } from "../lib/activity.js";
 import { parseSheetPaste } from "../lib/importSheet.js";
 import { checkAgainstSchedule } from "../lib/roster.js";
 import { storageGet } from "../lib/storage.js";
@@ -75,20 +76,36 @@ const addDays = (iso, n) => {
 };
 const clock = (ts) => new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
-/* Identity is attribution, not authentication — there is no login in this
-   app and adding one is a different piece of work. It is enough to answer
-   "who moved this job", which is the question nobody can answer today. */
+/* Identity is attribution, not authentication until sign-in is switched on
+   (see docs/ACCESS.md). It exists to answer "who moved this job".
+ *
+ * The name expires, and that matters more than it sounds. Three
+ * coordinators rotate through the same desk on different shifts, so a name
+ * remembered indefinitely means Kaja's afternoon changes are filed under
+ * Haris, who went home at eleven the night before. The log is then worse
+ * than useless: confidently wrong. Nine hours is one shift, so the name is
+ * asked again after that — one box, once a shift, and every entry after it
+ * belongs to the person who actually made it. */
+const ME_TTL_MS = 9 * 60 * 60 * 1000;
+
 function useMe() {
   const [me, setMe] = useState(() => {
     try {
       const raw = localStorage.getItem("dhh-me");
-      if (raw) return JSON.parse(raw);
+      if (!raw) return null;
+      const v = JSON.parse(raw);
+      if (!v) return null;
+      // Records written before this had no timestamp; treat them as stale
+      // rather than trusting a name of unknown age.
+      if (!v.at || Date.now() - v.at > ME_TTL_MS) return null;
+      return v;
     } catch { /* fall through to the prompt */ }
     return null;
   });
   const save = (next) => {
-    setMe(next);
-    try { localStorage.setItem("dhh-me", JSON.stringify(next)); } catch { /* private mode */ }
+    const stamped = next ? { ...next, at: Date.now() } : next;
+    setMe(stamped);
+    try { localStorage.setItem("dhh-me", JSON.stringify(stamped)); } catch { /* private mode */ }
   };
   return [me, save];
 }
@@ -118,6 +135,7 @@ export default function LiveBoard({
   const [nightLog, setNightLog] = useState(false);
   const [taskPaste, setTaskPaste] = useState(false);
   const [dayReview, setDayReview] = useState(false);
+  const [showLog, setShowLog] = useState(false);
   const [roster, setRoster] = useState(null);
   const [loadError, setLoadError] = useState("");
   const [post, setPost] = useState(null);
@@ -346,6 +364,11 @@ export default function LiveBoard({
     () => jobs.filter((j) => !isResolved(j.state) && j.state !== "cancelled").length,
     [jobs]
   );
+
+  /* Who built this day and who has changed it since. Tombstones are
+     included deliberately: a job that left the day is one of the changes
+     this is here to show. */
+  const activity = useMemo(() => dayActivity(rows || [], post), [rows, post]);
 
   const rosterCheck = useMemo(
     () => (roster ? checkAgainstSchedule(roster, jobs) : null),
@@ -685,6 +708,17 @@ export default function LiveBoard({
         jobCount={jobs.length} onPost={doPost}
       />
 
+      {(activity.builtBy.length > 0 || activity.changes > 0) && (
+        <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600 px-0.5">
+          <History className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+          <span>{attributionLine(activity)}</span>
+          <button onClick={() => setShowLog(true)}
+                  className="underline underline-offset-2 text-slate-500 hover:text-slate-900">
+            see the log
+          </button>
+        </div>
+      )}
+
       {rosterCheck && <RosterStrip check={rosterCheck} />}
       {crewing && <CrewStrip crewing={crewing} />}
 
@@ -825,6 +859,9 @@ export default function LiveBoard({
           onConfirm={(payload) => closeOut(closeOutFor, payload)}
         />
       )}
+      {showLog && (
+        <DayLog date={selectedDate} activity={activity} onCancel={() => setShowLog(false)} />
+      )}
       {taskPaste && (
         <TaskPasteDialog
           date={selectedDate}
@@ -861,9 +898,13 @@ function WhoAreYou({ onPick }) {
     <div className="max-w-md mx-auto mt-10 rounded-lg border border-slate-200 bg-white p-5">
       <h2 className="text-base font-semibold text-slate-900">Who is using this board?</h2>
       <p className="text-xs text-slate-500 mt-1">
-        Your name goes on every change you make, so the board can answer "who moved this job
-        and when". It is stored on this device only — this is attribution, not a login, and it
-        does not restrict what anyone can do.
+        Your name goes on every change you make, so the board can answer "who built this schedule"
+        and "who moved this job at eleven". It is stored on this device only — attribution, not a
+        login, and it does not restrict what anyone can do.
+      </p>
+      <p className="text-xs text-slate-500 mt-1.5">
+        It is asked again each shift. Three of you share this desk, and a name that never expires
+        would file the afternoon's changes under whoever was here last night.
       </p>
       <label className="block text-xs text-slate-600 mt-3">
         Name
@@ -2657,5 +2698,105 @@ function DayReview({ date, jobs, onCancel, onCloseOut, onQuick }) {
         </button>
       </div>
     </Modal>
+  );
+}
+
+/* ====================================================================== *
+ * The day's log.
+ *
+ * Three coordinators rotate through the same desk and nobody could say who
+ * built a given schedule or who changed it at eleven in the morning. Every
+ * event has carried a name and a timestamp all along; they were written
+ * onto individual jobs and never read back together.
+ *
+ * Changes after the day closed are marked, because those are the ones a
+ * manager is actually looking for. Recording an outcome is not a change and
+ * is not flagged as one.
+ * ====================================================================== */
+function DayLog({ date, activity, onCancel }) {
+  const [only, setOnly] = useState("all");
+  const rows = activity.timeline.filter((t) =>
+    only === "all" ? true : only === "changes" ? t.change : t.group === only);
+
+  const clock = (at) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const day = (at) => new Date(at).toLocaleDateString();
+
+  return (
+    <Modal title={`Who did what on ${date}`} onCancel={onCancel} wide>
+      <p className="text-xs text-slate-600">{attributionLine(activity) || "Nothing recorded on this day yet."}</p>
+
+      <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-2">
+        <LogStat label="Built the schedule" people={activity.builtBy} unit="jobs" />
+        <LogStat label="Changed it after it closed" people={activity.changedBy} unit="changes" warn />
+        <LogStat label="Recorded what happened" people={activity.recordedBy} unit="updates" />
+        <div className="rounded-md border border-slate-200 bg-white p-2">
+          <div className="text-[11px] text-slate-500">Posted</div>
+          <div className="text-xs text-slate-900 mt-0.5">
+            {activity.posted
+              ? <>{activity.posted.by}<div className="text-[11px] text-slate-400">{clock(activity.posted.at)}</div></>
+              : <span className="text-slate-400">not posted</span>}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-3 flex gap-1.5">
+        {[["all", "Everything"], ["changes", "Changes after it closed"], ["planning", "Schedule"], ["doing", "Outcomes"]].map(([id, label]) => (
+          <button key={id} onClick={() => setOnly(id)}
+                  className={`text-xs rounded-md px-2.5 py-1 border ${only === id ? "bg-slate-900 text-white border-slate-900" : "border-slate-300 hover:bg-slate-50"}`}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {rows.length === 0 ? (
+        <p className="mt-3 text-xs text-slate-400 py-4 text-center">Nothing under this filter.</p>
+      ) : (
+        <div className="mt-2 max-h-[24rem] overflow-y-auto border border-slate-200 rounded-md divide-y divide-slate-100">
+          {rows.map((t, i) => (
+            <div key={i} className={`px-2.5 py-1.5 text-xs flex flex-wrap items-baseline gap-x-2 ${t.change ? "bg-amber-50/60" : ""}`}>
+              <span className="text-slate-400 tabular-nums shrink-0" title={day(t.at)}>{clock(t.at)}</span>
+              <span className="font-medium text-slate-900 shrink-0">{t.by}</span>
+              <span className="text-slate-700">{t.label}</span>
+              <span className="text-slate-500 flex-1 min-w-0 truncate">{t.job}</span>
+              {t.reason && <span className="text-[11px] text-slate-500 italic">“{t.reason}”</span>}
+              {t.change && (
+                <span className="text-[11px] rounded px-1.5 bg-amber-200 text-amber-900 shrink-0">
+                  after it closed
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <p className="mt-2 text-[11px] text-slate-400">
+        Names come from whoever was signed in when the action was taken. Recording an outcome is the
+        day running its course and is never marked as a change.
+      </p>
+
+      <div className="flex justify-end mt-4">
+        <button onClick={onCancel} className="text-sm bg-slate-900 text-white px-3 py-1.5 rounded-md">Close</button>
+      </div>
+    </Modal>
+  );
+}
+
+function LogStat({ label, people, unit, warn }) {
+  return (
+    <div className="rounded-md border border-slate-200 bg-white p-2">
+      <div className="text-[11px] text-slate-500">{label}</div>
+      {people.length === 0 ? (
+        <div className="text-xs text-slate-400 mt-0.5">—</div>
+      ) : (
+        <div className="mt-0.5 space-y-0.5">
+          {people.slice(0, 3).map((p) => (
+            <div key={p.by} className="text-xs">
+              <span className={warn ? "text-amber-900" : "text-slate-900"}>{p.by}</span>
+              <span className="text-slate-400"> {p.n} {unit}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
