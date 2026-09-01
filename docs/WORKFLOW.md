@@ -567,3 +567,72 @@ instead?** — and will not save until it is answered. Three answers:
 The dashboard tile *not done, booked again* is the coverage: of the jobs
 that were missed, how many have a date. A department where that number sits
 low is not losing jobs to bad luck; it is losing them at close-out.
+
+## The projects were never missing
+
+The Projects tab was empty, and the reason it was empty is worth stating
+plainly: it only ever listed projects somebody had typed into it. The
+projects themselves were in the schedule the whole time, written into the
+task the way the department has always written them —
+
+```
+ONB - Approved - Quotation - REV 01 - PC-2026-08-17 - Duct Cleaning
+Contin  Approved - Quotation - PC-2026-08-23 - Maintenance work
+Approevd - PC-2026-08-13 - Curtain fixing along with Fly mesh Repair
+```
+
+— with the quotation number as the identity. Asking a coordinator to
+re-enter that is how the double-entry problem started, so the app reads it
+instead. Over the real month it finds **nine projects across fifteen job
+rows**, six of which ran on more than one day. `PC-2026-08-23` at Afnan 5
+603 ran three separate days and had never been visible as one thing.
+
+Reading it back is what turns three job rows into one project with a
+duration, a crew and a labour cost. The parser is written for how people
+actually type: `Approevd` is in the real data, one reference runs the words
+together as `Quotation -PC-`, one carries `REV 01`, and three are prefixed
+`Contin`. A parser that only handled the tidy form would drop those
+silently, and a missing project looks exactly like a project that never
+existed.
+
+**Found, not created.** What the schedule contains is the work and the
+hours. What it does not contain anywhere is the amount the client approved
+— so nothing is added to the project list automatically. Each one is
+offered with its days, crews and hours; bringing it in opens the form on
+the one field only a person has. A project list carrying costs with no
+prices against them would be worse than an empty one.
+
+**A unit's first row usually predates its quotation.** "Onboarding project"
+on the 20th and "ONB - Approved - Quotation - REV 01 - PC-2026-08-17 - Duct
+Cleaning" on the 23rd are both Azizi Riviera 10 701 and both the same
+project. A reference-less row is folded into the referenced project for the
+same unit, nearest in time.
+
+**What is not guessed.** "Approved - Water heater replacement - Collect from
+shop" says approved and carries no reference. Nothing in that text says
+whether it is quoted work whose number nobody wrote down or a guest
+agreeing to an ordinary repair. It is listed separately as worth a look, and
+counted as neither.
+
+### The unit that was hiding inside the building name
+
+Fixing this exposed something bigger. **117 of the 474 rows** — a quarter of
+the month — leave the unit column empty and write the unit on the end of the
+building instead: `Afnan 5 603`, `Sunrise Bay Tower 1 902`, `Palm Villa E41`.
+
+Every one of those was being counted as a building of its own. The month
+read as 233 distinct buildings; it is actually **181**. Worse, the same
+apartment written both ways was two different places, so **33 units that
+were revisited never showed as repeat visits at all** — Harbour Gate Tower 1
+unit 3403 was visited four times and read as four unrelated one-off jobs.
+
+The split only ever runs when the unit column is genuinely empty, and only
+on a tail that cannot be a building number: three or more digits, or a
+letter followed by digits. `Afnan 5 603` splits; `Afnan 3` and `Azizi
+Riviera 10` do not. Of the 88 distinct cases it splits 83 and leaves five
+alone — `Warehouse`, `7th floor office`, and `Damac Hills 2 Victoria 61`,
+where 61 could be a villa or a phase and nothing here should decide.
+Rows that already have a unit are never touched.
+
+Stored days are corrected as they are opened, so this repairs the month
+already in the database rather than only new imports.

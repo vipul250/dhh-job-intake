@@ -168,6 +168,41 @@ export function canonCrewLabel(raw) {
   return members.slice().sort().join(" & ");
 }
 
+/* ---------------------- unit stuck in the building --------------------- *
+ * 117 of the 474 real rows leave the unit column empty and write the unit
+ * on the end of the building instead: "Afnan 5 603", "Sunrise Bay Tower 1
+ * 902", "Palm Villa E41". Left as they are, each of those is counted as a
+ * building of its own — so a quarter of the month's rows sit in buildings
+ * that have exactly one job, repeat visits to the same tower never match,
+ * and batching by building cannot group them.
+ *
+ * Splitting is only safe because a Dubai unit number and a building number
+ * do not look alike:
+ *
+ *   "Afnan 5 603"          -> Afnan 5 / 603      three digits: a unit
+ *   "Afnan 3"              -> Afnan 3 / —        one digit: part of the name
+ *   "Azizi Riviera 10"     -> Azizi Riviera 10   two digits: part of the name
+ *   "Palm Villa E41"       -> Palm Villa / E41   letter then digits: a unit
+ *   "Golf Towers T1 1905"  -> Golf Towers T1 / 1905
+ *   "Warehouse"            -> Warehouse / —      not a unit at all
+ *
+ * The rule is deliberately conservative: it only ever runs when the unit
+ * column is genuinely empty, and it would rather leave a unit inside a
+ * building name than invent one. A wrong split renames a building, and a
+ * renamed building is a worse error than an unsplit one.
+ * -------------------------------------------------------------------- */
+const UNIT_TAIL = /^(?:\d{3,}[A-Za-z]?|[A-Za-z]{1,2}\d{2,})$/;
+
+export function splitTrailingUnit(property, unit) {
+  const prop = squash(property);
+  if (squash(unit)) return { property: prop, unit: squash(unit), split: false };
+  const parts = prop.split(/\s+/);
+  if (parts.length < 2) return { property: prop, unit: "", split: false };
+  const tail = parts[parts.length - 1];
+  if (!UNIT_TAIL.test(tail)) return { property: prop, unit: "", split: false };
+  return { property: parts.slice(0, -1).join(" "), unit: tail.toUpperCase(), split: true };
+}
+
 /* --------------------------- properties ------------------------------- *
  * 241 distinct property strings across 474 rows, and a big share of that
  * spread is casing/spacing noise: "Palm Villa" (21) / "Palm villa" (11) /
