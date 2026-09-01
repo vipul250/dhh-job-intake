@@ -473,3 +473,183 @@ export function backlogSummary(items, ctx = {}) {
     checkoutWindows: rows.filter((r) => r.window.heavy && r.window.occ.until).length,
   };
 }
+
+/* ---------------------------------------------------------------------- *
+ * Mirroring the PMS task list.
+ *
+ * The department's rule from today: every task created in PMS is also in
+ * here, entered by the evening coordinator. That has to cost close to
+ * nothing, because the coordinator has just finished creating those tasks
+ * and is not going to key them a second time.
+ *
+ * They do not have to. The PMS task list is already a table on screen, and
+ * it already carries everything the board needs — the title, the property,
+ * the assignee, the due date, the priority, the status, and the TSK
+ * reference that ties the two systems together for good. One copy, one
+ * paste, the whole evening's work.
+ *
+ * PMS's own Subcategory is deliberately not treated as the classification.
+ * Seven options across every trade cannot answer "why do we keep going
+ * back to Palm Villa" — but the task title can, and the app infers a finer
+ * family from it at no typing cost. The coarse value is kept alongside so
+ * the two systems can still be reconciled.
+ * -------------------------------------------------------------------- */
+const TASK_FIELDS = [
+  ["pmsRef",      ["number", "task", "task no", "task ref", "id"]],
+  ["title",       ["title", "task summary", "summary", "description", "name"]],
+  ["property",    ["property", "unit", "building", "location"]],
+  ["subcategory", ["subcategory", "sub category", "sub-category"]],
+  ["category",    ["category"]],
+  ["priority",    ["priority"]],
+  ["pmsStatus",   ["status"]],
+  ["assignee",    ["assignees", "assignee", "assigned to", "technician", "team"]],
+  ["dueDate",     ["due date", "due on", "due"]],
+  ["duration",    ["duration", "estimated time", "est time"]],
+  ["reservation", ["reservation", "res"]],
+  ["occupancy",   ["occupancy", "unit status"]],
+];
+
+const taskHeaderIndex = (cells) => {
+  const keys = cells.map((c) => canonKey(c).replace(/[^a-z ]/g, "").trim());
+  const idx = {};
+  const claim = (f, i) => { if (idx[f] === undefined) idx[f] = i; };
+  TASK_FIELDS.forEach(([f, names]) => {
+    keys.forEach((k, i) => { if (k && names.includes(k)) claim(f, i); });
+  });
+  const taken = new Set(Object.values(idx));
+  TASK_FIELDS.forEach(([f, names]) => {
+    if (idx[f] !== undefined) return;
+    keys.forEach((k, i) => {
+      if (!k || taken.has(i)) return;
+      if (names.some((n) => k.startsWith(n))) { claim(f, i); taken.add(i); }
+    });
+  });
+  return idx;
+};
+
+/* "2w 3d 4h 56m" is PMS's own duration format. */
+export function parsePmsDuration(raw) {
+  const s = canonKey(raw);
+  if (!s) return "";
+  const m = s.match(/(?:(\d+)\s*w)?\s*(?:(\d+)\s*d)?\s*(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?/);
+  if (!m) return squash(raw);
+  const mins = (+(m[1] || 0)) * 7 * 24 * 60 + (+(m[2] || 0)) * 24 * 60 +
+               (+(m[3] || 0)) * 60 + (+(m[4] || 0));
+  if (!mins) return squash(raw);
+  if (mins < 60) return `${mins} mins`;
+  const hrs = Math.floor(mins / 60), rem = mins % 60;
+  return rem ? `${hrs} hr ${rem} mins` : `${hrs} hr`;
+}
+
+export function parseTaskPaste(text, forDate) {
+  const lines = String(text || "").split(/\r?\n/).filter((l) => l.trim());
+  if (!lines.length) return { jobs: [], skipped: 0, error: "Nothing pasted." };
+
+  const split = (l) => (l.includes("\t") ? l.split("\t") : l.split(/\s*\|\s*/));
+  let idx = null, start = 0;
+  for (let i = 0; i < Math.min(lines.length, 6); i++) {
+    const cand = taskHeaderIndex(split(lines[i]));
+    if (cand.title !== undefined && (cand.property !== undefined || cand.pmsRef !== undefined)) {
+      idx = cand; start = i + 1; break;
+    }
+  }
+  if (!idx) {
+    return { jobs: [], skipped: lines.length,
+      error: "Could not find the header row. Copy the PMS task table including its headings — at minimum Title and Property." };
+  }
+
+  const jobs = [];
+  let skipped = 0;
+  for (let i = start; i < lines.length; i++) {
+    const cells = split(lines[i]).map((c) => squash(c));
+    const get = (f) => (idx[f] !== undefined ? cells[idx[f]] || "" : "");
+    const title = get("title");
+    const propRaw = get("property");
+    if (!title && !propRaw) { skipped++; continue; }
+    const place = splitTrailingUnit(propRaw, "");
+    const pre = readTitlePrefix(title);
+    jobs.push({
+      _date: forDate,
+      property: place.property,
+      unit: place.unit,
+      description: pre.rest,
+      titleRaw: title,
+      timeOfVisit: pre.timeOfVisit || "",
+      guestConfirmed: pre.guestConfirmed || "",
+      team: get("assignee"),
+      priority: canonPriority(get("priority")) || "",
+      estimatedTime: parsePmsDuration(get("duration")),
+      status: get("occupancy") || pre.occupancy || "",
+      pmsRef: get("pmsRef"),
+      pmsStatus: get("pmsStatus"),
+      pmsSubcategory: get("subcategory"),
+      pmsCategory: get("category"),
+      reservation: get("reservation"),
+      dueDate: toISODate(get("dueDate")) || "",
+      inPms: true,
+      source: "pms-task",
+    });
+  }
+  return { jobs, skipped, error: "" };
+}
+
+/* ---------------------------------------------------------------------- *
+ * The prefix on a PMS task title.
+ *
+ * The department already encodes the two things the planner needs most in
+ * the first few characters of the title, and nobody was reading them:
+ *
+ *   "GC 2-4pm - Clogged Sink GR B"        guest confirmed, 2pm to 4pm
+ *   "GC 12.30 Pm - (Below unit tenant)"   guest confirmed, 12:30
+ *   "vacant - Laundry room door is broken" unit empty
+ *   "B2B- Paint touch up (P1-16)"         changeover day
+ *   "checkin - None of the sockets are"   guest arrives that day
+ *   "WC - Water leak from our unit"       occupied, no time agreed
+ *
+ * A confirmed appointment is the first thing the day is built around, and
+ * it was sitting in plain text. Reading it here means the coordinator does
+ * not type it a third time, and the plan honours times that were already
+ * promised to guests.
+ * -------------------------------------------------------------------- */
+const PREFIX_TIME = /\b(\d{1,2}(?:[.:]\d{2})?\s*(?:-|to|–)\s*\d{1,2}(?:[.:]\d{2})?\s*(?:am|pm)?|\d{1,2}(?:[.:]\d{2})?\s*(?:am|pm))/i;
+
+const PREFIX_CODE = /^(gc|wc|vacant|b2b|check.?in|check.?out|onb|contin|approved|approevd)\b/i;
+
+export function readTitlePrefix(title) {
+  const s = squash(title);
+  if (!PREFIX_CODE.test(s)) return { rest: s };
+
+  /* "GC 6 - 7 Pm - Cabinet hinges" contains two separators and the prefix
+     is everything up to the second. Take the LAST split that still leaves a
+     prefix short enough to be a code and a time, rather than the first. */
+  let cut = -1;
+  const re = /\s*[-–—]\s+|\s*[-–—]$/g;
+  let m;
+  while ((m = re.exec(s)) !== null) {
+    if (m.index > 22) break;
+    cut = m.index;
+  }
+  if (cut < 0) return { rest: s };
+  const head = s.slice(0, cut).trim();
+  const rest = s.slice(cut).replace(/^\s*[-–—]\s*/, "").trim() || s;
+  const k = canonKey(head);
+  if (!k) return { rest: s };
+
+  const time = (head.match(PREFIX_TIME) || [])[0];
+  const out = { rest, prefix: head };
+
+  if (/^gc\b/.test(k)) {
+    out.occupancy = "Occupied - GC";
+    out.guestConfirmed = "Y";
+    if (time) out.timeOfVisit = squash(time);
+    return out;
+  }
+  if (/^wc\b/.test(k)) { out.occupancy = "WC"; out.guestConfirmed = "N"; return out; }
+  if (/^vacant\b/.test(k)) { out.occupancy = "Vacant"; return out; }
+  if (/^b2b\b/.test(k)) { out.occupancy = "B2B"; return out; }
+  if (/^check.?in\b/.test(k)) { out.occupancy = "Check-in"; return out; }
+  if (/^check.?out\b/.test(k)) { out.occupancy = "Checkout"; return out; }
+  if (/^onb\b|^contin\b|^approved|^approevd/.test(k)) { out.project = true; return out; }
+  // An unrecognised prefix is left inside the description rather than lost.
+  return { rest: s };
+}

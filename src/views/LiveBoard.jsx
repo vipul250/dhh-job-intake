@@ -3,7 +3,7 @@ import {
   Plus, Play, Check, X, ArrowRight, Clipboard, History, AlertTriangle,
   Loader2, RefreshCw, ChevronDown, ChevronRight, Users, CircleDot, Trash2,
   CalendarClock, Wand2, Pin, Moon, ShieldAlert, CornerDownRight, FileText,
-  Lock, Unlock,
+  Lock, Unlock, ClipboardPaste, ListChecks,
 } from "lucide-react";
 import {
   newJob, moveJob, setState as setJobState, applyEdit, withEvent,
@@ -15,6 +15,7 @@ import {
   OUTCOME_OPTIONS, JOB_SOURCES, SOURCE_LABEL, HOW_REPORTED,
 } from "../lib/job.js";
 import { parseWorkReport, fmtMin } from "../lib/workReport.js";
+import { parseTaskPaste } from "../lib/backlog.js";
 import { checkAgainstSchedule } from "../lib/roster.js";
 import { storageGet } from "../lib/storage.js";
 import { staffIndex, seedStaff, TRADE_LABEL } from "../lib/staff.js";
@@ -114,6 +115,8 @@ export default function LiveBoard({
   const [returnPrompts, setReturnPrompts] = useState([]);
   const [closeOutFor, setCloseOutFor] = useState(null);
   const [nightLog, setNightLog] = useState(false);
+  const [taskPaste, setTaskPaste] = useState(false);
+  const [dayReview, setDayReview] = useState(false);
   const [roster, setRoster] = useState(null);
   const [loadError, setLoadError] = useState("");
   const [post, setPost] = useState(null);
@@ -267,6 +270,27 @@ export default function LiveBoard({
     return () => { cancelled = true; };
   }, []);
 
+  /* The evening coordinator has just created the day's tasks in PMS. The
+     rule from today is that they are in here too, and that has to cost one
+     paste rather than thirty entries. Anything already on the day with the
+     same TSK reference is left alone, so pasting twice is safe. */
+  async function addFromPms(rows) {
+    const seen = new Set(jobs.map((j) => canonKey(j.pmsRef)).filter(Boolean));
+    const fresh = rows.filter((r) => !r.pmsRef || !seen.has(canonKey(r.pmsRef)));
+    const created = fresh.map((r) => {
+      const j = newJob(r, selectedDate, who);
+      return lock.locked ? withEvent(j, "added_late", who, { lock: lock.kind }) : j;
+    });
+    if (!created.length) {
+      showToast("Every one of those is already on this day.", "warn");
+      setTaskPaste(false);
+      return;
+    }
+    await change(selectedDate, (cur) => [...cur, ...created],
+      `${created.length} task(s) mirrored from PMS.${rows.length - created.length ? ` ${rows.length - created.length} already here.` : ""}`);
+    setTaskPaste(false);
+  }
+
   async function addCatalogueEntry(label) {
     const entry = newCatalogueEntry(label, { by: who });
     const next = [...(catalogue || []), entry];
@@ -275,6 +299,14 @@ export default function LiveBoard({
     showToast(`"${entry.label}" saved as a standard task.`, "ok");
     return entry;
   }
+
+  /* What the morning coordinator is asked for before they leave: the jobs
+     on this day that still have no outcome. Counted here so the button can
+     carry the number rather than making somebody go and look. */
+  const unanswered = useMemo(
+    () => jobs.filter((j) => !isResolved(j.state) && j.state !== "cancelled").length,
+    [jobs]
+  );
 
   const rosterCheck = useMemo(
     () => (roster ? checkAgainstSchedule(roster, jobs) : null),
@@ -637,6 +669,18 @@ export default function LiveBoard({
       />
 
       <div className="flex flex-wrap items-center gap-2 -mt-1">
+        <button onClick={() => setTaskPaste(true)}
+                className="flex items-center gap-1.5 text-xs bg-slate-900 text-white rounded-md px-2.5 py-1.5">
+          <ClipboardPaste className="w-3.5 h-3.5" /> Mirror the PMS task list
+        </button>
+        {lock.locked && jobs.length > 0 && (
+          <button onClick={() => setDayReview(true)}
+                  className={`flex items-center gap-1.5 text-xs rounded-md px-2.5 py-1.5 ${
+                    unanswered ? "bg-amber-600 text-white" : "border border-slate-300 hover:bg-slate-50"}`}>
+            <ListChecks className="w-3.5 h-3.5" />
+            {unanswered ? `End-of-day review — ${unanswered} without an outcome` : "End-of-day review — all answered"}
+          </button>
+        )}
         <button onClick={() => setNightLog(true)}
                 className="flex items-center gap-1.5 text-xs border border-slate-300 rounded-md px-2.5 py-1.5 hover:bg-slate-50">
           <Moon className="w-3.5 h-3.5" /> Log an out-of-hours job
@@ -740,6 +784,21 @@ export default function LiveBoard({
           job={closeOutFor} selectedDate={selectedDate}
           onCancel={() => setCloseOutFor(null)}
           onConfirm={(payload) => closeOut(closeOutFor, payload)}
+        />
+      )}
+      {taskPaste && (
+        <TaskPasteDialog
+          date={selectedDate}
+          onCancel={() => setTaskPaste(false)}
+          onCommit={addFromPms}
+        />
+      )}
+      {dayReview && (
+        <DayReview
+          date={selectedDate} jobs={jobs}
+          onCancel={() => setDayReview(false)}
+          onCloseOut={(job) => { setDayReview(false); setCloseOutFor(job); }}
+          onQuick={(job, state) => advance(job, state, {})}
         />
       )}
       {nightLog && (
@@ -1192,13 +1251,19 @@ function PostBar({ lock, post, date, jobCount, onPost }) {
       </div>
     );
   }
-  if (lock.kind === "posted") {
+  if (lock.kind === "posted" || lock.kind === "started") {
     return (
       <div className="rounded-lg border border-slate-300 bg-slate-50 px-3 py-2">
         <div className="flex flex-wrap items-center gap-2 text-xs">
           <Lock className="w-3.5 h-3.5 text-slate-500 shrink-0" />
           <span className="font-medium text-slate-800">{lock.label}</span>
           <span className="text-slate-600">{lock.why}</span>
+          {lock.kind === "started" && jobCount > 0 && (
+            <button onClick={onPost}
+                    className="ml-auto text-xs border border-slate-300 bg-white rounded-md px-2.5 py-1">
+              Mark as posted
+            </button>
+          )}
         </div>
       </div>
     );
@@ -1225,7 +1290,9 @@ function ChangeReasonDialog({ lock, job, patch, onCancel, onConfirm }) {
   const fields = Object.keys(patch || {});
 
   return (
-    <Modal title={lock.kind === "past" ? "Changing a day that has passed" : "Changing a posted schedule"}
+    <Modal title={lock.kind === "past" ? "Changing a day that has passed"
+                  : lock.kind === "started" ? "Changing today's schedule"
+                  : "Changing a posted schedule"}
            onCancel={onCancel}>
       <p className="text-xs text-slate-600">{lock.why}</p>
       <div className="mt-2 text-xs text-slate-700 bg-slate-50 border border-slate-200 rounded px-2 py-1.5">
@@ -2382,5 +2449,159 @@ function Modal({ title, children, onCancel, wide }) {
         <div className="mt-2">{children}</div>
       </div>
     </div>
+  );
+}
+
+/* ====================================================================== *
+ * Mirroring the PMS task list onto a day.
+ *
+ * From today the rule is that every task created in PMS is also here,
+ * entered by the evening coordinator. They have just finished creating
+ * those tasks; keying them again would be the double entry this whole
+ * project exists to remove. So it is one copy and one paste, and the
+ * parse is always shown before anything is written.
+ * ====================================================================== */
+function TaskPasteDialog({ date, onCancel, onCommit }) {
+  const [text, setText] = useState("");
+  const [preview, setPreview] = useState(null);
+
+  function read(v) {
+    setText(v);
+    if (!squash(v)) { setPreview(null); return; }
+    setPreview(parseTaskPaste(v, date));
+  }
+
+  const rows = preview?.jobs || [];
+  const withTime = rows.filter((r) => squash(r.timeOfVisit)).length;
+  const withOcc = rows.filter((r) => squash(r.status)).length;
+  const withTech = rows.filter((r) => squash(r.team)).length;
+
+  return (
+    <Modal title={`Mirror the PMS task list onto ${date}`} onCancel={onCancel} wide>
+      <p className="text-xs text-slate-600">
+        In PMS, open the task list for this day, select the table including its headings, and paste
+        it here. Column order does not matter. Anything already on the day with the same TSK
+        reference is skipped, so pasting twice is safe.
+      </p>
+      <textarea autoFocus value={text} onChange={(e) => read(e.target.value)} rows={7}
+                placeholder="Number	Title	Property	Subcategory	Priority	Status	Assignees	Due date	Duration"
+                className="mt-2 w-full border border-slate-300 rounded-md px-2 py-1.5 text-xs font-mono" />
+
+      {preview?.error && (
+        <p className="mt-2 text-xs text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1.5">
+          {preview.error}
+        </p>
+      )}
+
+      {rows.length > 0 && (
+        <div className="mt-3">
+          <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs text-slate-600">
+            <span><b className="text-slate-900">{rows.length}</b> task(s) read</span>
+            <span><b>{withTech}</b> already have a technician</span>
+            <span><b>{withOcc}</b> carry the unit state</span>
+            <span><b>{withTime}</b> have a confirmed time</span>
+            {preview.skipped > 0 && <span className="text-amber-700">{preview.skipped} row(s) unreadable</span>}
+          </div>
+          <p className="text-[11px] text-slate-500 mt-1">
+            Unit state and appointment times are read out of the title prefix — <code>GC 2-4pm</code>,
+            <code> vacant</code>, <code>B2B</code>, <code>WC</code> — so they do not have to be typed again.
+            A confirmed time is the first thing the day gets planned around.
+          </p>
+          <div className="mt-2 max-h-64 overflow-y-auto border border-slate-200 rounded-md divide-y divide-slate-100">
+            {rows.map((r, i) => (
+              <div key={i} className="px-2 py-1.5 text-xs flex flex-wrap items-baseline gap-x-2">
+                <span className="font-medium text-slate-900">{r.property} {r.unit}</span>
+                <span className="text-slate-600 flex-1 min-w-0 truncate">{r.description}</span>
+                {r.status && <span className="text-[11px] rounded px-1.5 bg-slate-100 text-slate-600">{r.status}</span>}
+                {r.timeOfVisit && <span className="text-[11px] rounded px-1.5 bg-emerald-100 text-emerald-800">{r.timeOfVisit}</span>}
+                {r.team && <span className="text-[11px] text-slate-500">{r.team}</span>}
+                {r.estimatedTime && <span className="text-[11px] text-slate-400">{r.estimatedTime}</span>}
+                {r.pmsRef && <span className="text-[11px] font-mono text-slate-400">{r.pmsRef}</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="flex justify-end gap-2 mt-4">
+        <button onClick={onCancel} className="text-sm border border-slate-300 px-3 py-1.5 rounded-md">Cancel</button>
+        <button onClick={() => onCommit(rows)} disabled={!rows.length}
+                className="text-sm bg-slate-900 text-white px-3 py-1.5 rounded-md disabled:opacity-40">
+          Add {rows.length || ""} to {date}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+/* ====================================================================== *
+ * The end-of-day review.
+ *
+ * The other half of the department's rule: before the morning coordinator
+ * leaves, they say how the day actually went. Until now that meant opening
+ * each card in turn, which is why it never happened and why nobody could
+ * say what really took place.
+ *
+ * So it is one list, one line per job, and the two common answers are one
+ * click. Anything that was not a clean fix goes to the full close-out,
+ * because "made safe" and "not done" both have a question behind them that
+ * must not be skipped — what is still needed, and when it happens instead.
+ * ====================================================================== */
+function DayReview({ date, jobs, onCancel, onCloseOut, onQuick }) {
+  const open = jobs.filter((j) => !isResolved(j.state) && j.state !== "cancelled");
+  const done = jobs.filter((j) => isResolved(j.state) || j.state === "cancelled");
+
+  return (
+    <Modal title={`How did ${date} actually go?`} onCancel={onCancel} wide>
+      <p className="text-xs text-slate-600">
+        Every job needs an answer before the day closes. A clean fix is one click. Anything else —
+        made safe, diagnosed, not done — opens the full close-out, because each of those has a
+        question behind it that decides whether the work comes back.
+      </p>
+
+      <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs">
+        <span className={open.length ? "text-amber-800 font-medium" : "text-emerald-700 font-medium"}>
+          {open.length} still without an outcome
+        </span>
+        <span className="text-slate-500">{done.length} of {jobs.length} answered</span>
+      </div>
+
+      {open.length === 0 ? (
+        <p className="mt-4 text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-2 py-2">
+          Every job on this day has an outcome. Nothing here will quietly disappear.
+        </p>
+      ) : (
+        <div className="mt-3 max-h-[26rem] overflow-y-auto border border-slate-200 rounded-md divide-y divide-slate-100">
+          {open.map((j) => (
+            <div key={j.id} className="px-2.5 py-2 flex flex-wrap items-center gap-2">
+              <div className="min-w-0 flex-1">
+                <div className="text-xs font-medium text-slate-900">
+                  {j.property} {j.unit}
+                  {j.team && <span className="font-normal text-slate-400"> · {j.team}</span>}
+                  {j.timeOfVisit && <span className="font-normal text-slate-400"> · {j.timeOfVisit}</span>}
+                </div>
+                <div className="text-xs text-slate-600 truncate">{j.description}</div>
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button onClick={() => onQuick(j, "fixed")}
+                        className="text-xs bg-emerald-600 text-white px-2.5 py-1 rounded-md">
+                  Fixed
+                </button>
+                <button onClick={() => onCloseOut(j)}
+                        className="text-xs border border-slate-300 bg-white px-2.5 py-1 rounded-md">
+                  Something else…
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="flex justify-end gap-2 mt-4">
+        <button onClick={onCancel} className="text-sm bg-slate-900 text-white px-3 py-1.5 rounded-md">
+          {open.length ? "Close for now" : "Done"}
+        </button>
+      </div>
+    </Modal>
   );
 }

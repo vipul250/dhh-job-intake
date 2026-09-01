@@ -905,7 +905,11 @@ export function computeChurn(jobs) {
   const byPerson = {};
 
   jobs.forEach((j) => {
-    const after = (j.events || []).filter((e) => e.lock === "posted" || e.lock === "past");
+    // "started" is a day that locked when the date turned rather than
+    // because somebody pressed Post. A change to it is the same event to
+    // the field team, so it counts the same.
+    const after = (j.events || []).filter(
+      (e) => e.lock === "posted" || e.lock === "past" || e.lock === "started");
     if (!after.length) return;
     jobsChanged++;
     after.forEach((e) => {
