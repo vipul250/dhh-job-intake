@@ -5,6 +5,8 @@ import {
 } from "lucide-react";
 import { storageGet, storageSet } from "../lib/storage.js";
 import { parseDay, migrateDay } from "../lib/jobStore.js";
+import { readPost } from "../lib/dayLock.js";
+import { peopleActivity } from "../lib/activity.js";
 import { liveJobs } from "../lib/job.js";
 import { computeCost, computeCostSeries, DEFAULT_RATES } from "../lib/cost.js";
 import { computeAll, DEFAULTS } from "../lib/metrics.js";
@@ -48,6 +50,7 @@ export default function Dashboard({ selectedDate, knownDates, onOpenDate }) {
   const [endDate, setEndDate] = useState(todayISO());
   const [loading, setLoading] = useState(false);
   const [loaded, setLoaded] = useState(null);
+  const [loadedDays, setLoadedDays] = useState([]);
   const [progress, setProgress] = useState(0);
   const [focusDate, setFocusDate] = useState(selectedDate || todayISO());
   const [rates, setRates] = useState(DEFAULT_RATES);
@@ -80,21 +83,28 @@ export default function Dashboard({ selectedDate, knownDates, onOpenDate }) {
     while (d <= endDate && guard++ < 400) { dates.push(d); d = addDaysISO(d, 1); }
 
     const collected = [];
+    /* Kept whole, tombstones and all, alongside the live jobs. The metrics
+       must not count a job that left a day, but the activity log must —
+       a job leaving is one of the changes it exists to show. */
+    const days = [];
     // Fetch in small batches — one round trip per day is slow over 30 days.
     const BATCH = 6;
     for (let i = 0; i < dates.length; i += BATCH) {
       const slice = dates.slice(i, i + BATCH);
       const results = await Promise.all(slice.map((date) => storageGet(`schedule:${date}`)));
+      const posts = await Promise.all(slice.map((date) => readPost(date)));
       results.forEach((v, k) => {
         // Tombstones are records of a job leaving a day, not jobs — counting
         // them would inflate every rate on this page. The live jobs are
         // migrated on read so days not yet opened on the board still count.
         const day = migrateDay(parseDay(v), slice[k]);
         liveJobs(day).forEach((j) => collected.push({ ...j, _date: slice[k] }));
+        if (day.length) days.push({ date: slice[k], rows: day, post: posts[k] });
       });
       setProgress(Math.min(dates.length, i + BATCH));
     }
     setLoaded(collected);
+    setLoadedDays(days);
     setLoading(false);
   }
 
@@ -182,6 +192,7 @@ export default function Dashboard({ selectedDate, knownDates, onOpenDate }) {
           />
           <Containment m={m} onOpenDate={onOpenDate} />
           <Demand m={m} />
+          <WhoDidWhat days={loadedDays} />
           <WhyThisDay m={m} />
           <Judgement m={m} onOpenDate={onOpenDate} />
           <Movement m={m} onOpenDate={onOpenDate} />
@@ -577,6 +588,60 @@ function Demand({ m }) {
 
 /* Why a job is on the day it is on — the question the department could not
    answer at all until the queue existed. */
+/* Three coordinators rotate through the same desk. Until the log was read
+   back together, a pattern belonging to one person's judgement looked like
+   a property of the department. */
+function WhoDidWhat({ days }) {
+  const people = React.useMemo(() => peopleActivity(days), [days]);
+  if (!people.length) return null;
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-4">
+      <h2 className="text-sm font-semibold text-slate-900">Who did what</h2>
+      <p className="text-xs text-slate-500 mt-0.5 mb-3 max-w-3xl">
+        Shifts rotate, so nobody could say who built a given schedule or who changed it during the
+        day. Every event has always carried a name; it was written onto individual jobs and never
+        read back together. The column worth reading is the last one — how much a person's schedule
+        has to move once the day starts. It is a signal about how the day was built, and it is
+        invisible one day at a time.
+      </p>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-left text-slate-500 border-b border-slate-200">
+              <th className="py-1.5 pr-3 font-medium">Who</th>
+              <th className="py-1.5 pr-3 font-medium">Days built</th>
+              <th className="py-1.5 pr-3 font-medium">Jobs scheduled</th>
+              <th className="py-1.5 pr-3 font-medium">Posted</th>
+              <th className="py-1.5 pr-3 font-medium">Outcomes recorded</th>
+              <th className="py-1.5 pr-3 font-medium">Changes after close</th>
+              <th className="py-1.5 font-medium">Changes per job built</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {people.map((p) => (
+              <tr key={p.by}>
+                <td className="py-1.5 pr-3 font-medium text-slate-900">{p.by}</td>
+                <td className="py-1.5 pr-3 text-slate-600">{p.daysBuilt || "—"}</td>
+                <td className="py-1.5 pr-3 text-slate-600">{p.built || "—"}</td>
+                <td className="py-1.5 pr-3 text-slate-600">{p.posted || "—"}</td>
+                <td className="py-1.5 pr-3 text-slate-600">{p.recorded || "—"}</td>
+                <td className={`py-1.5 pr-3 ${p.changed ? "text-amber-800" : "text-slate-400"}`}>{p.changed || "—"}</td>
+                <td className="py-1.5 text-slate-600">{p.churnPerJob == null ? "—" : p.churnPerJob}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-[11px] text-slate-400 mt-2">
+        Read after a month, not a week. One coordinator having more changes than another may mean
+        their days were harder, not worse built — the number opens the conversation, it does not
+        settle it.
+      </p>
+    </div>
+  );
+}
+
 function WhyThisDay({ m }) {
   const b = m.schedulingBasis;
   if (!b || !b.placed) return null;

@@ -792,3 +792,45 @@ rows land. Matching is on the TSK reference where there is one and on
 property + unit + task where there is not — necessary, because the real
 sheet carries a reference on only about four rows in ten, and without the
 second key a re-paste would duplicate most of the day.
+
+## Who built this, and who changed it
+
+Three coordinators rotate through the same desk. Nobody could say who built
+a given schedule, or who changed it at eleven in the morning. So a pattern
+belonging to one person's judgement read as a property of the department.
+
+Every event has carried a name and a timestamp all along. They were written
+onto individual jobs and never read back together.
+
+**On the day.** One line above the board:
+
+> Built by Haris (2 jobs) · posted by Haris · 1 change since, by Kaja (1)
+
+and **see the log** opens the whole day in order — time, name, what, which
+job, and the reason where one was given. Changes made after the day closed
+are shaded and labelled, because those are what a manager is looking for.
+Recording an outcome is the day running its course and is never marked as a
+change.
+
+**Across a range.** The dashboard's **who did what** table: days built, jobs
+scheduled, days posted, outcomes recorded, changes after close, and changes
+per job built. That last column is the one worth reading — how much a
+person's schedule has to move once the day starts. It says something about
+how the day was built and it cannot be seen one day at a time. It also is
+not a verdict: harder days need more changing, and the number opens the
+conversation rather than settling it.
+
+### The name expires each shift
+
+This matters more than it sounds. Attribution was a name kept on the device
+for good. Three people share that desk on different shifts, so Kaja's
+afternoon changes were being filed under Haris, who went home at eleven the
+night before — a log that is confidently wrong, which is worse than no log.
+
+The name is now asked again after nine hours: one box, once a shift. Records
+written before this existed carry no timestamp and are treated as stale
+rather than trusted at an unknown age.
+
+Real sign-in, with an emailed code, is already built and switched off until
+email delivery is proven — see `docs/ACCESS.md`. Turning it on replaces the
+typed name with a verified one everywhere, and nothing else changes.
