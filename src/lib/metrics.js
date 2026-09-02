@@ -388,10 +388,17 @@ export function computeMovement(jobs, opts = {}) {
   const droppedOnPurpose = notDone.filter((j) => rebookAnswer(j) === "none");
   const unanswered = notDone.filter((j) => rebookAnswer(j) == null);
 
-  // Jobs with no recorded outcome on a day that has already passed: nobody
-  // said done, not done, moved or cancelled. These are the disappearances.
+  /* Jobs with no recorded outcome on a day that has already passed: nobody
+     said done, not done, moved or cancelled. These are the disappearances.
+
+     Days before the go-live date are excluded. Nothing in the imported
+     history was ever closed out because closing out did not exist yet;
+     counting it as work that vanished would put 443 permanent failures on
+     a dashboard that is supposed to be about what happens from now on. */
   const today = opts.asOfDate || "";
-  const lost = stillOpen.filter((j) => today && j.scheduledDate < today);
+  const since = opts.goLive || "";
+  const lost = stillOpen.filter((j) => today && j.scheduledDate < today
+    && (!since || j.scheduledDate >= since));
 
   return {
     total: jobs.length,
@@ -404,6 +411,7 @@ export function computeMovement(jobs, opts = {}) {
     maxAgeDays: ages.length ? Math.max(...ages) : 0,
     reasons: Object.entries(reasons).sort((a, b) => b[1] - a[1]),
     cancelled: cancelled.length,
+    goLive: since || null,
     notDone: notDone.length,
     rebooked: rebooked.length,
     rebookedPct: pct(rebooked.length, notDone.length),

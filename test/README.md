@@ -6,6 +6,15 @@ produced — a helper used in a view without being imported, and a name
 resolved from the wrong column — both pass `vite build` and both crash or
 lie at runtime. **A green build means nothing. Only the browser counts.**
 
+## Playwright
+
+Not in the repo's `node_modules`. Either `npm i -D playwright` in `test/`,
+or symlink an existing install:
+
+```sh
+ln -sfn /path/to/node_modules test/node_modules
+```
+
 ## Running a suite
 
 ```sh
