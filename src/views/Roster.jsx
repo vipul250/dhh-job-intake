@@ -38,6 +38,8 @@ export default function Roster({ selectedDate, setSelectedDate, showToast, authR
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [projects, setProjects] = useState([]);
+  const [pickBusy, setPickBusy] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -50,6 +52,10 @@ export default function Roster({ selectedDate, setSelectedDate, showToast, authR
       setEditing(!r);
       const day = await readDay(date);
       setJobs(liveJobs(migrateDay(day, date)));
+      try {
+        const praw = await storageGet("projects");
+        setProjects(praw ? JSON.parse(praw) : []);
+      } catch { setProjects([]); }
       setLoading(false);
     })();
   }, [date]);
@@ -64,13 +70,38 @@ export default function Roster({ selectedDate, setSelectedDate, showToast, authR
   async function save() {
     if (!preview) return;
     setSaving(true);
-    const toStore = { ...preview, savedAt: Date.now() };
+    /* A re-paste must not silently drop the crew that was ticked for this
+       day — the message it comes from has never carried them. */
+    const toStore = {
+      ...preview,
+      projectPicks: preview.projectPicks || (saved && saved.projectPicks) || [],
+      savedAt: Date.now(),
+    };
     await storageSet(`roster:${preview.date || date}`, JSON.stringify(toStore));
     if (preview.date && preview.date !== date) setDate(preview.date);
     setSaved(toStore);
     setEditing(false);
     setSaving(false);
     showToast(`Roster saved for ${preview.date || date}.`, "ok");
+  }
+
+  /* Ticking somebody onto a project writes straight through to the stored
+     roster. There is no Save button for it: an unsaved tick is a tick that
+     silently did nothing, and the whole point is that the board stops
+     calling these people idle. */
+  async function savePicks(next) {
+    const base = saved || (preview ? { ...preview, savedAt: Date.now() } : null);
+    if (!base) return;
+    setPickBusy(true);
+    const toStore = { ...base, projectPicks: next, savedAt: Date.now() };
+    try {
+      await storageSet(`roster:${base.date || date}`, JSON.stringify(toStore));
+      setSaved(toStore);
+      if (!editing) setText(toStore.raw || text);
+    } catch {
+      showToast("Could not save — check the database connection.", "bad");
+    }
+    setPickBusy(false);
   }
 
   return (
@@ -84,10 +115,11 @@ export default function Roster({ selectedDate, setSelectedDate, showToast, authR
           assigned to somebody on leave stops being invisible.
         </p>
         <p className="text-sm text-slate-600 mt-1.5 max-w-3xl">
-          Add a <b>Project team</b> heading above the crew working a job card, and
-          <b> Daily ops</b> above the rest. They are two different jobs and were being counted as
+          A project crew and the daily ops team are two different jobs and were being counted as
           one: a project crew has no daily task naming them, so the board called five working
-          people idle and the day looked half empty.
+          people idle and the day looked half empty. Tick them off in <b>Who is on a project
+          today</b> below — nothing needs adding to the shift message. If whoever writes it does
+          use a <b>Project team</b> heading, those names are read from it automatically.
         </p>
       </div>
 
@@ -139,6 +171,16 @@ export default function Roster({ selectedDate, setSelectedDate, showToast, authR
 
       {active && <RosterBoard roster={active} check={check} onOpenDay={() => setSelectedDate(date)} />}
 
+      {active && (
+        <ProjectCrewPanel
+          summary={rosterSummary(active)}
+          picks={(saved && saved.projectPicks) || []}
+          projects={projects}
+          onChange={savePicks}
+          busy={pickBusy}
+        />
+      )}
+
       <Team jobs={jobs} showToast={showToast} />
 
       <GoLivePanel showToast={showToast} />
@@ -179,7 +221,10 @@ function RosterBoard({ roster, check }) {
               note="working, but not on Dubai jobs" />
         <Tile label="Coordinators on" value={s.coordinatorCount || "—"}
               sub={s.coordinatorHours ? `${s.coordinatorHours}h of desk cover` : "none in the message"}
-              note={(s.coordinators || []).map((c) => `${c.name}${c.range ? ` ${c.range.label}` : ""}`).join(" · ")}
+              note={[
+                ...(s.coordinators || []).filter((c) => c.range).map((c) => `${c.name} ${c.range.label}`),
+                ...(s.coordinatorsOff || []).map((n) => `${n} — off`),
+              ].join(" · ")}
               small tone={s.coordinatorCount ? "neutral" : "warn"} />
         <Tile label="On projects" value={s.projectTeam.length || "—"}
               sub={s.projectTeam.join(", ") || "nobody on a job card"}
@@ -760,6 +805,109 @@ function StaffRow({ rec, onChange }) {
                className="border border-transparent hover:border-slate-200 focus:border-slate-300 rounded px-1 py-0.5 text-xs w-full bg-transparent" />
       </td>
     </tr>
+  );
+}
+
+/* ====================================================================== *
+ * Who is on a project today.
+ *
+ * The project crew was originally read from a "Project team" heading in the
+ * shift message. That was wrong in practice: the shift message arrives from
+ * somebody else on WhatsApp, so adding a heading means hand-editing it
+ * every morning — precisely the extra daily step that stops happening after
+ * a week, and there was no visible place to do it either.
+ *
+ * So the crew is ticked off here instead, from the names the roster already
+ * knows. A project crew has no daily job naming them, so without this the
+ * board calls them idle and the day looks half empty. Naming the project as
+ * well is optional and does one further thing: their hours roll into that
+ * project's own cost rather than disappearing into the daily total.
+ * ====================================================================== */
+function ProjectCrewPanel({ summary, picks, projects, onChange, busy }) {
+  const chosen = new Map((picks || []).map((p) => [canonKey(p.name), p]));
+
+  /* Everyone the roster says is working today. Somebody on leave cannot be
+     on a project, so they are not offered. */
+  const candidates = Array.from(new Set([
+    ...(summary.onShift || []),
+    ...(summary.standby || []),
+    ...(summary.offsite || []),
+    ...(picks || []).map((p) => p.name),
+  ])).filter(Boolean).sort();
+
+  const live = (projects || []).filter((p) => p.status !== "completed" && p.status !== "cancelled");
+
+  function toggle(name) {
+    const k = canonKey(name);
+    onChange(chosen.has(k)
+      ? (picks || []).filter((p) => canonKey(p.name) !== k)
+      : [...(picks || []), { name, projectId: "" }]);
+  }
+
+  function setProject(name, projectId) {
+    const k = canonKey(name);
+    onChange((picks || []).map((p) => (canonKey(p.name) === k ? { ...p, projectId } : p)));
+  }
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-3">
+      <h3 className="text-sm font-semibold text-slate-900">Who is on a project today</h3>
+      <p className="text-xs text-slate-500 mt-0.5 mb-2.5 max-w-3xl">
+        A project crew works a quoted job that runs for days, so no daily task names them and the
+        board would otherwise count them idle. Tick them here — there is nothing to add to the
+        shift message. If the message already carries a <b>Project team</b> heading, those names
+        are picked up on their own and appear ticked.
+      </p>
+
+      {candidates.length === 0 ? (
+        <p className="text-xs text-slate-400">
+          Nobody on the roster yet — paste the shift message first.
+        </p>
+      ) : (
+        <div className="flex flex-wrap gap-1.5">
+          {candidates.map((name) => {
+            const on = chosen.has(canonKey(name));
+            return (
+              <button key={name} onClick={() => toggle(name)} disabled={busy}
+                      className={`text-xs rounded-full border px-2.5 py-1 disabled:opacity-50 ${
+                        on ? "bg-slate-900 text-white border-slate-900"
+                           : "border-slate-300 text-slate-700 hover:bg-slate-50"}`}>
+                {on && "✓ "}{name}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {chosen.size > 0 && (
+        <div className="mt-3 space-y-1.5">
+          <p className="text-[11px] text-slate-500">
+            Which project? Optional — naming it rolls their hours into that project's own cost
+            instead of the daily total.
+          </p>
+          {Array.from(chosen.values()).map((p) => (
+            <div key={p.name} className="flex items-center gap-2">
+              <span className="text-xs text-slate-700 w-28 shrink-0">{p.name}</span>
+              <select value={p.projectId || ""} onChange={(e) => setProject(p.name, e.target.value)}
+                      className="text-xs border border-slate-300 rounded-md px-2 py-1 bg-white flex-1 max-w-sm">
+                <option value="">not saying which</option>
+                {live.map((pr) => (
+                  <option key={pr.id} value={pr.id}>
+                    {[squash(pr.property), squash(pr.unit), squash(pr.title)].filter(Boolean).join(" ").slice(0, 60)}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ))}
+          {live.length === 0 && (
+            <p className="text-[11px] text-slate-400">
+              No open projects on the Projects tab yet, so there is nothing to attach them to.
+              Ticking them still keeps them out of the idle list.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
