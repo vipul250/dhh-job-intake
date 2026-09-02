@@ -27,7 +27,7 @@ import {
 import { faultFamily, FAMILY_LABEL, RETURN_REASON_LABEL, isOurFault } from "./faultFamily.js";
 import {
   actualDuration, isResolved, needsFollowUp, SOURCE_LABEL, JOB_SOURCES, REACTIVE_SOURCES,
-  MOVE_REASON_LABEL, moveReasonDisplaces,
+  MOVE_REASON_LABEL, moveReasonDisplaces, isCompound, splitTaskParts,
 } from "./job.js";
 
 export const DEFAULTS = {
@@ -930,6 +930,97 @@ export function computeChurn(jobs) {
   };
 }
 
+/* ------------- 15b. What the notes keep saying ------------------------ *
+ * A free-text box is usually where analysis goes to die. It does not have
+ * to: read across a few hundred jobs the same obstacles come up again and
+ * again, and they are obstacles no field asks about — a guest who will not
+ * open the door before eleven, a building that wants a permit, a part on
+ * order, an owner disputing the bill.
+ *
+ * Nothing here guesses at meaning. It counts jobs whose note mentions a
+ * known obstacle, reports the coverage honestly, and shows the notes
+ * themselves so a person can read them. The themes are a starting point for
+ * a conversation, not a classification.
+ * -------------------------------------------------------------------- */
+export const NOTE_THEMES = [
+  ["access",     "Access / guest will not open", /\b(no access|not open|refus\w*|not reachable|no response|didn'?t answer|locked out|key|access card)\b/i],
+  ["permit",     "Building permit or approval",  /\b(permit|noc\b|approval|security|management office|building rules|service lift|work at height)\b/i],
+  ["material",   "Part on order or unavailable", /\b(on order|out of stock|not available|awaiting|waiting for|to be ordered|lead time|supplier)\b/i],
+  ["contractor", "Needs a contractor",           /\b(contractor|third party|3rd party|specialist|外|external|pcae|apex)\b/i],
+  ["owner",      "Owner or landlord involved",   /\b(owner|landlord|ll\b|disput\w*|approval from owner|owners? portal|quotation)\b/i],
+  ["guest",      "Guest behaviour or timing",    /\b(guest works|night shift|late check|only after|prefers|complain\w*|angry|upset)\b/i],
+  ["recurring",  "Says it has happened before",  /\b(again|repeat\w*|same issue|third time|second time|keeps|recurring)\b/i],
+];
+
+export function computeNotes(jobs) {
+  const withNote = jobs.filter((j) => squash(j.notes).length >= 8);
+  const themes = {};
+  NOTE_THEMES.forEach(([k]) => { themes[k] = 0; });
+  let themed = 0;
+
+  withNote.forEach((j) => {
+    const t = squash(j.notes);
+    let hit = false;
+    NOTE_THEMES.forEach(([k, , re]) => {
+      if (re.test(t)) { themes[k]++; hit = true; }
+    });
+    if (hit) themed++;
+  });
+
+  return {
+    total: jobs.length,
+    withNote: withNote.length,
+    coverage: coverage(withNote.length, jobs.length),
+    themed,
+    unthemed: withNote.length - themed,
+    themes: NOTE_THEMES
+      .map(([k, label]) => ({ id: k, label, n: themes[k] }))
+      .filter((x) => x.n > 0)
+      .sort((a, b) => b.n - a.n),
+    // The notes themselves, newest first — the point is that somebody reads them.
+    recent: withNote
+      .slice()
+      .sort((a, b) => String(b._date || "").localeCompare(String(a._date || "")))
+      .slice(0, 20)
+      .map((j) => ({ date: j._date, property: j.property, unit: j.unit, note: squash(j.notes) })),
+  };
+}
+
+/* ------------- 15c. Several jobs written as one -------------------------- *
+ * A coordinator bundles what a guest reported into one row, because raising
+ * three tasks costs three times the typing on the busiest hour of a shift.
+ * That is a reasonable trade and it is not going to change — but it has a
+ * price, and the price was invisible: a bundled row can only be closed as
+ * one thing, so "some of it is done" became either a false "fixed" or a
+ * false "not done".
+ *
+ * Counting them says whether bundling is costing anything. A compound job
+ * that comes back is the case that matters.
+ * -------------------------------------------------------------------- */
+export function computeCompound(jobs) {
+  const compound = jobs.filter((j) => isCompound(j.description));
+  const parts = compound.reduce((s, j) => s + splitTaskParts(j.description).length, 0);
+  const resolved = compound.filter((j) => isResolved(j.state));
+  const partial = compound.filter((j) => j.state === "made_safe" || j.state === "diagnosed");
+  const returned = compound.filter((j) => (j.pushCount || 0) > 0 || j.followUpJobId);
+
+  return {
+    total: jobs.length,
+    compound: compound.length,
+    compoundPct: pct(compound.length, jobs.length),
+    partsHidden: parts - compound.length,   // jobs the board never showed as jobs
+    resolved: resolved.length,
+    partial: partial.length,
+    partialPct: pct(partial.length, resolved.length),
+    returned: returned.length,
+    returnedPct: pct(returned.length, compound.length),
+    examples: compound.slice(0, 8).map((j) => ({
+      property: j.property, unit: j.unit,
+      parts: splitTaskParts(j.description),
+    })),
+  };
+}
+
 /* --------------- 16. Was there a reason for the day? ------------------ *
  * The department could not answer "why is this job on this day". Now every
  * job booked through the queue carries the basis it was chosen on, and the
@@ -1135,6 +1226,8 @@ export function computeAll(jobs, opts = {}) {
     demand: computeDemand(jobs),
     displacement: computeDisplacement(jobs, opts),
     schedulingBasis: computeSchedulingBasis(jobs),
+    notes: computeNotes(jobs),
+    compound: computeCompound(jobs),
     churn: computeChurn(jobs),
     techTimes: computeTechTimes(jobs, opts),
     series: computeDailySeries(jobs, opts),

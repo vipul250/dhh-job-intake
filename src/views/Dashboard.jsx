@@ -203,6 +203,8 @@ export default function Dashboard({ selectedDate, knownDates, onOpenDate }) {
           />
           <Containment m={m} onOpenDate={onOpenDate} />
           <Demand m={m} />
+          <Compound m={m} />
+          <Notes m={m} />
           <WhoDidWhat days={loadedDays} />
           <WhyThisDay m={m} />
           <Judgement m={m} onOpenDate={onOpenDate} />
@@ -599,6 +601,102 @@ function Demand({ m }) {
 
 /* Why a job is on the day it is on — the question the department could not
    answer at all until the queue existed. */
+function Compound({ m }) {
+  const c = m.compound;
+  if (!c || !c.compound) return null;
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-4">
+      <h2 className="text-sm font-semibold text-slate-900">Several jobs written as one</h2>
+      <p className="text-xs text-slate-500 mt-0.5 mb-3 max-w-3xl">
+        A coordinator bundles what a guest reported into one row, because raising three tasks costs
+        three times the typing in the busiest hour of a shift. That is a fair trade and it is not
+        going to change. The price was invisible: a bundled row can only be closed as one thing, so
+        "some of it is done" became either a false <i>fixed</i> or a false <i>not done</i>. The
+        close-out now ticks the parts off individually and whatever is left becomes the follow-up.
+      </p>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <Tile label="Rows holding more than one job" value={c.compound}
+              sub={`${c.compoundPct}% of ${c.total} jobs`}
+              coverage="read from the numbering and bullets already in the text" />
+        <Tile label="Jobs the board never showed" value={c.partsHidden}
+              sub="hidden inside those rows"
+              coverage="the day was busier than it looked"
+              tone={c.partsHidden > 0 ? "warn" : "neutral"} />
+        <Tile label="Closed as part-done" value={c.partialPct == null ? "—" : `${c.partialPct}%`}
+              sub={`${c.partial} of ${c.resolved} closed out`}
+              coverage="made safe or diagnosed rather than finished" />
+        <Tile label="Came back" value={c.returned}
+              sub={c.returnedPct == null ? "" : `${c.returnedPct}% of compound rows`}
+              coverage="pushed or spawned a follow-up"
+              tone={c.returnedPct > 40 ? "warn" : "neutral"} />
+      </div>
+      {c.examples.length > 0 && (
+        <div className="mt-3">
+          <h3 className="text-xs font-medium text-slate-700 mb-1">What they look like</h3>
+          <ul className="space-y-1">
+            {c.examples.map((e, i) => (
+              <li key={i} className="text-xs text-slate-600">
+                <b className="text-slate-800">{e.property} {e.unit}</b>
+                <span className="text-slate-400"> — {e.parts.length} parts: </span>
+                {e.parts.map((p) => p.slice(0, 34)).join(" · ")}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Notes({ m }) {
+  const n = m.notes;
+  if (!n || !n.withNote) return null;
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-4">
+      <h2 className="text-sm font-semibold text-slate-900">What the notes keep saying</h2>
+      <p className="text-xs text-slate-500 mt-0.5 mb-3 max-w-3xl">
+        A free-text box is usually where analysis goes to die. It does not have to: read across a
+        few hundred jobs, the same obstacles come up again and again — and they are obstacles no
+        field asks about. Nothing here decides what a note means. It counts the ones that mention a
+        known obstacle, says how much of the board has a note at all, and shows the notes so
+        somebody reads them.
+      </p>
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+        <Tile label="Jobs carrying a note" value={n.withNote}
+              sub={`${n.coverage.pct}% of ${n.total} jobs`}
+              coverage="a low number is not a problem — it is the denominator" />
+        <Tile label="Mentioning a known obstacle" value={n.themed}
+              sub={`${n.withNote - n.themed} say something else`}
+              coverage="access, permits, parts, contractors, owners" />
+        <Tile label="Distinct themes seen" value={n.themes.length}
+              sub={n.themes.length ? n.themes[0].label : ""}
+              coverage="the most common first" />
+      </div>
+      {n.themes.length > 0 && (
+        <div className="mt-4 max-w-xl">
+          <h3 className="text-xs font-medium text-slate-700 mb-1.5">What comes up</h3>
+          <HBars items={n.themes.map((t) => ({ label: t.label, value: t.n, display: String(t.n) }))} />
+        </div>
+      )}
+      {n.recent.length > 0 && (
+        <details className="mt-3">
+          <summary className="text-xs font-medium text-slate-700 cursor-pointer">
+            Read the notes ({n.recent.length} most recent)
+          </summary>
+          <ul className="mt-1.5 space-y-1">
+            {n.recent.map((r, i) => (
+              <li key={i} className="text-xs text-slate-600">
+                <span className="text-slate-400">{r.date}</span>{" "}
+                <b className="text-slate-800">{r.property} {r.unit}</b> — {r.note.slice(0, 180)}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
+}
+
 /* Three coordinators rotate through the same desk. Until the log was read
    back together, a pattern belonging to one person's judgement looked like
    a property of the department. */

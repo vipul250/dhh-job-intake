@@ -1,0 +1,44 @@
+import { chromium } from 'playwright';
+import fs from 'fs';
+const SP = process.env.SP;
+const seed = JSON.parse(fs.readFileSync(`${SP}/seed-kv.json`,'utf8'));
+const b = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
+const p = await b.newPage({ viewport: { width: 1440, height: 1400 } });
+const errs=[]; p.on('pageerror',e=>errs.push('PAGEERR '+e.message));
+p.on('console',m=>{ if(m.type()==='error' && !/Supabase env|404/.test(m.text())) errs.push('CONSOLE '+m.text().slice(0,140)); });
+await p.goto('http://127.0.0.1:4173/');
+await p.evaluate((s)=>localStorage.setItem('__dhh_mock_kv__', JSON.stringify(s)), seed);
+await p.evaluate(()=>localStorage.removeItem('dhh-me'));
+await p.reload(); await p.waitForTimeout(1300);
+await p.locator('input[placeholder*="Ahmed"]').fill('Haris');
+await p.getByRole('button', { name: 'Start' }).click(); await p.waitForTimeout(900);
+const D = '2026-09-20';
+await p.locator('input[type=date]').first().fill(D); await p.waitForTimeout(2200);
+await p.locator('textarea').first().fill('Harbour Views Tower 1 2505 1.AC grill cleaning 2.Low water pressure in the kitchen 3.Bathroom sink clogged 2h Daljith occupied p2');
+await p.locator('textarea').first().press('Enter'); await p.waitForTimeout(2000);
+
+await p.getByRole('button', { name: /^(more|less)$/ }).first().click(); await p.waitForTimeout(600);
+console.log('note button (replacing the PMS tick):',
+  await p.getByRole('button', { name: /add note|^note$/ }).count() ? 'present' : 'MISSING');
+console.log('old "PMS ?" tick gone:', /PMS \?/.test(await p.innerText('body')) ? '*** still there ***' : 'yes');
+
+await p.getByRole('button', { name: 'Close out' }).first().click(); await p.waitForTimeout(1400);
+let t = await p.innerText('body');
+console.log('\n=== CLOSE-OUT ===');
+console.log('  ', (t.match(/This is \d+ jobs in one[^\n]*/)||['*** CHECKLIST MISSING ***'])[0]);
+const dlg = p.locator('div.fixed.inset-0').locator('div.bg-white').first();
+const boxes = dlg.locator('input[type=checkbox]');
+console.log('   tick boxes:', await boxes.count());
+await boxes.nth(0).check(); await p.waitForTimeout(500);
+t = await p.innerText('body');
+console.log('   after ticking 1 of 3:', /still owed/.test(t) ? 'offers made safe + follow-up' : '*** no guidance ***');
+console.log('   ', (t.match(/Part of it is still owed[^\n]*/)||[''])[0].slice(0,120));
+const still = dlg.locator('textarea').nth(1);
+const filled = await dlg.locator('input,textarea').evaluateAll(els => els.map(e=>e.value).filter(v=>/Low water pressure/.test(v||'')));
+console.log('   follow-up scope prefilled:', filled.length ? filled[0].slice(0,70) : '*** empty ***');
+await boxes.nth(1).check(); await boxes.nth(2).check(); await p.waitForTimeout(500);
+t = await p.innerText('body');
+console.log('   after ticking all 3:', /All of it done/.test(t) ? 'closes as fixed' : '*** ' + (t.match(/still owed[^\n]*/)||['?'])[0]);
+await p.screenshot({ path: `${SP}/../compound.png` });
+console.log('\nerrors:', errs.length?errs.slice(0,4):'none');
+await b.close();
