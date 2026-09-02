@@ -86,6 +86,18 @@ const DATE_RE = /(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})/;
 const COORD_HEAD = /coordinator/i;
 const STANDBY_HEAD = /stand\s*-?\s*by|emergency\s*tech|on\s*call/i;
 
+/* Two different teams work out of the same roster and were being counted as
+   one. The crews that appear together on a single quoted job — "Adi,
+   Khaled, Nizar, Shafiq & Bijaya" — are the project team, working a job
+   card that runs for days. Read as daily-ops technicians they looked like
+   five people who had been given one job, so the board reported them as
+   idle and the schedule looked half empty.
+   
+   A heading is enough to separate them, and the coordinator writes the
+   message anyway: "Project team" / "Daily ops". */
+const PROJECT_HEAD = /^(project|projects)\s*(team|crew|works?)?\b|^job\s*cards?\b/i;
+const OPS_HEAD = /^(daily\s*ops|daily\s*operations|ops\s*team|daily\s*team|field\s*team)\b/i;
+
 /**
  * Parse the daily shift message.
  * @param {string} text
@@ -95,10 +107,10 @@ export function parseRosterMessage(text) {
   const lines = String(text || "").split(/\r?\n/);
   const roster = {
     date: "", shifts: [], away: [], standby: null, coordinators: [],
-    warnings: [], raw: String(text || ""),
+    projectTeam: [], warnings: [], raw: String(text || ""),
   };
 
-  let mode = "techs";       // techs | coordinators
+  let mode = "techs";       // techs | coordinators | project
   let current = null;       // the shift block being filled
 
   const dm = String(text || "").match(DATE_RE);
@@ -111,6 +123,12 @@ export function parseRosterMessage(text) {
 
     if (COORD_HEAD.test(line) && !RANGE_ANYWHERE.test(line)) {
       mode = "coordinators"; current = null; return;
+    }
+    if (PROJECT_HEAD.test(line) && !RANGE_ANYWHERE.test(line)) {
+      mode = "project"; current = null; return;
+    }
+    if (OPS_HEAD.test(line) && !RANGE_ANYWHERE.test(line)) {
+      mode = "techs"; current = null; return;
     }
 
     /* Standby: the heading carries its own hours, and the person and phone
@@ -126,7 +144,39 @@ export function parseRosterMessage(text) {
         names: inline.names.filter((n) => !/^(stand|by|emergency|tech)$/i.test(n)),
         phone: squash(phone),
       };
+      /* The name and phone usually follow on the NEXT line, so the section
+         mode has to end here too. Left in project mode, "Anthony +971 50
+         260 6632" was filed as a sixth member of the project crew and the
+         stand-by tile went blank — the one person who must be reachable at
+         1am, lost to a heading. */
+      mode = "techs";
       current = "standby";
+      return;
+    }
+
+    /* "Week off - Riyaz" / "Fujairah - Faizal". Tested before the section
+       branches, and only when the label is one the app recognises — an
+       absence written under the project heading is still an absence, and
+       leaving it to the section handler filed "Week off - Riyaz" as two
+       members of the project crew. */
+    const awayM = line.match(/^([A-Za-z][A-Za-z\s]{1,24}?)\s*[-–—:]\s*(.+)$/);
+    if (awayM && !RANGE_ANYWHERE.test(line)) {
+      const kind = classifyAway(awayM[1]);
+      const who = peopleFrom(awayM[2]);
+      if (kind.id !== "other" && who.names.length) {
+        roster.away.push({ kind: kind.id, label: kind.label, counts: kind.counts, names: who.names, raw: line });
+        current = null;
+        return;
+      }
+    }
+
+    if (mode === "project") {
+      /* The project crew may carry its own hours, or inherit the shift the
+         rest of the day runs on. Either way these people are working — they
+         must never be counted idle just because no daily job names them. */
+      const range = parseShiftRange(line);
+      const who = peopleFrom(line.replace(RANGE_ANYWHERE, ""));
+      who.names.forEach((n) => roster.projectTeam.push({ name: n, range }));
       return;
     }
 
@@ -138,18 +188,6 @@ export function parseRosterMessage(text) {
         roster.coordinators.push({ name: canonTech(name), range, raw: line });
       }
       return;
-    }
-
-    // "Week off - Riyaz" / "Fujairah -  Faizal"
-    const awayM = line.match(/^([A-Za-z][A-Za-z\s]{1,24}?)\s*[-–—:]\s*(.+)$/);
-    if (awayM && !RANGE_ANYWHERE.test(line)) {
-      const kind = classifyAway(awayM[1]);
-      const who = peopleFrom(awayM[2]);
-      if (who.names.length) {
-        roster.away.push({ kind: kind.id, label: kind.label, counts: kind.counts, names: who.names, raw: line });
-        current = null;
-        return;
-      }
     }
 
     // A bare time range opens a new shift block.
@@ -211,8 +249,16 @@ export function rosterSummary(roster) {
   const awayWorking = new Set();
   roster.away.forEach((a) => a.names.forEach((n) => (a.counts ? awayWorking : awayNotWorking).add(n)));
 
-  const live = new Set([...onShift, ...standby, ...awayWorking]);
+  const project = new Set((roster.projectTeam || []).map((p) => p.name));
+  const live = new Set([...onShift, ...standby, ...awayWorking, ...project]);
   const all = new Set([...live, ...awayNotWorking]);
+
+  /* Coordinator cover, counted separately from field hours. Field hours come
+     off the jobs; nobody assigns a job to a coordinator, so their day was
+     invisible even though it is the shift that decides whether a schedule
+     gets built at all. The manager counts — he covers the desk too. */
+  const coordMinutes = (roster.coordinators || [])
+    .reduce((sum, c) => sum + ((c.range && c.range.minutes) || 0), 0);
 
   return {
     date: roster.date,
@@ -227,6 +273,11 @@ export function rosterSummary(roster) {
     rosteredMinutes: roster.shifts.reduce((s, sh) => s + sh.techs.length * (sh.minutes || 0), 0),
     shifts: roster.shifts.map((s) => ({ label: s.label, minutes: s.minutes, techs: s.techs })),
     coordinators: roster.coordinators,
+    coordinatorCount: (roster.coordinators || []).length,
+    coordinatorMinutes: coordMinutes,
+    coordinatorHours: Math.round((coordMinutes / 60) * 10) / 10,
+    projectTeam: Array.from(project).sort(),
+    projectTeamBlocks: roster.projectTeam || [],
     standbyBlock: roster.standby,
     awayBreakdown: roster.away,
   };
@@ -250,7 +301,8 @@ export function checkAgainstSchedule(roster, jobs) {
   if (!summary) return null;
 
   const unavailable = new Set(summary.unavailable);
-  const known = new Set([...summary.onShift, ...summary.standby, ...summary.offsite, ...summary.unavailable]);
+  const known = new Set([...summary.onShift, ...summary.standby, ...summary.offsite,
+                         ...summary.unavailable, ...(summary.projectTeam || [])]);
 
   const assignedAway = [];
   const notOnRoster = [];
@@ -267,7 +319,12 @@ export function checkAgainstSchedule(roster, jobs) {
     });
   });
 
-  const idle = summary.onShift.filter((t) => !assigned.has(t));
+  /* The project crew is working a job card that runs for days, so no daily
+     job names them. Counting them idle is what made the schedule look half
+     empty and sent a coordinator looking for work to give people who
+     already had a week of it. */
+  const onProject = new Set(summary.projectTeam || []);
+  const idle = summary.onShift.filter((t) => !assigned.has(t) && !onProject.has(t));
 
   return {
     summary,

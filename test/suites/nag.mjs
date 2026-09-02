@@ -7,6 +7,12 @@ const p = await b.newPage({ viewport: { width: 1400, height: 1200 } });
 const errs=[]; p.on('pageerror',e=>errs.push('PAGEERR '+e.message));
 p.on('console',m=>{ if(m.type()==='error' && !/Supabase env|404/.test(m.text())) errs.push('CONSOLE '+m.text().slice(0,140)); });
 await p.goto('http://127.0.0.1:4173/');
+// 2 September is the go-live date and starts empty by design, so the
+// banner has nothing to report unless today actually has open work.
+const cutover = new Date().toISOString().slice(0,10);
+if (!seed['schedule:'+cutover]) {
+  seed['schedule:'+cutover] = seed['schedule:2026-09-01'] || '[]';
+}
 await p.evaluate((s)=>localStorage.setItem('__dhh_mock_kv__', JSON.stringify(s)), seed);
 await p.evaluate(()=>localStorage.removeItem('dhh-me'));
 await p.reload(); await p.waitForTimeout(1200);

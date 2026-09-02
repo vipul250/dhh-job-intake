@@ -83,8 +83,8 @@ export const STAFF_SEED = [
   { name: "Monish", trade: "manager", base: "Dubai", licence: null, role: "office",
     email: "monishraj@deluxehomes.com", note: "Assistant Maintenance Manager." },
   { name: "Vipul",  trade: "manager", base: "Dubai", licence: null, role: "office",
-    email: "vipul@deluxehomes.com", admin: true,
-    note: "Administrator — can turn sign-in on and off." },
+    email: "vipul@deluxehomes.com", admin: true, onRoster: false,
+    note: "Operations manager. Administers the app; not part of the maintenance roster." },
 ];
 
 export function normaliseStaff(rec) {
@@ -106,6 +106,11 @@ export function normaliseStaff(rec) {
        job, and every action already carries a name. This one control is
        different because getting it wrong shuts the whole team out. */
     admin: rec.admin === true,
+    /* On the roster at all. The ops manager sits above the maintenance
+       department rather than in it — he is on the team list because he
+       administers the app, not because anybody schedules his day, and
+       counting him as available would overstate the headcount. */
+    onRoster: rec.onRoster === false ? false : true,
     shift: squash(rec.shift),
     phone: squash(rec.phone),
     note: squash(rec.note),
@@ -147,6 +152,7 @@ export function backfillStaff(stored) {
     }
     if (!rec.email && seedRec.email) { rec.email = squash(seedRec.email).toLowerCase(); changed = true; }
     if (seedRec.admin === true && !rec.admin) { rec.admin = true; changed = true; }
+    if (seedRec.onRoster === false && rec.onRoster !== false) { rec.onRoster = false; changed = true; }
   });
 
   return { list, changed };

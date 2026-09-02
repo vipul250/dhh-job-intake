@@ -17,6 +17,7 @@ import {
 import { parseWorkReport, fmtMin } from "../lib/workReport.js";
 import { parseAnyPaste } from "../lib/backlog.js";
 import { dayActivity, attributionLine } from "../lib/activity.js";
+import { readGoLive, isLive, isPreGoLive } from "../lib/goLive.js";
 import { parseSheetPaste } from "../lib/importSheet.js";
 import { checkAgainstSchedule } from "../lib/roster.js";
 import { storageGet } from "../lib/storage.js";
@@ -137,6 +138,7 @@ export default function LiveBoard({
   const [dayReview, setDayReview] = useState(false);
   const [showLog, setShowLog] = useState(false);
   const [todayOpen, setTodayOpen] = useState(null);
+  const [goLive, setGoLiveDate] = useState(null);
   const [roster, setRoster] = useState(null);
   const [loadError, setLoadError] = useState("");
   const [post, setPost] = useState(null);
@@ -212,7 +214,13 @@ export default function LiveBoard({
   const loadRollover = useCallback(async (date) => {
     if (date < isoToday()) { setRollover(null); return; }
     try {
-      const days = [1, 2, 3, 4, 5].map((n) => addDays(date, -n));
+      /* Days before the department started using the system are history,
+         not a backlog: nothing in them was ever closed out because closing
+         out did not exist yet. Rolling them forward is how 2 September
+         opened with 110 jobs from August on it. */
+      const cut = await readGoLive();
+      const days = [1, 2, 3, 4, 5].map((n) => addDays(date, -n)).filter((d) => isLive(d, cut));
+      if (!days.length) { setRollover(null); return; }
       const results = await Promise.all(days.map((d) => readDayResult(d)));
       const stranded = [];
       let oldest = null;
@@ -227,6 +235,12 @@ export default function LiveBoard({
     }
   }, []);
 
+  useEffect(() => {
+    let off = false;
+    readGoLive().then((d) => { if (!off) setGoLiveDate(d); }).catch(() => {});
+    return () => { off = true; };
+  }, []);
+
   useEffect(() => { load(selectedDate); }, [selectedDate, load]);
 
   /* The board opens on tomorrow, which is right for the evening coordinator
@@ -239,6 +253,7 @@ export default function LiveBoard({
     let cancelled = false;
     const today = new Date().toISOString().slice(0, 10);
     if (selectedDate === today) { setTodayOpen(null); return undefined; }
+    if (goLive && today < goLive) { setTodayOpen(null); return undefined; }
     (async () => {
       try {
         const rows = liveJobs(migrateDay(await readDay(today), today));
@@ -248,7 +263,7 @@ export default function LiveBoard({
       } catch { if (!cancelled) setTodayOpen(null); }
     })();
     return () => { cancelled = true; };
-  }, [selectedDate, rows]);
+  }, [selectedDate, rows, goLive]);
   useEffect(() => { loadRollover(selectedDate); }, [selectedDate, loadRollover]);
   useEffect(() => {
     let cancelled = false;
@@ -382,6 +397,26 @@ export default function LiveBoard({
   /* What the morning coordinator is asked for before they leave: the jobs
      on this day that still have no outcome. Counted here so the button can
      carry the number rather than making somebody go and look. */
+  /* Jobs sitting on this day that first appeared before the department
+     started. If the rollover banner was accepted before it knew about the
+     cutover, they are here — and they are not work anybody intends to do. */
+  const strays = useMemo(
+    () => (goLive ? jobs.filter((j) => isPreGoLive(j, goLive) && !isResolved(j.state) && j.state !== "cancelled") : []),
+    [jobs, goLive]
+  );
+
+  async function clearStrays() {
+    const ids = new Set(strays.map((j) => j.id));
+    await change(selectedDate, (cur) => cur.map((r) => (
+      !isTombstone(r) && ids.has(r.id)
+        ? setJobState(r, "cancelled", who, {
+            reason: `Imported history from before ${goLive} — not being worked`,
+            lock: lock.locked ? lock.kind : undefined,
+          })
+        : r
+    )), `${strays.length} job(s) from before ${goLive} closed off. They stay on record.`);
+  }
+
   const unanswered = useMemo(
     () => jobs.filter((j) => !isResolved(j.state) && j.state !== "cancelled").length,
     [jobs]
@@ -724,6 +759,21 @@ export default function LiveBoard({
         counts={counts} busy={busy} liveNote={liveNote}
         onRefresh={() => load(selectedDate)}
       />
+
+      {strays.length > 0 && (
+        <div className="rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 flex flex-wrap items-center gap-2">
+          <History className="w-4 h-4 text-slate-500 shrink-0" />
+          <span className="text-xs text-slate-700">
+            <b>{strays.length} job{strays.length === 1 ? "" : "s"} on this day came from before {goLive}</b>
+            {" "}— imported history, brought forward before the app knew where you started. They are
+            not work anybody planned.
+          </span>
+          <button onClick={clearStrays}
+                  className="ml-auto text-xs bg-slate-800 text-white rounded-md px-2.5 py-1.5 shrink-0">
+            Close them off
+          </button>
+        </div>
+      )}
 
       {todayOpen && (
         <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 flex flex-wrap items-center gap-2">

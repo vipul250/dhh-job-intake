@@ -5,6 +5,7 @@ import {
 import { storageGet, storageSet } from "../lib/storage.js";
 import { squash, canonKey } from "../lib/normalize.js";
 import { readDay, migrateDay } from "../lib/jobStore.js";
+import { readGoLive, setGoLive } from "../lib/goLive.js";
 import { liveJobs } from "../lib/job.js";
 import { parseRosterMessage, rosterSummary, checkAgainstSchedule } from "../lib/roster.js";
 import {
@@ -82,6 +83,12 @@ export default function Roster({ selectedDate, setSelectedDate, showToast, authR
           point is not the list — it is that the day's schedule gets checked against it, so a job
           assigned to somebody on leave stops being invisible.
         </p>
+        <p className="text-sm text-slate-600 mt-1.5 max-w-3xl">
+          Add a <b>Project team</b> heading above the crew working a job card, and
+          <b> Daily ops</b> above the rest. They are two different jobs and were being counted as
+          one: a project crew has no daily task naming them, so the board called five working
+          people idle and the day looked half empty.
+        </p>
       </div>
 
       <div className="flex flex-wrap items-end gap-3 rounded-lg border border-slate-200 bg-white p-3">
@@ -108,7 +115,7 @@ export default function Roster({ selectedDate, setSelectedDate, showToast, authR
         <div className="rounded-lg border border-slate-300 bg-white p-3">
           <textarea
             value={text} onChange={(e) => setText(e.target.value)} rows={12}
-            placeholder={"*Shift Timings for 01/09/2026*\n\nWeek off - Riyaz\nPH - Imtiaz\nFujairah - Faizal\n\n9.00am - 6.00pm\nResty\nAdi, Khaled, Nizar, Shafiq & Bijaya\n\nStand-by Emergency Tech 11.00pm - 2.00am\nAnthony +971 50 260 6632\n\n*Coordinators Shift*\nHaris - 8.00 am - 5.00 pm"}
+            placeholder={"*Shift Timings for 02/09/2026*\n\nWeek off - Riyaz\nPH - Imtiaz\nFujairah - Faizal\n\n*Daily ops*\n9.00am - 6.00pm\nResty\nVitalis\nJabbar\n\n*Project team*\nAdi, Khaled, Nizar, Shafiq & Bijaya\n\nStand-by Emergency Tech 11.00pm - 2.00am\nAnthony +971 50 260 6632\n\n*Coordinators Shift*\nHaris - 8.00 am - 5.00 pm\nTiyana - 2.00 pm - 11.00 pm"}
             className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm font-mono"
           />
           <div className="flex flex-wrap items-center gap-2 mt-2">
@@ -134,6 +141,8 @@ export default function Roster({ selectedDate, setSelectedDate, showToast, authR
 
       <Team jobs={jobs} showToast={showToast} />
 
+      <GoLivePanel showToast={showToast} />
+
       <AccessPanel
         authRequired={authRequired} setAuthRequired={setAuthRequired}
         session={session} showToast={showToast}
@@ -154,7 +163,7 @@ function RosterBoard({ roster, check }) {
 
   return (
     <div className="space-y-3">
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
         <Tile label="Available today" value={s.liveCount}
               sub={`of ${s.totalCount} on the roster`}
               note="on shift, off-site or on stand-by" tone="good" />
@@ -168,6 +177,14 @@ function RosterBoard({ roster, check }) {
         <Tile label="Off-site" value={s.offsite.length}
               sub={s.offsite.join(", ") || "nobody"}
               note="working, but not on Dubai jobs" />
+        <Tile label="Coordinators on" value={s.coordinatorCount || "—"}
+              sub={s.coordinatorHours ? `${s.coordinatorHours}h of desk cover` : "none in the message"}
+              note={(s.coordinators || []).map((c) => `${c.name}${c.range ? ` ${c.range.label}` : ""}`).join(" · ")}
+              small tone={s.coordinatorCount ? "neutral" : "warn"} />
+        <Tile label="On projects" value={s.projectTeam.length || "—"}
+              sub={s.projectTeam.join(", ") || "nobody on a job card"}
+              note="working a quoted job that runs for days — not idle"
+              small />
         <Tile label="Stand-by" value={s.standby.join(", ") || "—"}
               sub={s.standbyBlock && s.standbyBlock.range ? s.standbyBlock.range.label : ""}
               note={s.standbyBlock ? s.standbyBlock.phone : ""}
@@ -293,6 +310,64 @@ function RosterBoard({ roster, check }) {
  * would be a redeploy. So this will not let you enable it until a real
  * code has arrived in a real inbox.
  * ================================================== */
+
+/* ==================== where the record starts ==================== *
+ * A month of real history was imported so the metrics had something to
+ * stand on. It is not a backlog — nothing in it was ever closed out,
+ * because closing out did not exist yet. Without a line the app treated all
+ * of it as work still owed, and offered to bring 110 August jobs onto the
+ * first day the department meant to start clean.
+ * ================================================================= */
+function GoLivePanel({ showToast }) {
+  const [date, setDate] = useState("");
+  const [saved, setSaved] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let off = false;
+    readGoLive().then((d) => { if (!off) { setDate(d); setSaved(d); } }).catch(() => {});
+    return () => { off = true; };
+  }, []);
+
+  async function save() {
+    setBusy(true);
+    try {
+      const v = await setGoLive(date);
+      setSaved(v);
+      showToast(`Records start ${v}. Anything before it is history, not a backlog.`, "ok");
+    } catch (e) {
+      showToast(e.message || "That date did not look right.", "warn");
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-3">
+      <h3 className="text-sm font-medium text-slate-900">Where the record starts</h3>
+      <p className="text-xs text-slate-500 mt-0.5 max-w-2xl">
+        Days before this date are treated as history: they still count on the dashboard, and the
+        trends and technician times are built from them — but they never roll over, never appear as
+        jobs that were left open, and are never offered to be brought forward. Days from this date
+        on are live, and every rule applies.
+      </p>
+      <div className="mt-2 flex flex-wrap items-end gap-2">
+        <label className="text-[11px] text-slate-500">
+          Records start
+          <input type="date" value={date} onChange={(e) => setDate(e.target.value)}
+                 className="mt-0.5 block border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
+        </label>
+        <button onClick={save} disabled={busy || !date || date === saved}
+                className="text-sm bg-slate-900 text-white rounded-md px-3 py-1.5 disabled:opacity-40">
+          Save
+        </button>
+        {saved && (
+          <span className="text-[11px] text-slate-500">
+            Currently {saved}. The imported month (18 Aug – 1 Sep) sits behind it.
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function AccessPanel({ authRequired, setAuthRequired, session, showToast }) {
   const [email, setEmail] = useState(session?.user?.email || "");

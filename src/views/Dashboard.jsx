@@ -6,6 +6,7 @@ import {
 import { storageGet, storageSet } from "../lib/storage.js";
 import { parseDay, migrateDay } from "../lib/jobStore.js";
 import { readPost } from "../lib/dayLock.js";
+import { readGoLive } from "../lib/goLive.js";
 import { peopleActivity } from "../lib/activity.js";
 import { liveJobs } from "../lib/job.js";
 import { computeCost, computeCostSeries, DEFAULT_RATES } from "../lib/cost.js";
@@ -51,6 +52,13 @@ export default function Dashboard({ selectedDate, knownDates, onOpenDate }) {
   const [loading, setLoading] = useState(false);
   const [loaded, setLoaded] = useState(null);
   const [loadedDays, setLoadedDays] = useState([]);
+  const [goLive, setGoLiveState] = useState(null);
+
+  React.useEffect(() => {
+    let off = false;
+    readGoLive().then((d) => { if (!off) setGoLiveState(d); }).catch(() => {});
+    return () => { off = true; };
+  }, []);
   const [progress, setProgress] = useState(0);
   const [focusDate, setFocusDate] = useState(selectedDate || todayISO());
   const [rates, setRates] = useState(DEFAULT_RATES);
@@ -108,15 +116,18 @@ export default function Dashboard({ selectedDate, knownDates, onOpenDate }) {
     setLoading(false);
   }
 
-  const m = useMemo(() => (loaded ? computeAll(loaded, { asOfDate: endDate }) : null), [loaded, endDate]);
+  const m = useMemo(
+    () => (loaded ? computeAll(loaded, { asOfDate: endDate, goLive }) : null),
+    [loaded, endDate, goLive]
+  );
 
   const focusJobs = useMemo(
     () => (loaded ? loaded.filter((j) => j._date === focusDate) : []),
     [loaded, focusDate]
-  );
+  );  // eslint-disable-line react-hooks/exhaustive-deps
   const focus = useMemo(
-    () => (focusJobs.length ? computeAll(focusJobs, { asOfDate: focusDate }) : null),
-    [focusJobs, focusDate]
+    () => (focusJobs.length ? computeAll(focusJobs, { asOfDate: focusDate, goLive }) : null),
+    [focusJobs, focusDate, goLive]
   );
 
   return (
