@@ -568,11 +568,14 @@ export function parseTaskPaste(text, forDate) {
     if (!title && !propRaw) { skipped++; continue; }
     const place = splitTrailingUnit(propRaw, "");
     const pre = readTitlePrefix(title);
+    const slot = stripParkingTail(pre.rest);
     jobs.push({
       _date: forDate,
       property: place.property,
       unit: place.unit,
-      description: pre.rest,
+      description: slot.text,
+      parking: slot.parking,
+      escalated: !!pre.escalated,
       titleRaw: title,
       timeOfVisit: pre.timeOfVisit || "",
       guestConfirmed: pre.guestConfirmed || "",
@@ -587,7 +590,9 @@ export function parseTaskPaste(text, forDate) {
       reservation: get("reservation"),
       dueDate: toISODate(get("dueDate")) || "",
       inPms: true,
-      source: "pms-task",
+      /* A bad rating or an approved quotation says more about where the job
+         came from than "it was a PMS task" does, so the title wins. */
+      source: pre.source || (pre.project ? "project" : "pms-task"),
     });
   }
   return { jobs, skipped, error: "" };
@@ -615,44 +620,112 @@ const PREFIX_TIME = /\b(\d{1,2}(?:[.:]\d{2})?\s*(?:-|to|–)\s*\d{1,2}(?:[.:]\d{
 
 const PREFIX_CODE = /^(gc|wc|vacant|b2b|check.?in|check.?out|onb|contin|approved|approevd)\b/i;
 
-export function readTitlePrefix(title) {
-  const s = squash(title);
-  if (!PREFIX_CODE.test(s)) return { rest: s };
+/* PMS has no parking field, so the coordinator appends the slot to the end
+   of the title: "…kitchen area ceiling light flickering P1-29, P1-30",
+   "General inspection P3-80", "Paint touch up B1-122, B1-123". The board
+   does have a parking field, and the technician needs it — it just has to
+   come out of the task text first, where it was corrupting the description,
+   the standard-task matching and the multi-part split.
+   
+   Deliberately narrow: letters, then a dash, then digits. "BZ2A07" has no
+   dash and is left alone rather than risk eating a real word, and a bare
+   number is never treated as a slot. */
+const PARKING_TAIL = /[\s(]*((?:[A-Z]{1,3}\s?\d{0,2}\s?-\s?\d{1,4})(?:\s*(?:,|&|and)\s*(?:[A-Z]{1,3}\s?\d{0,2}\s?-\s?\d{1,4}))*)\s*\)?\s*$/;
 
-  /* "GC 6 - 7 Pm - Cabinet hinges" contains two separators and the prefix
-     is everything up to the second. Take the LAST split that still leaves a
-     prefix short enough to be a code and a time, rather than the first. */
-  let cut = -1;
+export function stripParkingTail(text) {
+  const s = squash(text);
+  const m = s.match(PARKING_TAIL);
+  if (!m) return { text: s, parking: "" };
+  const rest = squash(s.slice(0, m.index));
+  // Never strip it down to nothing — a title that is only a slot is not a
+  // parking code, it is a badly written task.
+  if (rest.length < 6) return { text: s, parking: "" };
+  return { text: rest, parking: squash(m[1]) };
+}
+
+export function readTitlePrefix(title) {
+  let s = squash(title);
+  const out = { rest: s };
+
+  /* Prefixes chain. "Vacant - IMP - Long Term Transition - Touch Up
+     painting" carries an occupancy code AND an escalation marker, and
+     reading only the first left "IMP" inside the description, where the
+     multi-part splitter then treated it as a job of its own. So they are
+     consumed in a loop until the head stops looking like a code. */
+  for (let guard = 0; guard < 4; guard++) {
+    const step = readOnePrefix(s);
+    if (!step) break;
+    Object.assign(out, step.found);
+    s = step.rest;
+  }
+  out.rest = s;
+
+  /* A job that exists because the stay was already rated badly. Written in
+     the title because PMS has nowhere else to put it. */
+  if (/\b\d\s*star\b|\bbad\s+review\b|\breview\b|\brating\b/i.test(out.rest) ||
+      /guest\s+gave/i.test(squash(title))) {
+    out.source = "review";
+  }
+  return out;
+}
+
+/* IMP is the coordinator's own escalation marker — six rows in the real
+   month, and it means somebody upstairs is watching. It is a flag, not a
+   priority: the priority field says how urgent the work is, this says how
+   visible the failure is, and they are not the same thing. */
+const IMP_RE = /^imp\b/i;
+
+function readOnePrefix(s) {
+  if (!PREFIX_CODE.test(s) && !IMP_RE.test(s)) return null;
+
+  /* Take the SHORTEST head that is a code, not the longest. Being greedy
+     here swallowed the second prefix of a chain — "Vacant - IMP - Long
+     Term Transition" gave a head of "Vacant - IMP", which read as Vacant
+     and lost the escalation entirely.
+     
+     The one case that does need extending is a time range split across the
+     separator: "GC 6 - 7 Pm - Cabinet hinges" has to keep "6 - 7 Pm"
+     together. So it extends only when what follows begins as a time. */
+  const cuts = [];
   const re = /\s*[-–—]\s+|\s*[-–—]$/g;
   let m;
   while ((m = re.exec(s)) !== null) {
     if (m.index > 22) break;
-    cut = m.index;
+    cuts.push(m.index);
   }
-  if (cut < 0) return { rest: s };
-  const head = s.slice(0, cut).trim();
-  const rest = s.slice(cut).replace(/^\s*[-–—]\s*/, "").trim() || s;
+  if (!cuts.length) return null;
+
+  let cut = cuts[0];
+  let head = s.slice(0, cut).trim();
+  let rest = s.slice(cut).replace(/^\s*[-–—]\s*/, "").trim();
+  if (cuts.length > 1 && /^\d{1,2}(?:[.:]\d{2})?\s*(?:am|pm)\b/i.test(rest)) {
+    cut = cuts[1];
+    head = s.slice(0, cut).trim();
+    rest = s.slice(cut).replace(/^\s*[-–—]\s*/, "").trim();
+  }
+  if (!rest) return null;
   const k = canonKey(head);
-  if (!k) return { rest: s };
+  if (!k) return null;
 
   const time = (head.match(PREFIX_TIME) || [])[0];
-  const out = { rest, prefix: head };
+  const found = { prefix: head };
 
+  if (IMP_RE.test(k)) { found.escalated = true; return { found, rest }; }
   if (/^gc\b/.test(k)) {
-    out.occupancy = "Occupied - GC";
-    out.guestConfirmed = "Y";
-    if (time) out.timeOfVisit = squash(time);
-    return out;
+    found.occupancy = "Occupied - GC";
+    found.guestConfirmed = "Y";
+    if (time) found.timeOfVisit = squash(time);
+    return { found, rest };
   }
-  if (/^wc\b/.test(k)) { out.occupancy = "WC"; out.guestConfirmed = "N"; return out; }
-  if (/^vacant\b/.test(k)) { out.occupancy = "Vacant"; return out; }
-  if (/^b2b\b/.test(k)) { out.occupancy = "B2B"; return out; }
-  if (/^check.?in\b/.test(k)) { out.occupancy = "Check-in"; return out; }
-  if (/^check.?out\b/.test(k)) { out.occupancy = "Checkout"; return out; }
-  if (/^onb\b|^contin\b|^approved|^approevd/.test(k)) { out.project = true; return out; }
-  // An unrecognised prefix is left inside the description rather than lost.
-  return { rest: s };
+  if (/^wc\b/.test(k)) { found.occupancy = "WC"; found.guestConfirmed = "N"; return { found, rest }; }
+  if (/^vacant\b/.test(k)) { found.occupancy = "Vacant"; return { found, rest }; }
+  if (/^b2b\b/.test(k)) { found.occupancy = "B2B"; return { found, rest }; }
+  if (/^check.?in\b/.test(k)) { found.occupancy = "Check-in"; return { found, rest }; }
+  if (/^check.?out\b/.test(k)) { found.occupancy = "Checkout"; return { found, rest }; }
+  if (/^onb\b|^contin\b|^approved|^approevd/.test(k)) { found.project = true; return { found, rest }; }
+  return null;
 }
+
 
 /* ---------------------------------------------------------------------- *
  * One paste box, two sources.

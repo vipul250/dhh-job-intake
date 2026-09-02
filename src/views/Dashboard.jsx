@@ -203,6 +203,7 @@ export default function Dashboard({ selectedDate, knownDates, onOpenDate }) {
           />
           <Containment m={m} onOpenDate={onOpenDate} />
           <Demand m={m} />
+          <Escalations m={m} />
           <Compound m={m} />
           <Notes m={m} />
           <WhoDidWhat days={loadedDays} />
@@ -601,6 +602,48 @@ function Demand({ m }) {
 
 /* Why a job is on the day it is on — the question the department could not
    answer at all until the queue existed. */
+function Escalations({ m }) {
+  const e = m.escalations;
+  if (!e || (!e.imp && !e.review)) return null;
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-4">
+      <h2 className="text-sm font-semibold text-slate-900">Jobs somebody upstairs is watching</h2>
+      <p className="text-xs text-slate-500 mt-0.5 mb-3 max-w-3xl">
+        The coordinator marks a job <b>IMP</b> when it has attention on it, and writes
+        "guest gave 1 star" into the title when the work exists because the stay was already rated
+        badly. PMS has nowhere else to put either, so both were invisible. Escalation is not
+        priority: a P3 somebody upstairs is watching is a different animal from a P3 nobody has
+        mentioned, and counting them together is why "we cleared all the P1s" never answered the
+        question being asked.
+      </p>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <Tile label="Marked IMP" value={e.imp}
+              sub={`${e.impPct ?? 0}% of ${e.total} jobs`}
+              coverage="read from the title, not a field anybody fills" />
+        <Tile label="Off a bad rating" value={e.review}
+              sub={e.both ? `${e.both} of them also IMP` : "the damage is already public"}
+              coverage="revenue gone before the job exists"
+              tone={e.review > 0 ? "warn" : "neutral"} />
+        <Tile label="IMP jobs finished" value={e.impResolvedPct == null ? "—" : `${e.impResolvedPct}%`}
+              sub={`${e.impResolved} of ${e.imp}`}
+              coverage="the ones that must not slip"
+              tone={e.impResolvedPct != null && e.impResolvedPct < 80 ? "bad" : "good"} />
+        <Tile label="IMP jobs pushed anyway" value={e.impPushed}
+              sub={e.impPushedPct == null ? "" : `${e.impPushedPct}% of them`}
+              coverage="moved at least once despite the marker"
+              tone={e.impPushed > 0 ? "bad" : "good"}
+              icon={e.impPushed ? AlertTriangle : undefined} />
+      </div>
+      {e.byPriority.length > 0 && (
+        <p className="mt-3 text-xs text-slate-600">
+          IMP is spread across priorities — {e.byPriority.map(([k, n]) => `${n} ${k.replace("PRI-", "P")}`).join(", ")}
+          {" "}— which is the point: it is not a priority, it is visibility.
+        </p>
+      )}
+    </div>
+  );
+}
+
 function Compound({ m }) {
   const c = m.compound;
   if (!c || !c.compound) return null;
