@@ -1812,6 +1812,18 @@ function JobRow({ job, me, onAdvance, onEdit, onOpenNote, onMove, onOutcome, onT
             {canonPriority(job.priority) === "PRI-1" && (
               <span className="text-[10px] rounded px-1.5 py-0.5 bg-red-100 text-red-700 font-medium">P1</span>
             )}
+            {job.escalated && (
+              <span title="Marked IMP by the coordinator — somebody upstairs is watching this one. Not the same as a priority."
+                    className="text-[10px] rounded px-1.5 py-0.5 bg-purple-100 text-purple-800 font-medium border border-purple-200">
+                IMP
+              </span>
+            )}
+            {job.source === "review" && (
+              <span title="Raised off a low guest rating — the revenue is already gone and the review is public"
+                    className="text-[10px] rounded px-1.5 py-0.5 bg-amber-100 text-amber-800 font-medium border border-amber-200">
+                review
+              </span>
+            )}
             {pushed > 0 && (
               <button onClick={() => onTrail(job)}
                       title={`First scheduled ${job.originDate}. Moved ${pushed} time(s). Click for the full trail.`}

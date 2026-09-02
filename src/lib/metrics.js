@@ -997,6 +997,40 @@ export function computeNotes(jobs) {
  * Counting them says whether bundling is costing anything. A compound job
  * that comes back is the case that matters.
  * -------------------------------------------------------------------- */
+/* Jobs the coordinator marked IMP, and jobs raised off a bad rating. Both
+   are written into the title because PMS has nowhere else to put them, and
+   both were invisible. Escalation is not priority: a P3 somebody upstairs
+   is watching is a different animal from a P3 nobody has mentioned, and
+   lumping them together is why "we fixed all the P1s" never answered the
+   question being asked. */
+export function computeEscalations(jobs) {
+  const imp = jobs.filter((j) => j.escalated);
+  const review = jobs.filter((j) => j.source === "review");
+  const both = jobs.filter((j) => j.escalated && j.source === "review");
+  const impResolved = imp.filter((j) => isResolved(j.state));
+  const impLate = imp.filter((j) => (j.pushCount || 0) > 0);
+
+  const byPriority = {};
+  imp.forEach((j) => {
+    const k = canonPriority(j.priority) || "not set";
+    byPriority[k] = (byPriority[k] || 0) + 1;
+  });
+
+  return {
+    total: jobs.length,
+    imp: imp.length,
+    impPct: pct(imp.length, jobs.length),
+    review: review.length,
+    both: both.length,
+    impResolved: impResolved.length,
+    impResolvedPct: pct(impResolved.length, imp.length),
+    impPushed: impLate.length,
+    impPushedPct: pct(impLate.length, imp.length),
+    byPriority: Object.entries(byPriority).sort((a, b) => b[1] - a[1]),
+    properties: Array.from(new Set([...imp, ...review].map((j) => squash(j.property)).filter(Boolean))).slice(0, 12),
+  };
+}
+
 export function computeCompound(jobs) {
   const compound = jobs.filter((j) => isCompound(j.description));
   const parts = compound.reduce((s, j) => s + splitTaskParts(j.description).length, 0);
@@ -1228,6 +1262,7 @@ export function computeAll(jobs, opts = {}) {
     schedulingBasis: computeSchedulingBasis(jobs),
     notes: computeNotes(jobs),
     compound: computeCompound(jobs),
+    escalations: computeEscalations(jobs),
     churn: computeChurn(jobs),
     techTimes: computeTechTimes(jobs, opts),
     series: computeDailySeries(jobs, opts),

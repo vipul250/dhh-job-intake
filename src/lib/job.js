@@ -105,13 +105,19 @@ export const JOB_SOURCES = [
   { id: "emergency", label: "Out-of-hours emergency",   hint: "Came in after the schedule was posted" },
   { id: "filler",    label: "Inspection — filling time", hint: "Used to fill an idle slot or hold a technician on standby" },
   { id: "project",   label: "Project / quoted work",    hint: "Part of an approved quotation" },
+  /* A job that exists because a guest already rated the stay badly. It is
+     not the same as a guest complaint mid-stay: the revenue is gone, the
+     review is public, and the work is being done to stop it happening
+     again. Counting it with ordinary complaints hides the one category
+     that costs money after the fact. */
+  { id: "review",    label: "Bad review / rating",      hint: "Raised off a low guest rating — the damage is already public" },
 ];
 
 export const SOURCE_LABEL = Object.fromEntries(JOB_SOURCES.map((s) => [s.id, s.label]));
 
 /* Work that arrived rather than being planned — the demand the department
    does not control. */
-export const REACTIVE_SOURCES = ["guest", "hk", "gro", "emergency"];
+export const REACTIVE_SOURCES = ["guest", "hk", "gro", "emergency", "review"];
 
 /* No "Other" on any of these lists.
  *
@@ -274,6 +280,11 @@ export function newJob(fields, date, by) {
     // new complaint, a job squeezed in. Planned volume and arriving volume
     // are different things and were previously indistinguishable.
     unplanned: false,
+    /* Marked IMP by the coordinator. Not a priority — the priority field
+       says how urgent the work is, this says how visible the failure is,
+       and a P3 that somebody upstairs is watching is a different animal
+       from a P3 nobody has mentioned. */
+    escalated: false,
 
     events: [makeEvent("created", by)],
     ...fields,
