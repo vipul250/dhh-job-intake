@@ -168,6 +168,24 @@ export function parseRosterMessage(text) {
         current = null;
         return;
       }
+      /* The other way round: "Tiyana - Week Off". Both orders are written in
+         the real messages, and reading only the label-first one meant the
+         whole line became somebody's name — the coordinator tile counted
+         three people on the desk and named one of them "Tiyana - Week Off",
+         while the hours correctly totalled two shifts. A person's absence
+         has to read the same whichever way round it was typed. */
+      const backKind = classifyAway(awayM[2]);
+      const backWho = peopleFrom(awayM[1]);
+      if (backKind.id !== "other" && backWho.names.length) {
+        roster.away.push({
+          kind: backKind.id, label: backKind.label, counts: backKind.counts,
+          names: backWho.names, raw: line,
+          // Whose absence this is matters for the desk as well as the vans.
+          section: mode,
+        });
+        current = null;
+        return;
+      }
     }
 
     if (mode === "project") {
@@ -247,9 +265,25 @@ export function rosterSummary(roster) {
 
   const awayNotWorking = new Set();
   const awayWorking = new Set();
-  roster.away.forEach((a) => a.names.forEach((n) => (a.counts ? awayWorking : awayNotWorking).add(n)));
+  /* An absence written under the Coordinators heading is the desk being
+     short, not a van. Counting it with the technicians would say the field
+     team is a person down when it is not, and would leave the coordinator
+     tile claiming full cover. */
+  const coordinatorsOff = new Set();
+  roster.away.forEach((a) => a.names.forEach((n) => {
+    if (a.section === "coordinators") coordinatorsOff.add(n);
+    else (a.counts ? awayWorking : awayNotWorking).add(n);
+  }));
 
-  const project = new Set((roster.projectTeam || []).map((p) => p.name));
+  /* Two ways in, because the shift message is not the coordinator's to
+     rewrite. If whoever writes it uses a "Project team" heading, it is read
+     from there; otherwise the crew is ticked off on the Roster tab and
+     stored alongside. Asking somebody to hand-edit a WhatsApp message every
+     morning is the kind of extra step that quietly stops happening. */
+  const project = new Set([
+    ...(roster.projectTeam || []).map((p) => p.name),
+    ...(roster.projectPicks || []).map((p) => canonTech(p.name)).filter(Boolean),
+  ]);
   const live = new Set([...onShift, ...standby, ...awayWorking, ...project]);
   const all = new Set([...live, ...awayNotWorking]);
 
@@ -257,8 +291,8 @@ export function rosterSummary(roster) {
      off the jobs; nobody assigns a job to a coordinator, so their day was
      invisible even though it is the shift that decides whether a schedule
      gets built at all. The manager counts — he covers the desk too. */
-  const coordMinutes = (roster.coordinators || [])
-    .reduce((sum, c) => sum + ((c.range && c.range.minutes) || 0), 0);
+  const onDesk = (roster.coordinators || []).filter((c) => c.range && c.range.minutes > 0);
+  const coordMinutes = onDesk.reduce((sum, c) => sum + c.range.minutes, 0);
 
   return {
     date: roster.date,
@@ -273,11 +307,16 @@ export function rosterSummary(roster) {
     rosteredMinutes: roster.shifts.reduce((s, sh) => s + sh.techs.length * (sh.minutes || 0), 0),
     shifts: roster.shifts.map((s) => ({ label: s.label, minutes: s.minutes, techs: s.techs })),
     coordinators: roster.coordinators,
-    coordinatorCount: (roster.coordinators || []).length,
+    /* Only the ones actually on the desk. A coordinator listed with no hours
+       is not cover — the hours already knew that and the count did not, so
+       the tile read "3 · 18h of desk cover" on a day two people worked. */
+    coordinatorCount: onDesk.length,
+    coordinatorsOff: Array.from(coordinatorsOff).sort(),
     coordinatorMinutes: coordMinutes,
     coordinatorHours: Math.round((coordMinutes / 60) * 10) / 10,
     projectTeam: Array.from(project).sort(),
     projectTeamBlocks: roster.projectTeam || [],
+    projectPicks: roster.projectPicks || [],
     standbyBlock: roster.standby,
     awayBreakdown: roster.away,
   };
