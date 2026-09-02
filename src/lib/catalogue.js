@@ -178,11 +178,25 @@ export function matchCatalogue(text, catalogue) {
   return { entry: best, score: Math.round(bestScore * 100) };
 }
 
-/** Apply an entry's defaults, without overwriting anything typed explicitly. */
-export function applyCatalogue(fields, entry) {
+const asDuration = (mins) => (mins % 60 === 0 ? `${mins / 60} hr` : `${mins} mins`);
+
+/**
+ * Apply an entry's defaults, without overwriting anything typed explicitly.
+ *
+ * `opts.learnedMinutes` is what this kind of work actually measured, from
+ * learned.js. Where it exists it wins over the entry's seeded default,
+ * because the default is the median of the coordinators' own estimates and
+ * this is the median of the real times. It is only ever passed once a kind
+ * of work has been measured enough times to be trusted — see learned.js
+ * for why that threshold is not optional.
+ */
+export function applyCatalogue(fields, entry, opts = {}) {
   const out = { ...fields, catalogueId: entry.id, description: entry.label };
-  if (!squash(fields.estimatedTime) && entry.minutes) {
-    out.estimatedTime = entry.minutes % 60 === 0 ? `${entry.minutes / 60} hr` : `${entry.minutes} mins`;
+  const learned = Number(opts.learnedMinutes);
+  const minutes = Number.isFinite(learned) && learned > 0 ? Math.round(learned) : entry.minutes;
+  if (!squash(fields.estimatedTime) && minutes) {
+    out.estimatedTime = asDuration(minutes);
+    if (minutes !== entry.minutes) out.estimateFromMeasured = true;
   }
   if (!fields.crewNeeded && entry.people > 1) out.crewNeeded = entry.people;
   if (!squash(fields.materialDetails) && entry.material) {

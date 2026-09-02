@@ -30,6 +30,7 @@
 
 import { squash, canonKey, canonPriority, toISODate, splitTrailingUnit, parseDurationMinutes } from "./normalize.js";
 import { uid, makeEvent } from "./job.js";
+import { parseSheetText, looksLikeSheetText } from "./sheetText.js";
 
 const DAY = 86400000;
 export const addDays = (iso, n) =>
@@ -743,7 +744,12 @@ function readOnePrefix(s) {
  * this".
  * -------------------------------------------------------------------- */
 const SHEET_MARKERS = ["task description", "scope of work", "estimated time", "guest confirmed", "material needed"];
-const TASK_MARKERS = ["title", "subcategory", "task summary"];
+/* The PMS Issues screen exports without a Number or Title column at all —
+   its first column is the description itself. Recognising it needs the
+   columns it does have, which are distinctive enough on their own:
+   nothing else pastes a "Reported on" next to an "Occupancy". */
+const TASK_MARKERS = ["title", "subcategory", "task summary", "reported on",
+  "reported by", "occupancy", "reservation", "due date"];
 
 export function detectPasteFormat(text) {
   const first = String(text || "").split(/\r?\n/).find((l) => l.trim()) || "";
@@ -753,6 +759,7 @@ export function detectPasteFormat(text) {
   const sheet = hit(SHEET_MARKERS);
   const task = hit(TASK_MARKERS);
   if (sheet >= 2 && sheet >= task) return "sheet";
+  if (task >= 2) return "pms";
   if (task >= 1 && cells.some((c) => /number|task|title/.test(c))) return "pms";
   if (sheet >= 1) return "sheet";
   return "";
@@ -767,11 +774,29 @@ export function detectPasteFormat(text) {
  * tomorrow while looking at today, and silently landing tomorrow's schedule
  * on today would be the worst possible failure of this whole exercise.
  */
-export function parseAnyPaste(text, fallbackDate, sheetParser) {
+export function parseAnyPaste(text, fallbackDate, sheetParser, opts = {}) {
+  /* The sheet is shared as a locked PDF, so what reaches the clipboard is
+     the RENDERED table — spaces where the tabs should be, and long rows
+     wrapped over two or three lines. That paste used to be refused here,
+     which is why it ended up in the quick-add box instead, where the year
+     out of the date column became the unit number on every row. Read it
+     first, before anything else gets a chance to mangle it. */
+  if (looksLikeSheetText(text)) {
+    const r = parseSheetText(text, fallbackDate, opts);
+    const jobs = (r.jobs || []).map((j) => ({
+      ...j,
+      source: j.source || "sheet",
+      pmsRef: j.pmsRef || j._sheetPmsRef || "",
+      inPms: j.inPms !== undefined ? j.inPms : j._sheetInPms,
+    }));
+    return { jobs, format: "sheet", dates: r.dates, skipped: r.skipped,
+             warnings: r.warnings, unread: r.unread, error: "" };
+  }
+
   const format = detectPasteFormat(text);
   if (!format) {
     return { jobs: [], format: "", dates: [], skipped: 0,
-      error: "Could not tell what this is. Copy the table including its heading row — either the daily sheet (Date, Property, Task Description…) or the PMS task list (Number, Title, Property…)." };
+      error: "Could not tell what this is. Copy the daily sheet (each row starting with its date, like 2026-09-03), or the PMS task list including its heading row (Number, Title, Property…)." };
   }
   if (format === "pms") {
     const r = parseTaskPaste(text, fallbackDate);

@@ -1,0 +1,10 @@
+# Playwright, installed per the instructions in README.md. Not vendored.
+node_modules/
+package-lock.json
+
+# Screenshots the suites take as they run. Useful while working on a suite,
+# meaningless in a diff — a screenshot changes whenever anything on the
+# screen moves. The suites that carry a reference image commit it
+# deliberately; everything else is scratch.
+*.png
+harness/*.png
