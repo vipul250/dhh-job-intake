@@ -1,0 +1,34 @@
+import { chromium } from 'playwright';
+import fs from 'fs';
+const SP = process.env.SP;
+const seed = JSON.parse(fs.readFileSync(`${SP}/seed-kv.json`,'utf8'));
+const HDR = 'Date\tShift\tTeam / Technician\tProperty\tUnit / Villa No.\tStatus\tParking No.\tTime of Visit\tGuest Confirmed\tTask Description (Scope of Work)\tMaterial Needed? (Y/N)\tMaterial Details (what + qty)\tEstimated Time\tPending? (Y/N)\tPending Details\tPriority\tNotes\tIn PMS? (Y/N)\tPMS Ticket / Task Ref';
+const R = (u,d,tech) => `2026-09-04\t09:00-18:00\t${tech}\tTest Tower\t${u}\tVacant\t\t\tN\t${d}\tN\t\t1 hr\tN\t\tP3-Medium\t\tN\t`;
+const FIRST  = [HDR, R(101,'Bulb not working','Vitalis'), R(102,'Tap dripping','Yousoufu')].join('\n');
+const SECOND = [HDR, R(101,'Bulb not working','Vitalis'), R(102,'Tap dripping','Yousoufu'),
+                     R(103,'Door handle loose','Bright'), R(104,'AC not cooling','Nizar')].join('\n');
+const b = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
+const p = await b.newPage({ viewport: { width: 1400, height: 1200 } });
+const errs=[]; p.on('pageerror', e=>errs.push('PAGEERR '+e.message));
+await p.goto('http://127.0.0.1:4173/');
+await p.evaluate((s)=>localStorage.setItem('__dhh_mock_kv__', JSON.stringify(s)), seed);
+await p.evaluate(()=>localStorage.removeItem('dhh-me'));
+await p.reload(); await p.waitForTimeout(1000);
+await p.locator('input[placeholder*="Ahmed"]').fill('Haris');
+await p.getByRole('button', { name: 'Start' }).click(); await p.waitForTimeout(700);
+await p.locator('input[type=date]').first().fill('2026-09-04'); await p.waitForTimeout(2000);
+const paste = async (txt) => {
+  await p.getByRole('button', { name: /Paste the day in/ }).click(); await p.waitForTimeout(600);
+  await p.locator('div.fixed.inset-0 textarea').first().fill(txt); await p.waitForTimeout(1200);
+  await p.locator('div.fixed.inset-0').getByRole('button', { name: /^Add \d+ to/ }).click(); await p.waitForTimeout(2500);
+  return (await p.innerText('body')).match(/\d+ job\(s\) added[^\n]*|Every one of those[^\n]*/)?.[0] || '(no toast)';
+};
+console.log('first paste  (2 rows):', await paste(FIRST));
+const n1 = await p.evaluate(()=>JSON.parse(JSON.parse(localStorage.getItem('__dhh_mock_kv__'))['schedule:2026-09-04']||'[]').filter(r=>!r._tomb).length);
+console.log('  jobs on the day:', n1);
+console.log('second paste (same 2 + 2 new):', await paste(SECOND));
+const rows = await p.evaluate(()=>JSON.parse(JSON.parse(localStorage.getItem('__dhh_mock_kv__'))['schedule:2026-09-04']||'[]').filter(r=>!r._tomb).map(j=>j.unit+' '+j.description));
+console.log('  jobs on the day:', rows.length, rows.length===4?'(only the 2 new ones added)':'*** WRONG ***');
+rows.forEach(r=>console.log('   ', r));
+console.log('errors:', errs.length?errs:'none');
+await b.close();
