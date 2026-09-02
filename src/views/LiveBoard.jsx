@@ -11,6 +11,7 @@ import {
   needsGuestConfirm, pmsText, parseQuickAdd, splitQuickAddLines, findReturn,
   actualDuration, makeFollowUp, needsFollowUp, isResolved,
   STATE_META, NOT_DONE_REASONS, MOVE_REASONS, MOVE_REASON_LABEL, SAY_WHAT_HAPPENED,
+  splitTaskParts,
   moveReasonDisplaces, CANCEL_REASONS, EVENT_LABEL,
   OUTCOME_OPTIONS, JOB_SOURCES, SOURCE_LABEL, HOW_REPORTED,
 } from "../lib/job.js";
@@ -135,6 +136,7 @@ export default function LiveBoard({
   const [closeOutFor, setCloseOutFor] = useState(null);
   const [nightLog, setNightLog] = useState(false);
   const [taskPaste, setTaskPaste] = useState(false);
+  const [noteFor, setNoteFor] = useState(null);
   const [dayReview, setDayReview] = useState(false);
   const [showLog, setShowLog] = useState(false);
   const [todayOpen, setTodayOpen] = useState(null);
@@ -891,7 +893,7 @@ export default function LiveBoard({
       {!loading && groups.map((g) => (
         <TeamGroup
           key={g.team} group={g} me={me} allJobs={jobs} selectedDate={selectedDate}
-          onAdvance={advance} onEdit={edit} onTogglePms={togglePms}
+          onAdvance={advance} onEdit={edit} onOpenNote={setNoteFor}
           onMove={setMoveFor} onOutcome={setOutcomeFor} onTrail={setTrailFor}
           onEditFull={onEditFull} showToast={showToast} onCloseOut={setCloseOutFor}
           staffIdx={staffIdx} candidates={candidates}
@@ -943,6 +945,13 @@ export default function LiveBoard({
           job={closeOutFor} selectedDate={selectedDate}
           onCancel={() => setCloseOutFor(null)}
           onConfirm={(payload) => closeOut(closeOutFor, payload)}
+        />
+      )}
+      {noteFor && (
+        <NoteDialog
+          job={noteFor}
+          onCancel={() => setNoteFor(null)}
+          onSave={(text) => { edit(noteFor, { notes: text }); setNoteFor(null); }}
         />
       )}
       {showLog && (
@@ -1308,7 +1317,7 @@ function ParsePreview({ fields }) {
 
 /* ========================= team group ========================= */
 
-function TeamGroup({ group, me, allJobs, selectedDate, onAdvance, onEdit, onTogglePms, onMove, onOutcome, onTrail, onEditFull, showToast, onMoveMany, onCloseOut, staffIdx, candidates }) {
+function TeamGroup({ group, me, allJobs, selectedDate, onAdvance, onEdit, onOpenNote, onMove, onOutcome, onTrail, onEditFull, showToast, onMoveMany, onCloseOut, staffIdx, candidates }) {
   const [open, setOpen] = useState(true);
   const [showPlan, setShowPlan] = useState(false);
   const g = group;
@@ -1386,7 +1395,7 @@ function TeamGroup({ group, me, allJobs, selectedDate, onAdvance, onEdit, onTogg
           {g.list.map((job) => (
             <JobRow
               key={job.id} job={job} me={me}
-              onAdvance={onAdvance} onEdit={onEdit} onTogglePms={onTogglePms}
+              onAdvance={onAdvance} onEdit={onEdit} onOpenNote={onOpenNote}
               onMove={onMove} onOutcome={onOutcome} onTrail={onTrail}
               onEditFull={onEditFull} showToast={showToast} onCloseOut={onCloseOut}
               staffIdx={staffIdx} candidates={candidates}
@@ -1773,7 +1782,7 @@ const STATE_CHIP = {
   cancelled: "bg-slate-100 text-slate-400 line-through",
 };
 
-function JobRow({ job, me, onAdvance, onEdit, onTogglePms, onMove, onOutcome, onTrail, onEditFull, showToast, suggestFrom, onCloseOut, staffIdx, candidates }) {
+function JobRow({ job, me, onAdvance, onEdit, onOpenNote, onMove, onOutcome, onTrail, onEditFull, showToast, suggestFrom, onCloseOut, staffIdx, candidates }) {
   const crew = useMemo(() => checkCrew(job, staffIdx), [job, staffIdx]);
   const [expanded, setExpanded] = useState(false);
   const [suggestions, setSuggestions] = useState(null);
@@ -1932,13 +1941,17 @@ function JobRow({ job, me, onAdvance, onEdit, onTogglePms, onMove, onOutcome, on
             </IconBtn>
           )}
           <IconBtn title="Copy for PMS" onClick={copyPms} tone="slate"><Clipboard className="w-3.5 h-3.5" /></IconBtn>
-          <button onClick={() => onTogglePms(job)}
-                  title="Is this job recorded in PMS?"
-                  className={`text-[10px] rounded px-1.5 py-1 border ${
-                    job.inPms === true ? "bg-slate-900 text-white border-slate-900"
-                    : job.inPms === false ? "bg-red-50 text-red-700 border-red-300"
-                    : "border-slate-300 text-slate-400"}`}>
-            PMS {job.inPms === true ? "✓" : job.inPms === false ? "✕" : "?"}
+          {/* The "In PMS?" tick is gone. It was answered on 43% of the real
+              month and read "Y" on 203 of those 204 — an intention, not a
+              check, and nobody could say what it was for. The TSK reference
+              below is the same claim and is verifiable. What the card
+              lacked was somewhere to write what is actually going on. */}
+          <button onClick={() => onOpenNote(job)}
+                  title="A note on this job — anything worth knowing"
+                  className={`text-[10px] rounded px-1.5 py-1 border inline-flex items-center gap-1 ${
+                    squash(job.notes) ? "bg-slate-900 text-white border-slate-900" : "border-slate-300 text-slate-400"}`}>
+            <FileText className="w-3 h-3" />
+            {squash(job.notes) ? "note" : "add note"}
           </button>
         </div>
       </div>
@@ -2331,6 +2344,45 @@ function CloseOutDialog({ job, selectedDate, onCancel, onConfirm }) {
   const [fuTeam, setFuTeam] = useState(job.team || "");
   const [fuScope, setFuScope] = useState("");
 
+  /* One row, several jobs. The coordinator writes what the guest reported
+     and guests report in lists, so the parts are read out of the text they
+     already wrote and ticked off here. Where the parser finds nothing it can
+     still be split by hand — 9% of the real month runs several jobs
+     together with no separator at all. */
+  const [parts, setParts] = useState(() => splitTaskParts(job.description));
+  const [ticked, setTicked] = useState(() => new Set());
+  const [splitting, setSplitting] = useState(false);
+  const [manual, setManual] = useState("");
+
+  const hasParts = parts.length >= 2;
+  const doneParts = parts.filter((_, i) => ticked.has(i));
+  const openParts = parts.filter((_, i) => !ticked.has(i));
+
+  function toggle(i) {
+    setTicked((prev) => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i); else next.add(i);
+      return next;
+    });
+  }
+
+  /* Ticking the parts answers the outcome by itself: all of them is a clean
+     fix, some of them is work still owed, and the untouched parts are the
+     follow-up's scope word for word. */
+  useEffect(() => {
+    if (!hasParts) return;
+    if (doneParts.length === 0) return;
+    if (openParts.length === 0) {
+      setOutcome("fixed");
+      setStillNeeded("");
+    } else {
+      setOutcome("made_safe");
+      const left = openParts.join("; ");
+      setStillNeeded(left);
+      setFuScope(left);
+    }
+  }, [hasParts, doneParts.length, openParts.length]);   // eslint-disable-line react-hooks/exhaustive-deps
+
   const isP1 = canonPriority(job.priority) === "PRI-1";
 
   function readReport(text) {
@@ -2352,6 +2404,67 @@ function CloseOutDialog({ job, selectedDate, onCancel, onConfirm }) {
   return (
     <Modal title={`Close out — ${job.property} ${job.unit}`} onCancel={onCancel} wide>
       <p className="text-xs text-slate-600">{job.description}</p>
+
+      {hasParts ? (
+        <div className="mt-3 rounded-md border border-slate-300 bg-slate-50 p-2.5">
+          <div className="flex flex-wrap items-baseline gap-2">
+            <span className="text-xs font-medium text-slate-900">
+              This is {parts.length} jobs in one. Tick what actually got done.
+            </span>
+            <span className="text-[11px] text-slate-500">
+              {doneParts.length} of {parts.length} done
+            </span>
+          </div>
+          <ul className="mt-1.5 space-y-1">
+            {parts.map((part, i) => (
+              <li key={i}>
+                <label className="flex items-start gap-2 text-xs cursor-pointer">
+                  <input type="checkbox" className="mt-0.5" checked={ticked.has(i)} onChange={() => toggle(i)} />
+                  <span className={ticked.has(i) ? "text-slate-400 line-through" : "text-slate-800"}>{part}</span>
+                </label>
+              </li>
+            ))}
+          </ul>
+          {doneParts.length > 0 && openParts.length > 0 && (
+            <p className="mt-2 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
+              Part of it is still owed, so this closes as <b>made safe</b> and the {openParts.length}{" "}
+              unticked line{openParts.length === 1 ? "" : "s"} become the follow-up — you do not have
+              to retype them.
+            </p>
+          )}
+          {parts.length > 0 && doneParts.length === parts.length && (
+            <p className="mt-2 text-[11px] text-emerald-800">All of it done — this closes as fixed.</p>
+          )}
+        </div>
+      ) : (
+        <div className="mt-2">
+          {splitting ? (
+            <div className="rounded-md border border-slate-300 bg-slate-50 p-2.5">
+              <span className="text-xs text-slate-700">
+                One line per job. The ones left unticked afterwards become the follow-up.
+              </span>
+              <textarea autoFocus value={manual} onChange={(e) => setManual(e.target.value)} rows={4}
+                        placeholder={"check kitchen mixer\nreplace shower fitting\ndishwasher service"}
+                        className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
+              <div className="flex gap-2 mt-1.5">
+                <button onClick={() => {
+                          const list = manual.split(/\n/).map((x) => squash(x)).filter((x) => x.length >= 3);
+                          if (list.length >= 2) { setParts(list); setTicked(new Set()); }
+                          setSplitting(false);
+                        }}
+                        className="text-xs bg-slate-900 text-white rounded-md px-2.5 py-1">Use these</button>
+                <button onClick={() => setSplitting(false)}
+                        className="text-xs border border-slate-300 rounded-md px-2.5 py-1">Cancel</button>
+              </div>
+            </div>
+          ) : (
+            <button onClick={() => { setSplitting(true); setManual(squash(job.description)); }}
+                    className="text-[11px] text-slate-500 underline underline-offset-2">
+              this was more than one job
+            </button>
+          )}
+        </div>
+      )}
 
       <label className="block text-xs text-slate-600 mt-3">
         <span className="flex items-center gap-1">
@@ -2889,5 +3002,41 @@ function LogStat({ label, people, unit, warn }) {
         </div>
       )}
     </div>
+  );
+}
+
+/* ====================================================================== *
+ * A note on the job.
+ *
+ * This replaces the "In PMS?" tick, which was answered on 43% of the real
+ * month and read "Y" on 203 of those 204 — an intention rather than a
+ * check, and nobody could say what it was for. The TSK reference makes the
+ * same claim and can actually be verified.
+ *
+ * What the card lacked was somewhere to write what is going on: the guest
+ * is difficult, the building needs a permit, the part is on order, the
+ * owner is disputing it. That text is not decoration — read across a few
+ * hundred jobs it is where the patterns nobody has a field for live, and
+ * the dashboard now counts what turns up in it.
+ * ====================================================================== */
+function NoteDialog({ job, onCancel, onSave }) {
+  const [text, setText] = useState(job.notes || "");
+  return (
+    <Modal title={`Note — ${job.property} ${job.unit}`} onCancel={onCancel}>
+      <p className="text-xs text-slate-600">
+        Anything worth knowing that no field asks for. It stays on the job, shows on the card, and
+        is read back on the dashboard — so recurring themes surface instead of being retyped every
+        time somebody hits the same wall.
+      </p>
+      <textarea autoFocus value={text} onChange={(e) => setText(e.target.value)} rows={5}
+                placeholder="Guest works nights, will not open before 11am. Building needs 24h notice for the service lift."
+                className="mt-2 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
+      <div className="flex justify-end gap-2 mt-3">
+        <button onClick={onCancel} className="text-sm border border-slate-300 px-3 py-1.5 rounded-md">Cancel</button>
+        <button onClick={() => onSave(text)} className="text-sm bg-slate-900 text-white px-3 py-1.5 rounded-md">
+          Save the note
+        </button>
+      </div>
+    </Modal>
   );
 }

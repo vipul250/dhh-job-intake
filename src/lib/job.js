@@ -719,3 +719,72 @@ export function splitQuickAddLines(text) {
     .map((l) => squash(l))
     .filter((l) => l && !/^(date|shift|property|team)\b/i.test(l));
 }
+
+
+/* ---------------------------------------------------------------------- *
+ * One task, several jobs.
+ *
+ * A coordinator writes what the guest reported, and guests report in lists:
+ *
+ *   "1. Check kitchen Mixer  2. Replace master bedroom shower fitting
+ *    3. Dishwasher service required"
+ *   "paint touch up near socket - Bed room chair leg damage - Drawer
+ *    handle loose - side table leg is broken"
+ *
+ * Asking them to raise three tasks instead of one is asking for three times
+ * the typing on the busiest hour of their shift, and it will not happen.
+ * But at close-out the single row is unanswerable: some of it is done and
+ * some of it is not, and "fixed" and "not done" are both lies.
+ *
+ * So the parts are read out of the text the coordinator already wrote and
+ * offered as a checklist at close-out. Tick what happened. Everything
+ * ticked is a clean fix; anything left becomes the scope of the follow-up,
+ * word for word, with nobody retyping it.
+ *
+ * Only separators that genuinely mean "next item" are used. " and " is not
+ * one of them — "Repair and paint the ceiling" is a single job, and
+ * splitting it would invent work that was never reported. Where the parser
+ * finds nothing the close-out still offers to split by hand, because 9% of
+ * the real month runs several jobs together with no separator at all.
+ * -------------------------------------------------------------------- */
+
+const PART_MIN = 6;   // shorter than this is a fragment, not a job
+
+export function splitTaskParts(description) {
+  const raw = String(description || "").replace(/\r/g, "");
+  if (!squash(raw)) return [];
+
+  /* 1. explicitly numbered — "1. x 2) y 3. z". The space after the dot is
+     optional because the real month writes "1.AC grill cleaning 2.Low water
+     pressure", but a letter must follow, so "3.5 hrs" is not a list. */
+  const numbered = raw.split(/(?:^|[\s,;])\s*[1-9]\s*[.)]\s*(?=[A-Za-z])/).map(squash).filter(Boolean);
+  if (numbered.length >= 2) return tidy(numbered);
+
+  // 2. bullets or dashes at the start of a line
+  const lines = raw.split(/\n/).map((l) => squash(l.replace(/^\s*[-•*]\s*/, ""))).filter(Boolean);
+  if (lines.length >= 2) return tidy(lines);
+
+  /* 3. a dash used as a separator mid-line. Three parts or more only: a
+     single dash is far more often punctuation than a list — "Water leak
+     from the ceiling — trace and stop" is one job described in two
+     clauses, and splitting it would invent a second. */
+  const dashed = squash(raw).split(/\s+[-–—]\s+/).map(squash).filter(Boolean);
+  if (dashed.length >= 3) return tidy(dashed);
+
+  // 4. semicolons
+  const semis = squash(raw).split(/\s*;\s*/).map(squash).filter(Boolean);
+  if (semis.length >= 2) return tidy(semis);
+
+  return [];
+}
+
+function tidy(parts) {
+  const out = parts
+    .map((p) => squash(p).replace(/^[,.;:]+|[,.;:]+$/g, "").trim())
+    .filter((p) => p.length >= PART_MIN);
+  // One long part and a scrap is not a list, it is a sentence with a dash.
+  return out.length >= 2 ? out : [];
+}
+
+/** Does this row look like more than one job? */
+export const isCompound = (description) => splitTaskParts(description).length >= 2;
