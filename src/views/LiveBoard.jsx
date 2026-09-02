@@ -8,8 +8,8 @@ import {
 import {
   newJob, moveJob, setState as setJobState, applyEdit, withEvent,
   isTombstone, liveJobs, tombstones, jobMinutes, isOpen, pushSeverity,
-  needsGuestConfirm, pmsText, parseQuickAdd, splitQuickAddLines, findReturn,
-  actualDuration, makeFollowUp, needsFollowUp, isResolved,
+  needsGuestConfirm, pmsText, techSheetForDay, parseQuickAdd, splitQuickAddLines, findReturn,
+  actualDuration, clockMinutes, nowClock, fmtMins, makeFollowUp, needsFollowUp, isResolved,
   STATE_META, NOT_DONE_REASONS, MOVE_REASONS, MOVE_REASON_LABEL, SAY_WHAT_HAPPENED,
   splitTaskParts,
   moveReasonDisplaces, CANCEL_REASONS, EVENT_LABEL,
@@ -17,8 +17,10 @@ import {
 } from "../lib/job.js";
 import { parseWorkReport, fmtMin } from "../lib/workReport.js";
 import { parseAnyPaste } from "../lib/backlog.js";
+import { looksLikeSheetText, isMisread, misreadSigns } from "../lib/sheetText.js";
 import { dayActivity, attributionLine } from "../lib/activity.js";
 import { readGoLive, isLive, isPreGoLive } from "../lib/goLive.js";
+import { readLearned, refreshLearned, isStale, learnedFor } from "../lib/learned.js";
 import { parseSheetPaste } from "../lib/importSheet.js";
 import { checkAgainstSchedule } from "../lib/roster.js";
 import { storageGet } from "../lib/storage.js";
@@ -37,7 +39,7 @@ import {
 } from "../lib/jobStore.js";
 import {
   splitCrew, parseShiftMinutes, formatMinutes, canonPriority, squash,
-  canonProperty, displayProperty, canonKey,
+  canonProperty, displayProperty, canonKey, parseDurationMinutes,
 } from "../lib/normalize.js";
 import { planDay, fmtClock, suggestTechnician } from "../lib/schedule.js";
 
@@ -136,6 +138,9 @@ export default function LiveBoard({
   const [closeOutFor, setCloseOutFor] = useState(null);
   const [nightLog, setNightLog] = useState(false);
   const [taskPaste, setTaskPaste] = useState(false);
+  /* Carries a sheet the coordinator pasted into the wrong box across to
+     the reader that understands it, so nobody has to copy it twice. */
+  const [sheetSeed, setSheetSeed] = useState("");
   const [noteFor, setNoteFor] = useState(null);
   const [dayReview, setDayReview] = useState(false);
   const [showLog, setShowLog] = useState(false);
@@ -146,6 +151,11 @@ export default function LiveBoard({
   const [post, setPost] = useState(null);
   const [changeReasonFor, setChangeReasonFor] = useState(null);
   const [catalogue, setCatalogue] = useState(null);
+  /* What each kind of work has actually measured. Read from the cache on
+     mount and refreshed in the background when it has gone stale, so the
+     estimate on the quick-add box is the real time rather than the seeded
+     guess — and so a slow refresh never holds up the board. */
+  const [learned, setLearned] = useState(null);
   const watcher = useRef(null);
 
   const jobs = useMemo(() => (rows ? liveJobs(rows) : []), [rows]);
@@ -240,6 +250,21 @@ export default function LiveBoard({
   useEffect(() => {
     let off = false;
     readGoLive().then((d) => { if (!off) setGoLiveDate(d); }).catch(() => {});
+    return () => { off = true; };
+  }, []);
+
+  useEffect(() => {
+    let off = false;
+    (async () => {
+      const cached = await readLearned();
+      if (off) return;
+      if (cached) setLearned(cached);
+      if (!isStale(cached)) return;
+      try {
+        const fresh = await refreshLearned();
+        if (!off) setLearned(fresh);
+      } catch { /* the seeded defaults stand until the next refresh */ }
+    })();
     return () => { off = true; };
   }, []);
 
@@ -385,6 +410,7 @@ export default function LiveBoard({
       if (!byDay.has(selectedDate) && days.length === 1) setSelectedDate(days[0]);
     }
     setTaskPaste(false);
+    setSheetSeed("");
   }
 
   async function addCatalogueEntry(label) {
@@ -417,6 +443,28 @@ export default function LiveBoard({
           })
         : r
     )), `${strays.length} job(s) from before ${goLive} closed off. They stay on record.`);
+  }
+
+  /* Jobs on this day that carry the signature of a sheet pasted into the
+     quick-add box: the year read as the unit number, the building lost,
+     the shift and the PMS link left inside the scope of work. They are not
+     work anybody can do — no technician is going to unit "2026" — so they
+     are offered for closing off, with the sheet re-read properly after. */
+  const misread = useMemo(
+    () => jobs.filter((j) => !isResolved(j.state) && j.state !== "cancelled" && isMisread(j, selectedDate)),
+    [jobs, selectedDate]
+  );
+
+  async function clearMisread() {
+    const ids = new Set(misread.map((j) => j.id));
+    await change(selectedDate, (cur) => cur.map((r) => (
+      !isTombstone(r) && ids.has(r.id)
+        ? setJobState(r, "cancelled", who, {
+            reason: "Mis-read paste — the sheet was read line by line and lost its columns. Re-paste the sheet.",
+            lock: lock.locked ? lock.kind : undefined,
+          })
+        : r
+    )), `${misread.length} mis-read row(s) closed off. They stay on record. Now paste the sheet in again.`);
   }
 
   const unanswered = useMemo(
@@ -572,9 +620,11 @@ export default function LiveBoard({
      There is no path through this dialog that leaves a contained fault
      with nobody booked to come back, which is the failure it exists to
      prevent. */
-  async function closeOut(job, { outcome, reason, stillNeeded, actualMinutes, followUp }) {
+  async function closeOut(job, { outcome, reason, stillNeeded, actualMinutes, arrivedAt, leftAt, followUp }) {
     const patch = { reason, stillNeeded };
     if (actualMinutes != null) patch.actualMinutes = actualMinutes;
+    if (arrivedAt !== undefined) patch.arrivedAt = arrivedAt;
+    if (leftAt !== undefined) patch.leftAt = leftAt;
 
     let child = null;
     if (followUp && needsFollowUp(outcome)) {
@@ -588,6 +638,8 @@ export default function LiveBoard({
 
     const closed = setJobState(
       { ...job, actualMinutes: actualMinutes != null ? actualMinutes : job.actualMinutes,
+        arrivedAt: arrivedAt !== undefined ? arrivedAt : job.arrivedAt,
+        leftAt: leftAt !== undefined ? leftAt : job.leftAt,
         followUpJobId: child ? child.id : job.followUpJobId },
       outcome, who, patch
     );
@@ -777,6 +829,38 @@ export default function LiveBoard({
         </div>
       )}
 
+      {misread.length > 0 && (
+        <div className="rounded-lg border border-red-300 bg-red-50 px-3 py-2.5">
+          <div className="flex flex-wrap items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-red-700 shrink-0" />
+            <span className="text-xs text-red-900">
+              <b>{misread.length} job{misread.length === 1 ? "" : "s"} on this day were read wrong</b>
+              {" "}— the daily sheet was pasted into the quick-add box, which reads one line as one
+              typed job. The building was lost and the year out of the date became the unit number.
+            </span>
+            <button onClick={clearMisread}
+                    className="ml-auto text-xs bg-red-700 text-white rounded-md px-2.5 py-1.5 shrink-0">
+              Close them off
+            </button>
+          </div>
+          <ul className="mt-2 space-y-0.5">
+            {misread.slice(0, 4).map((j) => (
+              <li key={j.id} className="text-[11px] text-red-800">
+                <span className="font-medium">{j.property || "(no building)"} {j.unit}</span>
+                <span className="text-red-600"> — {misreadSigns(j, selectedDate)[0]}</span>
+              </li>
+            ))}
+            {misread.length > 4 && (
+              <li className="text-[11px] text-red-600">+{misread.length - 4} more</li>
+            )}
+          </ul>
+          <p className="text-[11px] text-red-700 mt-1.5">
+            Closing them off keeps them on record. Then paste the sheet into
+            “Paste the day in” — it now reads the sheet straight off the PDF, wrapped rows and all.
+          </p>
+        </div>
+      )}
+
       {todayOpen && (
         <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 flex flex-wrap items-center gap-2">
           <ListChecks className="w-4 h-4 text-amber-700 shrink-0" />
@@ -824,8 +908,10 @@ export default function LiveBoard({
         knownProps={knownProps}
         knownTechs={knownTechNames}
         catalogue={catalogue}
+        learned={learned}
         onAdd={addJobs}
         onSaveStandard={addCatalogueEntry}
+        onSheetPaste={(t) => { setSheetSeed(t); setTaskPaste(true); }}
         busy={busy}
       />
 
@@ -960,7 +1046,9 @@ export default function LiveBoard({
       {taskPaste && (
         <TaskPasteDialog
           date={selectedDate}
-          onCancel={() => setTaskPaste(false)}
+          seed={sheetSeed}
+          knownTechs={knownTechNames}
+          onCancel={() => { setTaskPaste(false); setSheetSeed(""); }}
           onCommit={addFromPaste}
         />
       )}
@@ -1133,7 +1221,7 @@ function RolloverBanner({ rollover, today, onMoveAll, onDismiss, onOpenDay }) {
 
 /* ========================= quick add ========================= */
 
-function QuickAdd({ knownProps, knownTechs, catalogue, onAdd, onSaveStandard, busy }) {
+function QuickAdd({ knownProps, knownTechs, catalogue, learned, onAdd, onSaveStandard, onSheetPaste, busy }) {
   const [text, setText] = useState("");
   const [showCat, setShowCat] = useState(false);
   const [catSearch, setCatSearch] = useState("");
@@ -1144,24 +1232,36 @@ function QuickAdd({ knownProps, knownTechs, catalogue, onAdd, onSaveStandard, bu
      matches. Snapping is what makes two coordinators enter the same job the
      same way — and it costs no extra typing, because it works on the words
      they were going to use anyway. */
+  /* The daily sheet must never be parsed here. Pasted into this box, every
+     line was read as one typed job: the year out of "2026-09-03" became the
+     unit number, the building was lost entirely, and each wrapped line
+     became a job of its own. It is caught before a single line is read. */
+  const isSheet = useMemo(() => looksLikeSheetText(text), [text]);
+
   const preview = useMemo(() => {
-    if (!text.trim()) return null;
+    if (!text.trim() || isSheet) return null;
     return splitQuickAddLines(text).map((l) => {
       const parsed = parseQuickAdd(l, { properties: knownProps, techs: knownTechs });
       const m = catalogue ? matchCatalogue(parsed.fields.description, catalogue) : null;
+      /* Where the work has been measured enough times, the estimate on the
+         line becomes what it measured rather than what it was seeded at.
+         Shown, never silent — the coordinator can still overwrite it. */
+      const lrn = m ? learnedFor(learned, m.entry.id) : null;
       return {
         raw: l,
-        fields: m ? applyCatalogue(parsed.fields, m.entry) : parsed.fields,
+        fields: m ? applyCatalogue(parsed.fields, m.entry, { learnedMinutes: lrn ? lrn.minutes : null }) : parsed.fields,
         typed: parsed.fields.description,
         match: m,
+        learned: lrn,
       };
     });
-  }, [text, knownProps, knownTechs, catalogue]);
+  }, [text, isSheet, knownProps, knownTechs, catalogue, learned]);
 
   const valid = preview ? preview.filter((p) => squash(p.fields.property) || squash(p.fields.description)) : [];
   const unmatched = valid.filter((p) => !p.match && squash(p.typed).length > 6);
 
   async function commit() {
+    if (isSheet) { onSheetPaste?.(text); setText(""); return; }
     if (!valid.length) return;
     await onAdd(valid.map((p) => p.fields));
     setText("");
@@ -1247,6 +1347,23 @@ function QuickAdd({ knownProps, knownTechs, catalogue, onAdd, onSaveStandard, bu
         </div>
       )}
 
+      {isSheet && (
+        <div className="mt-2 border border-amber-300 bg-amber-50 rounded-lg p-2.5">
+          <p className="text-xs text-amber-900 font-medium">
+            That is the daily sheet, not a single job.
+          </p>
+          <p className="text-[11px] text-amber-800 mt-1">
+            Read line by line here it would lose the building on every row and take the
+            year out of the date as the unit number. Send it to the sheet reader instead,
+            which knows the columns.
+          </p>
+          <button onClick={() => { onSheetPaste?.(text); setText(""); }}
+                  className="mt-2 text-xs bg-amber-900 text-white rounded-md px-2.5 py-1.5">
+            Read it as the daily sheet
+          </button>
+        </div>
+      )}
+
       {preview && valid.length > 0 && (
         <div className="mt-2 pt-2 border-t border-slate-100 space-y-1.5">
           <p className="text-[11px] text-slate-500">
@@ -1259,6 +1376,16 @@ function QuickAdd({ knownProps, knownTechs, catalogue, onAdd, onSaveStandard, bu
                   standard task: <span className="font-medium">{p.match.entry.label}</span>
                   {squash(p.typed).toLowerCase() !== p.match.entry.label.toLowerCase() && (
                     <span className="text-slate-400"> (you typed “{p.typed}”)</span>
+                  )}
+                </div>
+              )}
+              {p.learned && (
+                <div className="text-[11px] text-slate-500 mb-0.5">
+                  time from what it actually took —{" "}
+                  <span className="font-medium text-slate-700">{fmtMins(p.learned.minutes)}</span>
+                  {" "}across {p.learned.n} job{p.learned.n === 1 ? "" : "s"}
+                  {p.learned.estimate != null && p.learned.minutes !== p.learned.estimate && (
+                    <span className="text-slate-400">, not the {fmtMins(p.learned.estimate)} usually estimated</span>
                   )}
                 </div>
               )}
@@ -1334,6 +1461,25 @@ function TeamGroup({ group, me, allJobs, selectedDate, onAdvance, onEdit, onOpen
     showToast(`Copied ${g.list.length} job(s) — paste into PMS.`, "ok");
   }
 
+  /* What the technician gets instead of the printed sheet. In that sheet an
+     empty parking cell closes up and the Guest-Confirmed Y or N slides
+     under the "Parking No." heading — a third of the rows have no bay, so
+     the mismatch is routine rather than rare. Here every value is named,
+     the order is the agreed working order, and "not given" is said out
+     loud instead of being left as a gap for the eye to fill in wrongly. */
+  function copyForTech() {
+    /* planDay returns `items` in working order, each wrapping its job.
+       Anything it could not fit in the shift is in `overflow` and is still
+       the technician's to do, so it goes on the end rather than being
+       dropped off the list he is handed. */
+    const ordered = plan && plan.items && plan.items.length
+      ? [...plan.items, ...(plan.overflow || [])].map((o) => o.job).filter(Boolean)
+      : g.list;
+    const live = ordered.filter((j) => j.state !== "cancelled");
+    navigator.clipboard?.writeText(techSheetForDay(live, g.team, selectedDate));
+    showToast(`Copied ${live.length} job(s) for ${g.team || "the technician"} — every field named.`, "ok");
+  }
+
   return (
     <div className="rounded-lg border border-slate-200 bg-white">
       <div className="flex flex-wrap items-center gap-3 p-3 border-b border-slate-100">
@@ -1379,6 +1525,11 @@ function TeamGroup({ group, me, allJobs, selectedDate, onAdvance, onEdit, onOpen
               )}
             </button>
           )}
+          <button onClick={copyForTech}
+                  title="Send the technician a labelled list — no collapsed columns, parking always stated"
+                  className="flex items-center gap-1 text-xs border border-slate-300 rounded-md px-2 py-1 hover:bg-slate-50">
+            <Clipboard className="w-3 h-3" /> Copy for the technician
+          </button>
           <button onClick={copyAllForPms} title="Copy this technician's jobs formatted for PMS"
                   className="flex items-center gap-1 text-xs border border-slate-300 rounded-md px-2 py-1 hover:bg-slate-50">
             <Clipboard className="w-3 h-3" /> Copy for PMS
@@ -2352,6 +2503,8 @@ function CloseOutDialog({ job, selectedDate, onCancel, onConfirm }) {
   const [stillNeeded, setStillNeeded] = useState("");
   const [reason, setReason] = useState("");
   const [minutes, setMinutes] = useState("");
+  const [arrivedAt, setArrivedAt] = useState(job.arrivedAt || "");
+  const [leftAt, setLeftAt] = useState(job.leftAt || "");
   const [fuDate, setFuDate] = useState(addDays(selectedDate, 1));
   const [fuTeam, setFuTeam] = useState(job.team || "");
   const [fuScope, setFuScope] = useState("");
@@ -2396,6 +2549,8 @@ function CloseOutDialog({ job, selectedDate, onCancel, onConfirm }) {
   }, [hasParts, doneParts.length, openParts.length]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   const isP1 = canonPriority(job.priority) === "PRI-1";
+  const clockSpan = clockMinutes(arrivedAt, leftAt);
+  const estMins = parseDurationMinutes(job.estimatedTime);
 
   function readReport(text) {
     setReport(text);
@@ -2572,12 +2727,54 @@ function CloseOutDialog({ job, selectedDate, onCancel, onConfirm }) {
       )}
 
       {outcome && outcome !== "not_done" && (
-        <label className="block text-xs text-slate-600 mt-3">
-          Time on site (minutes)
-          <input type="number" min="0" value={minutes} onChange={(e) => setMinutes(e.target.value)}
-                 placeholder={parsed && parsed.minutes != null ? String(parsed.minutes) : "from the report, or leave blank"}
-                 className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
-        </label>
+        <div className="mt-3 border border-slate-200 rounded-lg p-2.5 bg-slate-50">
+          <p className="text-[11px] font-medium text-slate-700">
+            What time was he there?
+          </p>
+          <p className="text-[11px] text-slate-500 mt-0.5">
+            The real arrival and departure. This is what the month is measured on —
+            without it every job is filed as whatever was estimated.
+          </p>
+          <div className="grid grid-cols-2 gap-2 mt-2">
+            {[["On site at", arrivedAt, setArrivedAt], ["Left at", leftAt, setLeftAt]].map(([label, val, set]) => (
+              <label key={label} className="block text-[11px] text-slate-600">
+                {label}
+                <div className="flex gap-1 mt-0.5">
+                  <input value={val} onChange={(e) => set(e.target.value)}
+                         placeholder="09:15"
+                         className="w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm bg-white" />
+                  <button type="button" onClick={() => set(nowClock())}
+                          className="text-[11px] border border-slate-300 rounded-md px-2 bg-white hover:bg-slate-100 shrink-0">
+                    Now
+                  </button>
+                </div>
+              </label>
+            ))}
+          </div>
+
+          {clockSpan != null ? (
+            <p className="text-[11px] text-emerald-800 mt-1.5">
+              {fmtMins(clockSpan)} on site{estMins != null && (
+                <> — estimated {fmtMins(estMins)}
+                  {Math.abs(clockSpan - estMins) >= 15 &&
+                    `, ${clockSpan > estMins ? "over" : "under"} by ${fmtMins(Math.abs(clockSpan - estMins))}`}
+                </>
+              )}
+            </p>
+          ) : (arrivedAt || leftAt) ? (
+            <p className="text-[11px] text-amber-700 mt-1.5">
+              Need both times, as a clock reading — 9:15, 09:15 or 9:15 am.
+            </p>
+          ) : null}
+
+          <label className="block text-[11px] text-slate-500 mt-2">
+            Or, if the times are not known, total minutes
+            <input type="number" min="0" value={minutes} onChange={(e) => setMinutes(e.target.value)}
+                   disabled={clockSpan != null}
+                   placeholder={parsed && parsed.minutes != null ? String(parsed.minutes) : "leave blank"}
+                   className="mt-0.5 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm bg-white disabled:bg-slate-100 disabled:text-slate-400" />
+          </label>
+        </div>
       )}
 
       <div className="flex justify-end gap-2 mt-4">
@@ -2585,6 +2782,7 @@ function CloseOutDialog({ job, selectedDate, onCancel, onConfirm }) {
         <button disabled={!canConfirm}
                 onClick={() => onConfirm({
                   outcome, reason: reason || "", stillNeeded,
+                  arrivedAt, leftAt,
                   actualMinutes: minutes === "" ? null : Number(minutes),
                   followUp: requiresFollowUp
                     ? { date: fuDate, team: fuTeam, scope: fuScope || stillNeeded, materials: stillNeeded }
@@ -2757,15 +2955,20 @@ function Modal({ title, children, onCancel, wide }) {
  * project exists to remove. So it is one copy and one paste, and the
  * parse is always shown before anything is written.
  * ====================================================================== */
-function TaskPasteDialog({ date, onCancel, onCommit }) {
-  const [text, setText] = useState("");
+function TaskPasteDialog({ date, seed, knownTechs, onCancel, onCommit }) {
+  const [text, setText] = useState(seed || "");
   const [preview, setPreview] = useState(null);
 
   function read(v) {
     setText(v);
     if (!squash(v)) { setPreview(null); return; }
-    setPreview(parseAnyPaste(v, date, parseSheetPaste));
+    setPreview(parseAnyPaste(v, date, parseSheetPaste, { techs: knownTechs }));
   }
+
+  /* Arrives already filled in when the coordinator pasted the sheet into
+     the quick-add box and was redirected here. Parse it straight away so
+     they see the rows read properly rather than an empty box. */
+  useEffect(() => { if (seed) read(seed); }, []);   // eslint-disable-line react-hooks/exhaustive-deps
 
   const rows = preview?.jobs || [];
   const dates = preview?.dates || [];
@@ -2778,9 +2981,10 @@ function TaskPasteDialog({ date, onCancel, onCommit }) {
     <Modal title="Paste the day in" onCancel={onCancel} wide>
       <p className="text-xs text-slate-600">
         Two things paste in here and the box works out which is which: <b>the daily Google Sheet</b>
-        exactly as the coordinator fills it, or <b>the PMS task list</b>. Select the table including
-        its heading row and paste. Column order does not matter, and anything already in the app
-        with the same TSK reference is skipped — so pasting the same thing twice is safe.
+        exactly as the coordinator fills it — copied out of Sheets, or straight off the PDF, rows
+        wrapped or not — or <b>the PMS task list</b>. Column order does not matter, and anything
+        already in the app with the same TSK reference is skipped, so pasting the same thing twice
+        is safe.
       </p>
       <textarea autoFocus value={text} onChange={(e) => read(e.target.value)} rows={7}
                 placeholder="Number	Title	Property	Subcategory	Priority	Status	Assignees	Due date	Duration"

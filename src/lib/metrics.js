@@ -526,6 +526,145 @@ export function computeEstimateAccuracy(jobs) {
   };
 }
 
+/* --------- 8b. What these jobs ACTUALLY take -------------------------- *
+ * The estimate on a job is a guess, and everybody involved knows it. The
+ * coordinator filling it in has never done the work and is picking between
+ * 30 minutes and an hour under time pressure; the catalogue's own defaults
+ * were seeded from the median of those same guesses, so the whole thing was
+ * estimates all the way down.
+ *
+ * The only honest source is the technician's own arrival and departure
+ * time, which he already writes into PMS on every job. Grouped by the kind
+ * of work, that turns into a duration library — and after a month of it the
+ * estimate stops being a guess and starts being what the work took last
+ * time.
+ *
+ * Nothing is learned from a single observation. A task needs MIN_CONFIDENT
+ * measured jobs before the library will offer a number, because one
+ * 20-minute pool clean where the tech was already on site would otherwise
+ * rewrite the estimate for every pool in the portfolio.
+ * -------------------------------------------------------------------- */
+export const MIN_CONFIDENT = 5;
+
+export function computeDurationLibrary(jobs, opts = {}) {
+  const min = opts.minConfident || MIN_CONFIDENT;
+  const groups = new Map();
+
+  jobs.forEach((j) => {
+    /* Grouped by the standard task where the line snapped to one, and by
+       trade family otherwise — the finest grouping the data can actually
+       support without splitting into samples of one. */
+    const key = squash(j.catalogueId) || `fam:${faultFamily(j.description, j.faultCode)}`;
+    const label = squash(j.catalogueId)
+      ? squash(j.description)   // a snapped line carries the canonical wording
+      : (FAMILY_LABEL[faultFamily(j.description, j.faultCode)] || "Not classified");
+    if (!groups.has(key)) {
+      groups.set(key, { key, label, measured: [], estimates: [], jobs: 0, crewed: 0 });
+    }
+    const g = groups.get(key);
+    g.jobs++;
+    const est = parseDurationMinutes(j.estimatedTime);
+    if (est != null) g.estimates.push(est);
+    const act = actualDuration(j);
+    if (act.minutes != null) {
+      g.measured.push(act.minutes);
+      if (splitCrew(j.team).length > 1) g.crewed++;
+    }
+  });
+
+  const rows = Array.from(groups.values()).map((g) => {
+    const measuredMedian = g.measured.length ? median(g.measured) : null;
+    const estimateMedian = g.estimates.length ? median(g.estimates) : null;
+    const confident = g.measured.length >= min;
+    const ratio = measuredMedian != null && estimateMedian
+      ? Math.round((measuredMedian / estimateMedian) * 100) : null;
+    return {
+      ...g,
+      n: g.measured.length,
+      measuredMedian,
+      measuredMin: g.measured.length ? Math.min(...g.measured) : null,
+      measuredMax: g.measured.length ? Math.max(...g.measured) : null,
+      estimateMedian,
+      ratio,
+      confident,
+      /* How much the department is out on this kind of work over a month:
+         the per-job error multiplied by how often it comes up. Sorting by
+         this puts the estimate worth fixing first, rather than the most
+         wrong estimate on a task that happens twice. */
+      impact: confident && ratio != null
+        ? Math.abs(measuredMedian - estimateMedian) * g.jobs : 0,
+    };
+  });
+
+  const measuredJobs = rows.reduce((s, r) => s + r.n, 0);
+  return {
+    rows: rows.sort((a, b) => b.impact - a.impact || b.n - a.n),
+    confident: rows.filter((r) => r.confident),
+    measuredJobs,
+    coverage: coverage(measuredJobs, jobs.length),
+    minConfident: min,
+    /* Ready to replace the guess. Until a kind of work reaches this, the
+       app keeps quoting the seeded default and says so. */
+    readyToLearn: rows.filter((r) => r.confident && r.ratio != null && (r.ratio > 125 || r.ratio < 75)).length,
+  };
+}
+
+/** What the library says this kind of work takes, or null if it cannot say yet. */
+export function learnedMinutes(library, key) {
+  if (!library || !key) return null;
+  const row = library.rows.find((r) => r.key === key);
+  return row && row.confident ? row.measuredMedian : null;
+}
+
+/* --------- 8c. Tasks done, and how much of it we can time ------------- *
+ * The two numbers the department is actually trying to produce. Both are
+ * reported over their own denominator: a completion count is meaningless
+ * without saying how many jobs had any outcome recorded at all, and an
+ * average duration is worse than meaningless if it is averaging the third
+ * of jobs somebody happened to time.
+ * -------------------------------------------------------------------- */
+export function computeThroughput(jobs) {
+  const closed = jobs.filter((j) => isResolved(j.state) || j.state === "not_done" || j.state === "cancelled");
+  const done = jobs.filter((j) => isResolved(j.state));
+  const timed = done.filter((j) => actualDuration(j).minutes != null);
+  const minutes = timed.map((j) => actualDuration(j).minutes);
+  const crewMinutes = timed.reduce((s, j) => {
+    const crew = Math.max(1, splitCrew(j.team).length);
+    return s + actualDuration(j).minutes * crew;
+  }, 0);
+
+  const byDate = {};
+  done.forEach((j) => { const d = j._date || j.scheduledDate; if (d) byDate[d] = (byDate[d] || 0) + 1; });
+  const perDay = Object.values(byDate);
+
+  /* Where each measurement came from. These are not equally good: a clock
+     pair is what was observed, a typed total is a recollection at the end
+     of the day, and the Start/Done trail is whenever somebody pressed the
+     button. Reporting them apart is the only way to know whether the month
+     is built on real times or on button-pressing. */
+  const bySource = { clock: 0, entered: 0, measured: 0 };
+  timed.forEach((j) => { const src = actualDuration(j).source; if (src in bySource) bySource[src]++; });
+
+  return {
+    total: jobs.length,
+    closedOut: closed.length,
+    closedPct: pct(closed.length, jobs.length),
+    done: done.length,
+    donePct: pct(done.length, jobs.length),
+    timed: timed.length,
+    timedPct: pct(timed.length, done.length),
+    medianMinutes: minutes.length ? median(minutes) : null,
+    totalMinutes: minutes.reduce((s, n) => s + n, 0),
+    totalCrewMinutes: crewMinutes,
+    daysCounted: Object.keys(byDate).length,
+    medianPerDay: perDay.length ? median(perDay) : null,
+    coverage: coverage(timed.length, done.length),
+    bySource,
+    realTimes: bySource.clock,
+    realTimesPct: pct(bySource.clock, done.length),
+  };
+}
+
 /* ------------------- 9. First-time fix (Tier A + B) ------------------- *
  * Of the jobs the admin confirmed done, how many had no return visit to the
  * same unit for a similar scope inside the repeat window? This is the one
@@ -1263,6 +1402,8 @@ export function computeAll(jobs, opts = {}) {
     notes: computeNotes(jobs),
     compound: computeCompound(jobs),
     escalations: computeEscalations(jobs),
+    durations: computeDurationLibrary(jobs, opts),
+    throughput: computeThroughput(jobs),
     churn: computeChurn(jobs),
     techTimes: computeTechTimes(jobs, opts),
     series: computeDailySeries(jobs, opts),

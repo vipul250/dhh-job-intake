@@ -211,6 +211,8 @@ export default function Dashboard({ selectedDate, knownDates, onOpenDate }) {
           <Judgement m={m} onOpenDate={onOpenDate} />
           <Movement m={m} onOpenDate={onOpenDate} />
           <WhyWeGoBack m={m} />
+          <Throughput m={m} />
+          <DurationLibrary m={m} />
           <TechTimes m={m} />
           <Trends m={m} />
           <CostSection m={m} jobs={loaded} rates={rates} onSaveRates={saveRates} ratesLoaded={ratesLoaded} />
@@ -1173,6 +1175,183 @@ function WhyWeGoBack({ m }) {
 }
 
 /* ====================== how long jobs take ====================== */
+
+/* ==================================================================== *
+ * How many tasks got done, and how much of that we can time.
+ *
+ * The two headline numbers the department is trying to produce. Every one
+ * of them carries its denominator, because "412 done" means nothing until
+ * you know how many of the month's jobs had any outcome recorded at all.
+ * ==================================================================== */
+function Throughput({ m }) {
+  const t = m.throughput;
+  if (!t) return null;
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-4">
+      <h2 className="text-sm font-semibold text-slate-900">Tasks done, and time on site</h2>
+      <p className="text-xs text-slate-500 mt-0.5 mb-3 max-w-3xl">
+        The month's output. "Real times" counts the jobs closed out with the technician's actual
+        arrival and departure — those are the only ones the duration library learns from. A typed
+        total or a Start/Done click still counts as timed, but it is a weaker measurement and is
+        shown apart.
+      </p>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <Tile label="Tasks done" value={t.done}
+              sub={`${t.donePct ?? 0}% of ${t.total} scheduled`}
+              coverage={`${t.closedOut} of ${t.total} closed out either way`}
+              tone={t.done > 0 ? "good" : "neutral"} />
+        <Tile label="Median tasks per day" value={t.medianPerDay ?? "—"}
+              sub={t.daysCounted ? `over ${t.daysCounted} day${t.daysCounted === 1 ? "" : "s"} with work done` : ""}
+              coverage="days with nothing recorded are not counted as zero" />
+        <Tile label="Real arrival / departure" value={t.realTimes}
+              sub={`${t.realTimesPct ?? 0}% of the ${t.done} done`}
+              coverage="the two fields at close-out"
+              tone={t.realTimesPct >= 60 ? "good" : t.realTimes > 0 ? "warn" : "bad"} />
+        <Tile label="Median time on site" value={t.medianMinutes == null ? "—" : formatMinutes(t.medianMinutes)}
+              sub={t.timed ? `from ${t.timed} timed job${t.timed === 1 ? "" : "s"}` : "nothing timed yet"}
+              coverage={`${t.timedPct ?? 0}% of done jobs have any time`}
+              tone={t.timedPct >= 60 ? "good" : "warn"} />
+      </div>
+
+      {t.timed > 0 && (
+        <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-[11px] text-slate-500">
+          <span>Measured from: <strong className="text-slate-700">{t.bySource.clock}</strong> real times</span>
+          <span><strong className="text-slate-700">{t.bySource.entered}</strong> typed totals</span>
+          <span><strong className="text-slate-700">{t.bySource.measured}</strong> Start/Done clicks</span>
+          <span>Crew hours on site: <strong className="text-slate-700">{formatMinutes(t.totalCrewMinutes)}</strong>
+            <span className="text-slate-400"> (time × how many went)</span></span>
+        </div>
+      )}
+
+      {t.done > 0 && t.realTimes === 0 && (
+        <p className="text-[11px] text-amber-700 mt-2.5">
+          Nothing yet has a real arrival and departure time. Until it does, every hour in this app
+          is a coordinator's estimate — including the cost figures below.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/* ==================================================================== *
+ * What each kind of work really takes.
+ *
+ * The estimate is entered by a coordinator who does not know how long the
+ * work takes; that was never a criticism of them, it is simply not
+ * knowable in advance the first time. After a month of real times it is
+ * knowable, and this is where the app stops guessing: once a kind of work
+ * has MIN_CONFIDENT measured jobs, its measured median replaces the seeded
+ * default on the quick-add box, and it says so when it does.
+ * ==================================================================== */
+function DurationLibrary({ m }) {
+  const lib = m.durations;
+  if (!lib) return null;
+  const [showAll, setShowAll] = useState(false);
+  const rows = showAll ? lib.rows : lib.rows.filter((r) => r.n > 0);
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-4">
+      <h2 className="text-sm font-semibold text-slate-900">What the work really takes</h2>
+      <p className="text-xs text-slate-500 mt-0.5 mb-3 max-w-3xl">
+        Every kind of work, with what it was estimated at against what it measured. A kind of work
+        needs {lib.minConfident} measured jobs before the app will trust it — one short visit where
+        the technician was already in the building must not rewrite the estimate for the whole
+        portfolio. Sorted by what the gap costs over the month, not by how wrong it looks.
+      </p>
+
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-4">
+        <Tile label="Jobs measured" value={lib.measuredJobs}
+              sub={`${lib.coverage.pct ?? 0}% of ${lib.coverage.total}`}
+              coverage="a job counts once it has a real duration"
+              tone={lib.coverage.pct >= 50 ? "good" : "warn"} />
+        <Tile label="Kinds of work the app can now price" value={lib.confident.length}
+              sub={`of ${lib.rows.length} seen`}
+              coverage={`${lib.minConfident}+ measured jobs each`}
+              tone={lib.confident.length > 0 ? "good" : "neutral"} />
+        <Tile label="Estimates worth correcting" value={lib.readyToLearn}
+              sub={lib.readyToLearn ? "out by more than a quarter" : "none out by more than a quarter"}
+              coverage="only counting the kinds it can price"
+              tone={lib.readyToLearn > 0 ? "warn" : "good"} />
+      </div>
+
+      {rows.length === 0 ? (
+        <p className="text-xs text-slate-400 py-3">
+          Nothing measured in this range yet. Close a job out with the technician's on-site and
+          left times and it appears here; after {lib.minConfident} of the same kind, the estimate
+          on the quick-add box becomes the measured median instead of the seeded default.
+        </p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-slate-500 border-b border-slate-200">
+                <th className="text-left font-medium py-1.5">Kind of work</th>
+                <th className="text-right font-medium py-1.5">Jobs</th>
+                <th className="text-right font-medium py-1.5">Measured</th>
+                <th className="text-right font-medium py-1.5">Estimated</th>
+                <th className="text-right font-medium py-1.5">Range</th>
+                <th className="text-right font-medium py-1.5">vs estimate</th>
+                <th className="text-left font-medium py-1.5 pl-3">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.slice(0, 30).map((r) => (
+                <tr key={r.key} className="border-b border-slate-100">
+                  <td className="py-1.5 text-slate-800">{r.label}</td>
+                  <td className="py-1.5 text-right tabular-nums text-slate-500">
+                    {r.n}<span className="text-slate-300"> / {r.jobs}</span>
+                  </td>
+                  <td className="py-1.5 text-right tabular-nums font-medium">
+                    {r.measuredMedian == null ? "—" : formatMinutes(r.measuredMedian)}
+                  </td>
+                  <td className="py-1.5 text-right tabular-nums text-slate-500">
+                    {r.estimateMedian == null ? "—" : formatMinutes(r.estimateMedian)}
+                  </td>
+                  <td className="py-1.5 text-right tabular-nums text-slate-400">
+                    {r.measuredMin == null ? "—" : `${formatMinutes(r.measuredMin)}–${formatMinutes(r.measuredMax)}`}
+                  </td>
+                  <td className={`py-1.5 text-right tabular-nums ${
+                    r.ratio == null ? "text-slate-300"
+                    : !r.confident ? "text-slate-400"
+                    : r.ratio > 125 ? "text-red-700"
+                    : r.ratio < 75 ? "text-amber-700" : "text-emerald-700"}`}>
+                    {r.ratio == null ? "—" : `${r.ratio}%`}
+                  </td>
+                  <td className="py-1.5 pl-3">
+                    {r.confident ? (
+                      <span className="text-[10px] text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-1.5 py-0.5">
+                        using the measured time
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-slate-500">
+                        {r.n === 0 ? "nothing measured" : `${lib.minConfident - r.n} more to go`}
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {lib.rows.some((r) => r.n === 0) && (
+        <button onClick={() => setShowAll((v) => !v)}
+                className="text-[11px] text-slate-500 underline mt-2">
+          {showAll ? "Hide the kinds with nothing measured" : `Show all ${lib.rows.length} kinds, including the unmeasured`}
+        </button>
+      )}
+
+      <p className="text-[11px] text-slate-400 mt-2">
+        Over 100% means the work reliably takes longer than the day was planned for. That is a
+        capacity figure before it is a performance one — the schedule was built on the smaller
+        number, so the day was over-committed before anybody set off.
+      </p>
+    </div>
+  );
+}
 
 function TechTimes({ m }) {
   const tt = m.techTimes;

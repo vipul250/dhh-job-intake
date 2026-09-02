@@ -35,6 +35,22 @@ Step 4 is not optional. Committing `mock-storage.js` as `src/lib/storage.js`
 would deploy an app that keeps the whole department's schedule in one
 browser's localStorage.
 
+### The two stand-ins are mutually exclusive
+
+`mock-storage.js` replaces the storage module; `supabase-stub.mjs`
+intercepts the network *underneath* it. A suite that calls `installStubs`
+therefore needs the **real** `src/lib/storage.js` in place — with the mock
+installed there are no network calls left to intercept, and the suite fails
+in a way that looks like an app bug and is not. Four suites are in that
+group:
+
+```
+authgate.mjs  authready.mjs  authtest.mjs  emails.mjs
+```
+
+Run them separately, with `git checkout src/lib/storage.js` first and a
+rebuild. Everything else wants the mock.
+
 ## The two stand-ins
 
 **`harness/mock-storage.js`** replaces `src/lib/storage.js`. Same contract,
@@ -70,6 +86,7 @@ real database. See "Verifying the live app" in HANDOVER.md.
 | `seed-legacy-staff.json` | The same, but with the team list as it sits in the database *today* — 20 people, no email column, no Vipul. For testing migrations. |
 | `pms-issues.tsv` | 15 real rows copied out of the PMS Issues screen |
 | `real-workbook.json` | The 474 rows as parsed from the workbook, for testing pure functions in node |
+| `day0903.txt` | 3 September copied off the locked PDF — spaces not tabs, rows wrapped over several lines. This is the shape that actually reaches the clipboard, and the shape that used to be mangled |
 
 ## Writing a suite
 

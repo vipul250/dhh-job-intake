@@ -262,6 +262,10 @@ src/lib/
   metrics.js           1135  ~18 metric computations, all coverage-first
   job.js                721  the job entity, states, reasons, quick-add parse
   backlog.js            721  occupancy, SLA, the day rule, PMS/sheet parsing
+  sheetText.js          330  reads the daily sheet as it is ACTUALLY pasted:
+                             copied off the locked PDF, spaces not tabs, rows
+                             wrapped. Also isMisread, which finds the rows a
+                             quick-add paste already mangled
   schedule.js           490  ordering WITHIN a day: appointment → P1 → batch
   project.js            490  projects, discovery, cost roll-up, price book
   normalize.js          370  canonicalisation. splitTrailingUnit lives here
@@ -271,6 +275,8 @@ src/lib/
   jobStore.js           237  readDay/mutateDay with compare-and-set + retry
   importSheet.js        225  workbook/paste column mapping
   catalogue.js          207  36 standard tasks
+  learned.js            110  the measured median replaces the seeded estimate
+                             once a kind of work has 5 real timings
   crewing.js            204  how many people a job needs
   workReport.js         183  parse a technician's PMS comment
   storage.js            152  Supabase kv_store adapter (SWAP FOR TESTS)
@@ -279,8 +285,8 @@ src/lib/
   dayLock.js            100  open / posted / started / past
   faultFamily.js         75  trade families and return reasons
   supabase.js            62  client, or a failure-safe stub if unconfigured
-docs/  WORKFLOW.md 895 · METRICS.md 345 · ACCESS.md 170
-test/  README.md, harness/, suites/  (29 browser suites)
+docs/  WORKFLOW.md 895 · METRICS.md 345 · ACCESS.md 170 · SHEET-PASTE.md 125
+test/  README.md, harness/, suites/  (33 browser suites)
 ```
 
 ### Concurrency — do not break this
@@ -356,10 +362,29 @@ reached PMS?* — quantifying the night-gap leak. Proposed, not built.
 unknown (31 jobs)" for the workbook month. Correct and expected; anything
 created from now on carries a real name.
 
-**PDF import.** His printable sheet is a PDF with real ruled table
-structure, so file import is feasible if coordinators ever lose access to
-the *Daily Input* tab. Copying from that tab gives clean TSV and is the
-recommended path; copying from the PDF gives mangled text.
+**PDF import — CLOSED, and it had already gone wrong.** This thread said
+copying from the PDF "gives mangled text" and recommended the *Daily Input*
+tab. The coordinators do not have that tab — the sheet is shared as a locked
+PDF — so they copied the PDF, the sheet reader refused it (tabs only), and
+they pasted it into the quick-add box instead. That read one line as one
+typed job: the year out of the date column became the unit number on every
+row, the building was lost, and each wrapped line became its own job. It is
+where "Palm Villa 2026" and the 3 September duplicates came from.
+
+`sheetText.js` now reads that form directly — 100% of scopes and 99% of
+buildings across all 493 rows of the real sheet — the quick-add box refuses
+a schedule and hands it to the reader, and `isMisread` finds the rows the
+old path already damaged so they can be closed off with a reason. Full
+write-up in `docs/SHEET-PASTE.md`.
+
+**The printed sheet still mismatches status and parking, and always will.**
+167 of 492 rows have no parking bay, and the printed table has no
+gridlines, so the columns close up and the Guest-Confirmed Y/N sits under
+the "Parking No." heading. That is Google Sheets' PDF export and cannot be
+fixed from here. The answer is that the technician should not read it:
+**"Copy for the technician"** emits his day in working order with every
+value named and `Parking: not given` said out loud. Worth confirming with
+him that the techs actually switch to it.
 
 ---
 

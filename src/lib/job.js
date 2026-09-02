@@ -250,6 +250,14 @@ export function newJob(fields, date, by) {
     outcomeReason: "",
     actualMinutes: null,
 
+    /* The technician's real arrival and departure time, as a clock reading.
+       This is the only honest measure of how long the work took: the
+       estimate is a coordinator's guess, and the Started/Done clicks only
+       exist where somebody remembered to press them. Two fields at close-out
+       cost seconds and are the whole basis of the duration library. */
+    arrivedAt: "",         // "HH:MM", 24h, on the scheduled day
+    leftAt: "",
+
     // Set when the board spots this unit was visited recently for similar
     // work. The reason is asked for, never guessed — see faultFamily.js.
     returnOf: null,
@@ -420,7 +428,63 @@ export function applyEdit(job, patch, by) {
  * -------------------------------------------------------------------- */
 export const MAX_PLAUSIBLE_JOB_MINUTES = 12 * 60;
 
+/* Reads "9:15", "09:15", "9.15", "9:15 am", "0915" into minutes past
+   midnight. Coordinators type all five and rejecting four of them would
+   just mean the field goes unfilled. */
+export function readClock(text) {
+  const t = String(text || "").trim().toLowerCase();
+  if (!t) return null;
+  const m = t.match(/^(\d{1,2})\s*[:.h]?\s*(\d{2})?\s*(am|pm)?$/);
+  if (!m) return null;
+  let h = Number(m[1]);
+  const min = m[2] == null ? 0 : Number(m[2]);
+  if (!Number.isFinite(h) || !Number.isFinite(min) || min > 59) return null;
+  // "0915" with no separator: four digits is a time, not an hour.
+  if (m[2] == null && /^\d{4}$/.test(t)) {
+    h = Number(t.slice(0, 2));
+    return h < 24 ? h * 60 + Number(t.slice(2)) : null;
+  }
+  const mer = m[3];
+  if (mer === "pm" && h < 12) h += 12;
+  if (mer === "am" && h === 12) h = 0;
+  if (h > 23) return null;
+  return h * 60 + min;
+}
+
+/* Minutes between two clock readings on the same working day. A departure
+   earlier than the arrival is read as crossing midnight, which is a real
+   shape here — the night shift starts a job at 23:40 and leaves at 00:20 —
+   but only up to the 12-hour ceiling, beyond which it is a typo. */
+export function clockMinutes(arrivedAt, leftAt) {
+  const a = readClock(arrivedAt), b = readClock(leftAt);
+  if (a == null || b == null) return null;
+  let mins = b - a;
+  if (mins < 0) mins += 24 * 60;
+  if (mins <= 0 || mins > MAX_PLAUSIBLE_JOB_MINUTES) return null;
+  return mins;
+}
+
+/** The clock right now, as the field expects it. */
+export function nowClock(d = new Date()) {
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+/** "1h 45m" — durations read as time, not as three-digit minute counts. */
+export function fmtMins(mins) {
+  if (mins == null || !Number.isFinite(Number(mins))) return "—";
+  const m = Math.round(Number(mins));
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60), r = m % 60;
+  return r ? `${h}h ${r}m` : `${h}h`;
+}
+
 export function actualDuration(job) {
+  /* The real times win over everything else: they are the thing that was
+     observed, where a typed total is a recollection and the click trail is
+     whenever somebody got round to pressing the button. */
+  const clock = clockMinutes(job.arrivedAt, job.leftAt);
+  if (clock != null) return { minutes: clock, source: "clock" };
+
   const entered = job.actualMinutes != null ? Number(job.actualMinutes) : null;
   if (Number.isFinite(entered) && entered > 0) {
     return { minutes: Math.round(entered), source: "entered" };
@@ -554,10 +618,50 @@ export function pmsText(job) {
   if (canonKey(job.materialNeeded).startsWith("y")) {
     bits.push(`Material: ${squash(job.materialDetails) || "see notes"}`);
   }
-  if (squash(job.parking)) bits.push(`Parking: ${squash(job.parking)}`);
+  /* Always stated, even when empty.
+     A third of the rows in the printed sheet have no parking bay, and in a
+     printed table with no gridlines the columns then collapse: the eye
+     slides the Guest-Confirmed Y or N under the "Parking No." heading and
+     the technician drives to a bay that was never written down. Saying
+     "Parking: not given" costs one line and cannot be misread. */
+  bits.push(squash(job.parking) ? `Parking: ${squash(job.parking)}` : "Parking: not given");
   if (bits.length) L.push(bits.join(" · "));
   if (squash(job.notes)) L.push(`Notes: ${squash(job.notes)}`);
   return L.join("\n");
+}
+
+/* ----------------------- the technician's own sheet ------------------- *
+ * What one technician needs for one job, every field named. This exists
+ * because the printed sheet does not name them: it is a borderless table
+ * where an empty cell closes up and the next value takes its place, so
+ * "Damac Hills 2 Albizia 197 Occupied Y" reads as though Y were the
+ * parking bay. One label per value and that whole class of error is gone.
+ * -------------------------------------------------------------------- */
+export function techSheet(job, n) {
+  const L = [];
+  const where = [squash(job.property), squash(job.unit)].filter(Boolean).join(" ");
+  L.push(`${n ? `${n}. ` : ""}${where || "(no building recorded)"}`);
+  L.push(`   Unit status : ${squash(job.status) || "not given"}`);
+  L.push(`   Parking     : ${squash(job.parking) || "not given"}`);
+  const when = squash(job.timeOfVisit) || squash(job.shift);
+  if (when) L.push(`   Time        : ${when}`);
+  if (squash(job.guestConfirmed)) L.push(`   Guest       : ${squash(job.guestConfirmed)}`);
+  L.push(`   Work        : ${squash(job.description) || "(no scope recorded)"}`);
+  if (squash(job.estimatedTime)) L.push(`   Allowed     : ${squash(job.estimatedTime)}`);
+  if (canonPriority(job.priority)) L.push(`   Priority    : ${squash(job.priority)}`);
+  if (canonKey(job.materialNeeded).startsWith("y")) {
+    L.push(`   Material    : ${squash(job.materialDetails) || "see notes"}`);
+  }
+  if (squash(job.notes)) L.push(`   Notes       : ${squash(job.notes)}`);
+  if (squash(job.pmsRef)) L.push(`   PMS         : ${squash(job.pmsRef)}`);
+  return L.join("\n");
+}
+
+/** The whole day for one technician, in the order it should be worked. */
+export function techSheetForDay(jobs, team, date) {
+  const head = `${squash(team) || "Unassigned"} — ${date}`;
+  const body = jobs.map((j, i) => techSheet(j, i + 1)).join("\n\n");
+  return `${head}\n${"-".repeat(head.length)}\n\n${body}`;
 }
 
 /* ====================================================================== *
