@@ -421,7 +421,21 @@ function at all, so it was extracted to `src/lib/dayMigrate.js` with
 `jobStore.js` re-exporting it. Verified: the handler loads in plain Node,
 answers 401 with no/incorrect/absent `CRON_SECRET`, and returns a clean 500
 naming the missing variable. **It is inert until all four env vars exist.**
-Four known limits in `docs/SHEET-SYNC.md`.
+
+Two of the four limits are now closed, at his instruction: it reaches only
+**today..+3 in Gulf dates** (`SYNC_DAYS_AHEAD` / `SYNC_DAYS_BACK` override
+it) rather than the whole tab, and it passes `countTombstones: true` to
+`pasteAdditions` so **a job moved to another day is not restored to the day
+it left** — without which it would have been put back every night. The two
+still open are the anon key (it needs the service-role key once RLS is
+applied) and the blind upsert where the rest of the app uses compare-and-set.
+`docs/SHEET-SYNC.md` has all of it.
+
+`test/suites/sheetsync.mjs` drives the sync end to end with Supabase stubbed
+and no network — the window, the tombstone rule, the top-up behaviour, the
+no-op second run, and that the endpoint fails closed. `fetchSheetValues` is
+deliberately uncovered: a signed token exchange and one GET, which works
+with real credentials or does not.
 
 ### Queue — the decision that was invisible
 The PMS Issues list pasted in, with a **stated rule** answering *which day,
@@ -613,8 +627,10 @@ src/views/
   Backlog.jsx           446  the queue and the scheduling rule, applied
   SignIn.jsx            109  email → code screen
 api/
-  sync-sheet.js         167  reads the live Sheet on a daily cron and feeds
-                             it through the SAME paste pipeline as the button
+  sync-sheet.js         263  reads the live Sheet on a daily cron and feeds
+                             it through the SAME paste pipeline as the button.
+                             syncValues() is the half worth testing, split
+                             from the fetch that cannot be tested locally
   parse.js               58  the Anthropic proxy (AI import, since removed)
 src/lib/
   dayMigrate.js          98  migrateDay/migrateRow/needsMigration, kept free

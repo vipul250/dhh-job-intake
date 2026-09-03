@@ -84,6 +84,19 @@ warnings (e.g. rows with no readable date). If `ok: false`, the `error`
 field says exactly what failed — almost always a missing/mistyped
 environment variable the first time.
 
+## Testing without waiting, and without touching production
+
+`node test/suites/sheetsync.mjs` drives the whole thing with Supabase
+stubbed and no network: the window arithmetic, that only in-window dates are
+written, that a moved job is not brought back, that indistinguishable rows
+top up to the Sheet's count rather than duplicating or collapsing, that a
+second run in the same night writes nothing, and that the endpoint refuses
+anything without the exact secret.
+
+What it deliberately does not cover is `fetchSheetValues` — a signed token
+exchange and one GET. That works with real credentials or it does not, which
+is what the manual trigger above is for.
+
 ## Changing the schedule
 
 Currently set to `0 3 * * *` — 3:00 AM UTC, which is 7:00 AM Gulf time
@@ -130,31 +143,45 @@ quarter of the stored month is written that way. Without it a stored
 `{property: "Afnan 5", unit: "603"}`, the dedupe misses, and the same job is
 added again every night.
 
-### 2. A job MOVED to another day will be restored to its original day, nightly
+### 2. How far it reaches, and moved jobs — both closed
 
-This is the one to think hardest about.
+**It reaches today and the next three days.** It used to feed every date in
+the tab into a write — the whole imported month and everything since. Two
+reasons that was wrong: a past day is settled (its outcomes recorded, its
+jobs closed out or moved) and the Sheet is not kept in step with any of
+that, so re-importing churned history; and a job moved to another day is
+listed in the Sheet under the date it was moved *off*.
 
-When a coordinator moves a job off a day, the app leaves a **tombstone**
-naming where it went. `pasteAdditions` deliberately ignores tombstones when
-counting what a day already holds — for a manual paste that is right, since a
-tombstone is not a job standing in the way.
+The window is today `..` today+3, in **Gulf dates** — the Sheet's dates are
+Gulf dates and this runs on UTC, and while 03:00 UTC is 07:00 in Dubai on the
+same day, Hobby crons fire within an approximate window and a run that
+slipped to 21:00 UTC would otherwise read "today" as the wrong day.
 
-For a nightly sync over the whole sheet it is not right. The Sheet still
-lists that row on its original date, the tombstone does not block it, and the
-job is added back to the day it was moved off — so it exists on both days.
-Then again the next night.
+Nothing backwards by default. A row that has to reach a past day is either an
+out-of-hours job (the board has a button) or a deliberate re-paste by a
+person. Both ends are env-overridable so this can be changed without a
+deploy:
 
-Two ways to close it, and it is a judgement call:
+| Variable | Default | |
+|---|---|---|
+| `SYNC_DAYS_AHEAD` | `3` | how far forward to import |
+| `SYNC_DAYS_BACK` | `0` | how far back — raise to 1 if a run is ever missed |
 
-- **Narrow the window.** Read only the next few days rather than `A1:U`
-  (~1010 rows, fifteen-plus dates). An automatic daily sync does not need to
-  re-import August every night, and history stops churning.
-- **Treat a tombstone as "already dealt with"** for the sync path — the row
-  left this day on purpose, so do not bring it back. This needs
-  `pasteAdditions` to take a flag, because the manual paste wants the
-  opposite.
+The response reports the window it used and every date it skipped, because a
+sync that quietly ignores most of the tab is otherwise indistinguishable from
+one that is broken.
 
-Both are worth doing. Neither is done yet.
+**And a moved job stays moved.** When a coordinator moves a job off a day,
+the app leaves a tombstone naming where it went. `pasteAdditions` ignores
+tombstones by default — right for a person pasting by hand, who is looking at
+the day and can see what left it. The sync passes `countTombstones: true`
+instead: nobody is watching, the Sheet still lists the row under the date it
+was moved off, and without it the job would be put back there every night and
+sit on both days.
+
+A tombstone only ever accounts for its own row — one tombstone offsets one
+Sheet row, and a tombstone for different work blocks nothing. Covered by
+`test/suites/pastedupe.mjs` and `test/suites/sheetsync.mjs`.
 
 ### 3. The Supabase write uses the anon key and no version check
 

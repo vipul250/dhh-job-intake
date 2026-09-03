@@ -236,21 +236,55 @@ export const uid = () =>
  * ---------------------------------------------------------------------- */
 
 const pasteRefKey = (j) => canonKey(j.pmsRef);
-const pasteBodyKey = (j) =>
-  `${canonKey(j.property)}|${canonKey(j.unit)}|${canonKey(j.description).slice(0, 40)}`;
+
+/* A tombstone keeps what left the day under `snapshot`, not at the top
+   level, so the content key has to read through it — otherwise a tombstone
+   keys as "||" and matches nothing. It carries no pmsRef, so a moved job
+   is recognised by its content rather than its reference; that is enough,
+   because the content key is the one that catches rows without a
+   reference in the first place. */
+const pasteBodyKey = (j) => {
+  const src = j && j._tomb && j.snapshot ? j.snapshot : (j || {});
+  return `${canonKey(src.property)}|${canonKey(src.unit)}|${canonKey(src.description).slice(0, 40)}`;
+};
 
 /**
  * @param {Array} existing jobs already on the day
  * @param {Array} rows     rows just parsed out of a paste
+ * @param {{countTombstones?: boolean}} [opts]
+ *   `countTombstones` treats a job that LEFT this day as already dealt
+ *   with, so it is not brought back. Off by default and on for the
+ *   scheduled Sheet sync only — see below.
  * @returns {{add: Array, dupes: number, indistinct: Array}}
  *   `indistinct` lists the keys where one paste carried several rows that
  *   read identically, so the dialog can say so out loud — they are added,
  *   but a technician cannot tell them apart on the day.
  */
-export function pasteAdditions(existing, rows) {
+
+/* ---------------------------------------------------------------------- *
+ * Why a tombstone counts for the sync and not for a person.
+ *
+ * When a job is moved to another day, the day it left keeps a tombstone
+ * saying where it went. For somebody pasting a sheet by hand a tombstone is
+ * NOT a job standing in the way: they are looking at the day, they can see
+ * what left it, and if they are re-pasting a row that was moved away they
+ * presumably mean to.
+ *
+ * For the nightly sync nobody is looking. The Sheet still lists that row on
+ * its original date — moving a job in the app does not rewrite the Sheet —
+ * so every run would add it back to the day it was moved off, and the job
+ * would sit on both days. Then again the next night, and the night after.
+ *
+ * So the sync passes `countTombstones: true`: a row that already left this
+ * day has been dealt with, and the Sheet saying otherwise is the Sheet
+ * being out of date rather than new work.
+ * ---------------------------------------------------------------------- */
+export function pasteAdditions(existing, rows, opts = {}) {
+  const countTombstones = !!opts.countTombstones;
   const have = new Map();
   (existing || []).forEach((j) => {
-    if (!j || j._tomb) return;
+    if (!j) return;
+    if (j._tomb && !countTombstones) return;
     const k = pasteBodyKey(j);
     have.set(k, (have.get(k) || 0) + 1);
   });

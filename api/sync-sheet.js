@@ -16,6 +16,12 @@
 // never touched by this endpoint — the Sheet is only ever a source of new
 // rows, never a source of truth for jobs the app already knows about.
 //
+// And it only reaches today plus the next few days. It used to feed every
+// date in the tab into a write, which churned settled history every night
+// and — because the Sheet lists a moved job under the date it was moved OFF
+// — put moved jobs back where they came from, nightly. Both halves of that
+// are fixed: the window below, and countTombstones on pasteAdditions.
+//
 // Auth: Google side uses a read-only Service Account (see docs/SHEET-SYNC.md
 // for one-time setup). Vercel side is protected by CRON_SECRET so nobody
 // else can trigger it and force a sync outside the schedule.
@@ -33,10 +39,65 @@ import { pasteAdditions, newJob } from "../src/lib/job.js";
 import { migrateDay } from "../src/lib/dayMigrate.js";
 
 const SHEET_TAB = "Daily Input- Field Tasks";
-// A2:U — same range the app's manual paste already expects (header optional,
+// A1:U — same range the app's manual paste already expects (header optional,
 // but including it lets column order in the Sheet drift without breaking
 // this, same as a manual copy-paste from the Sheet already tolerates).
+//
+// The whole tab is still READ, because the Sheets values API has no date
+// filter and rows for a future date are not guaranteed to sit at the
+// bottom. The narrowing below is applied after parsing, which is where it
+// matters: reading a thousand rows once a night is free, WRITING to
+// fifteen past days every night is not.
 const SHEET_RANGE = `'${SHEET_TAB}'!A1:U`;
+
+/* ---------------------------------------------------------------------- *
+ * How far the sync is allowed to reach.
+ *
+ * It used to feed every date in the tab — the whole imported month and
+ * everything since — into a write. Two reasons that is wrong:
+ *
+ * A past day is settled. Its outcomes are recorded, its jobs have been
+ * closed out, moved or cancelled, and the Sheet is not kept in step with
+ * any of that. Re-importing it every night churns history.
+ *
+ * And a job MOVED to another day is listed in the Sheet under the date it
+ * was moved OFF. With a wide window the sync would put it back there every
+ * night. The tombstone rule below is the other half of that fix; this is
+ * the half that stops it being asked in the first place.
+ *
+ * So: today and the next few days, which is all an automatic daily sync
+ * needs — the evening coordinator builds tomorrow, and a couple of days of
+ * slack covers scheduling further ahead and a cron that fired late.
+ * Nothing backwards by default. A row that has to be added to a past day is
+ * either an out-of-hours job (the board has a button for that) or a
+ * deliberate re-paste by a person.
+ *
+ * Both ends are env-overridable, because this runs unattended and changing
+ * a constant should not need a deploy to try.
+ * ---------------------------------------------------------------------- */
+const DAYS_AHEAD = Number(process.env.SYNC_DAYS_AHEAD ?? 3);
+const DAYS_BACK = Number(process.env.SYNC_DAYS_BACK ?? 0);
+
+/* The Sheet's dates are Gulf dates, and this runs on UTC. At 03:00 UTC it
+   is 07:00 in Dubai and the date agrees — but Hobby crons fire within an
+   approximate window, and a run that slipped to 21:00 UTC would be reading
+   "today" as the wrong day. UTC+4, no daylight saving. */
+const GULF_OFFSET_MS = 4 * 60 * 60 * 1000;
+
+const gulfToday = () => new Date(Date.now() + GULF_OFFSET_MS).toISOString().slice(0, 10);
+
+export function shiftDate(iso, days) {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+/* Exported for test/suites/sheetsync.mjs. Vercel only ever calls the
+   default export; extra named exports cost nothing. */
+export function syncWindow() {
+  const today = gulfToday();
+  return { today, from: shiftDate(today, -DAYS_BACK), to: shiftDate(today, DAYS_AHEAD) };
+}
 
 function supabaseServer() {
   const url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
@@ -109,6 +170,71 @@ function valuesToTsv(values) {
   return values.map((row) => row.map((c) => String(c ?? "")).join("\t")).join("\n");
 }
 
+/* ---------------------------------------------------------------------- *
+ * Everything after the Sheet has been read, split out from the reading.
+ *
+ * Partly because fetching and deciding are different jobs, and partly for
+ * a practical reason: this is the half worth testing. Nobody watches a
+ * 03:00 cron, so every way it can go wrong is silent — a window that skips
+ * everything, a moved job restored to the day it left, a duplicate added
+ * every night for a month. All of that lives here and is driven directly
+ * by test/suites/sheetsync.mjs. What is left in fetchSheetValues is a
+ * signed token exchange and one GET, which no local test can meaningfully
+ * validate anyway: it works with real credentials or it does not, and
+ * docs/SHEET-SYNC.md says to trigger a run by hand once to find out.
+ * ---------------------------------------------------------------------- */
+export async function syncValues(values) {
+  const text = valuesToTsv(values);
+    const { jobs, skipped, warnings } = parseSheetPaste(text, null);
+    const byDate = groupByDate(jobs);
+
+    const win = syncWindow();
+    const inWindow = (d) => d >= win.from && d <= win.to;
+
+    const supabase = supabaseServer();
+    const results = [];
+    const skippedDates = [];
+    let totalAdded = 0, totalDupes = 0;
+
+    for (const [date, rows] of byDate) {
+      if (!date || date === "(no date)") continue;
+      if (!inWindow(date)) { skippedDates.push({ date, rows: rows.length }); continue; }
+
+      const existingRaw = await readDayServer(supabase, date);
+      const existing = migrateDay(existingRaw, date);
+
+      /* countTombstones: a job that already left this day has been dealt
+         with. The Sheet still lists it under the date it was moved OFF,
+         because moving a job in the app does not rewrite the Sheet — so
+         without this the sync would put it back every night. A person
+         pasting by hand gets the opposite default; see pasteAdditions. */
+      const plan = pasteAdditions(existing, rows, { countTombstones: true });
+      const created = plan.add.map((r) => newJob(r, date, "Google Sheet sync"));
+
+      if (created.length) {
+        await writeDayServer(supabase, date, [...existing, ...created]);
+      }
+
+      totalAdded += created.length;
+      totalDupes += plan.dupes;
+      results.push({ date, added: created.length, alreadyHad: plan.dupes });
+    }
+
+  return {
+      rowsRead: values.length - 1,
+      rowsSkipped: skipped,
+      warnings,
+      /* Said out loud, because a sync that quietly ignores most of the tab
+         is otherwise indistinguishable from one that is broken. */
+      window: { today: win.today, from: win.from, to: win.to,
+                daysBack: DAYS_BACK, daysAhead: DAYS_AHEAD },
+      datesOutsideWindow: skippedDates,
+      totalAdded,
+      totalDupes,
+      byDate: results,
+  };
+}
+
 export default async function handler(req, res) {
   const authHeader = req.headers.authorization;
   const cronSecret = process.env.CRON_SECRET;
@@ -124,42 +250,12 @@ export default async function handler(req, res) {
       res.status(200).json({ ok: true, message: "Sheet range was empty.", startedAt });
       return;
     }
-
-    const text = valuesToTsv(values);
-    const { jobs, skipped, warnings } = parseSheetPaste(text, null);
-    const byDate = groupByDate(jobs);
-
-    const supabase = supabaseServer();
-    const results = [];
-    let totalAdded = 0, totalDupes = 0;
-
-    for (const [date, rows] of byDate) {
-      if (!date || date === "(no date)") continue;
-      const existingRaw = await readDayServer(supabase, date);
-      const existing = migrateDay(existingRaw, date);
-
-      const plan = pasteAdditions(existing, rows);
-      const created = plan.add.map((r) => newJob(r, date, "Google Sheet sync"));
-
-      if (created.length) {
-        await writeDayServer(supabase, date, [...existing, ...created]);
-      }
-
-      totalAdded += created.length;
-      totalDupes += plan.dupes;
-      results.push({ date, added: created.length, alreadyHad: plan.dupes });
-    }
-
+    const summary = await syncValues(values);
     res.status(200).json({
       ok: true,
       startedAt,
       finishedAt: new Date().toISOString(),
-      rowsRead: values.length - 1,
-      rowsSkipped: skipped,
-      warnings,
-      totalAdded,
-      totalDupes,
-      byDate: results,
+      ...summary,
     });
   } catch (err) {
     res.status(500).json({ ok: false, startedAt, error: err.message || String(err) });

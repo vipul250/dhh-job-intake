@@ -92,12 +92,42 @@ const others = [
   ok("five rows that read the same are added AND flagged as unreadable apart");
 }
 
-/* ---- 6. a cancelled or departed job does not block a re-add --------- */
+/* ---- 6. a tombstone: ignored for a person, counted for the sync ------ */
 {
-  const day = [{ id: "t1", _tomb: true, property: "Palm villa", unit: "", description: "Pool Cleaning" }];
-  const plan = pasteAdditions(day, pools);
-  assert.equal(plan.add.length, 5, "a tombstone is not a job standing in the way");
-  ok("a tombstone does not count against the paste");
+  /* A tombstone keeps what left the day under `snapshot`, so the content
+     key has to read through it. If it did not, this test would pass for
+     the wrong reason — the key would be "||" and match nothing. */
+  const moved = {
+    id: "tomb-x", _tomb: true, jobId: "x", toDate: "2026-09-05",
+    snapshot: { property: "Palm villa", unit: "", description: "Pool Cleaning" },
+  };
+  const day = [moved];
+
+  /* A person pasting by hand is looking at the day and can see what left
+     it, so a tombstone is not a job standing in the way. */
+  const byHand = pasteAdditions(day, pools);
+  assert.equal(byHand.add.length, 5, "a tombstone does not block a manual paste");
+
+  /* The nightly sync has nobody looking. The Sheet still lists the row
+     under the date it was moved OFF, so without this it would be put back
+     every night. */
+  const bySync = pasteAdditions(day, pools, { countTombstones: true });
+  assert.equal(bySync.add.length, 4,
+    "the moved one is treated as dealt with; the other four still land");
+  assert.equal(bySync.dupes, 1);
+
+  /* Proof the flag is doing the work rather than the key failing to match:
+     one tombstone accounts for exactly one row, two for two. */
+  const twoMoved = pasteAdditions([moved, { ...moved, id: "tomb-y" }], pools,
+    { countTombstones: true });
+  assert.equal(twoMoved.add.length, 3);
+
+  /* And a tombstone for different work blocks nothing. */
+  const elsewhere = pasteAdditions(
+    [{ ...moved, snapshot: { property: "La Vie", unit: "3503", description: "Reset smart lock" } }],
+    pools, { countTombstones: true });
+  assert.equal(elsewhere.add.length, 5, "a tombstone only accounts for its own row");
+  ok("a tombstone is ignored for a manual paste and counted for the sync");
 }
 
 console.log(`\n${checks} checks passed.`);
