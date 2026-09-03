@@ -237,3 +237,115 @@ upgrade path.
 The honest reading of any of these figures: they say *these people were on
 this card and not idle*, which was the question. They are not a measurement
 of hours worked, and the card says so.
+
+---
+
+# Two faults in the workbook, and one in the app, found on 3 September
+
+The board showed **Resty with one job where the schedule has five**, and he
+was right to say that would wreck his month-end productivity numbers. Three
+separate things were wrong, in a chain.
+
+## 1. The printable view silently drops any villa number
+
+The *Printable Schedule (PDF)* tab is filled by one Google Sheets `QUERY`
+against *Daily Input*. On 3 September it loses **10 of 32 unit numbers**, and
+the pattern is exact:
+
+| Unit in Daily Input | Type | Survives the printable view? |
+|---|---|---|
+| `4514`, `3503`, `608`, `909`, `1211` … | number | **20 of 20 kept** |
+| `E41`, `O56`, `O103`, `F30`, `L14`, `G382`, `L201`, `R01`, `P402` | text | **0 of 10 kept** |
+
+This is a known `QUERY` behaviour rather than a formula typo: a column with
+mixed types is coerced to the **majority** type and the minority comes back
+**blank**. Column E is mostly apartment numbers, so every villa code — which
+is text — is dropped. It is silent, which is why it survived this long.
+
+The villa codes are the ones that matter most operationally: `Palm villa`
+appears five times in one technician's day and the number is the only thing
+distinguishing one pool from another.
+
+## 2. The printable view's Parking and Status headings are the wrong way round
+
+The same `QUERY` reads:
+
+```
+SELECT B,C,D,E,F,G,H,I,…
+```
+
+where `F` is **Status** and `G` is **Parking No.** — but the heading row
+above it says `Unit`, `Parking No.`, `Status`. So the data arrives
+Status-then-Parking under headings that say Parking-then-Status. This is the
+long-standing "the printed sheet mismatches status and parking" complaint,
+and it is not the PDF export at all — it is these two headings.
+
+## Both are fixed by one formula
+
+Replacing the `QUERY` with `FILTER` fixes the dropped villa numbers, because
+`FILTER` does not coerce column types. Putting `G` before `F` in the same
+edit fixes the headings. In the printable tab's first data cell:
+
+```
+=IFERROR(FILTER({'Daily Input- Field Tasks'!B2:E1010,
+                 'Daily Input- Field Tasks'!G2:G1010,
+                 'Daily Input- Field Tasks'!F2:F1010,
+                 'Daily Input- Field Tasks'!H2:P1010,
+                 'Daily Input- Field Tasks'!R2:R1010,
+                 'Daily Input- Field Tasks'!T2:U1010,
+                 'Daily Input- Field Tasks'!Q2:Q1010},
+                'Daily Input- Field Tasks'!A2:A1010=$B$1,
+                'Daily Input- Field Tasks'!D2:D1010<>""),
+        "No tasks logged for this date yet.")
+```
+
+Nineteen columns, the same nineteen headings, Parking and Status now in the
+order the headings claim. Neither fault can be fixed from inside the app —
+a number that is not in the paste cannot be recovered from it.
+
+## 3. The app was deduplicating a paste against itself
+
+This one was ours, and it is the reason **28** rows landed instead of 32.
+
+A re-paste has to be safe, because people do it — they add two jobs at the
+bottom of the sheet and paste the lot again. A `TSK` reference would be the
+reliable key but only about four rows in ten carry one, so there is a second
+key on the row's content: property, unit, and the first forty characters of
+the description.
+
+That key was held in a `Set` that the incoming rows were **added to as they
+were read**, so the second row of a paste was compared against the first.
+With the villa numbers gone, Resty's five rows are all
+`palm villa | | pool cleaning` — one key. Four were discarded as duplicates
+of a job that had just been created from the same paste.
+
+**Two rows in one paste are two lines somebody wrote, and the app has no
+business deciding they are the same job.** The content key is for comparing a
+paste against what the day already holds, so it is now *counted* rather than
+set-tested (`pasteAdditions` in `job.js`):
+
+| The day has | The paste has | Added |
+|---|---|---|
+| 0 | 5 | **5** |
+| 5 | 5 | **0** |
+| 5 | 6 | **1** |
+| 2 | 5 | **3** |
+
+The old `Set` got the first row of that table wrong by four, and the third
+wrong by one — a job added at the bottom of an already-pasted sheet was
+silently dropped, which nobody had noticed. A `TSK` reference stays a strict
+one-of, because it identifies a single PMS task however the row is worded.
+
+Measured against the real 3 September with the villa numbers stripped the way
+the printable view strips them: **32 rows read, 32 added**, split Vitalis 4,
+Abdul Riyaz & Bijaya 3, Resty 5, Jabbar 5, Bright 3, Yousouf 4, Daljit 5,
+Anthony 3 — and a second paste of the same text adds nothing.
+
+**The paste dialog now says when rows are indistinguishable**, rather than
+letting it become the technician's problem on site:
+
+> **5 rows read exactly alike**, because the unit is blank on them:
+> · 5 × palm villa — pool cleaning
+> They come in as 5 separate jobs, which is right — five pools are five
+> jobs. But the technician cannot tell which is which, so put the number in
+> the sheet's **Unit / Villa No.** column and re-paste when you can.

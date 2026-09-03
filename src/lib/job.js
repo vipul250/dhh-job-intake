@@ -203,6 +203,91 @@ export const uid = () =>
 
 /* ------------------------------- events ------------------------------- */
 
+/* ---------------------------------------------------------------------- *
+ * What a paste should actually add.
+ *
+ * Re-pasting a day has to be safe, because people do it — they add two
+ * more jobs at the bottom of the sheet and paste the lot again. A TSK
+ * reference would be the reliable key but the sheet carries one on about
+ * four rows in ten, so there is a second key on the content itself.
+ *
+ * That content key was being used to deduplicate the incoming rows
+ * AGAINST EACH OTHER, and that is wrong. It cost four of Resty's five
+ * pool cleanings on 3 September.
+ *
+ * His sheet has five rows: Palm villa E41, O56, O103, F30 and L14, all
+ * "Pool Cleaning", all an hour. The printable view drops the villa number
+ * on those rows (it is text in a column of numbers — see docs/SHEET-PASTE.md),
+ * so all five arrive as "Palm villa / / Pool Cleaning". One key, five
+ * rows, and four of them were discarded as duplicates of the first. He was
+ * cleaning five pools that day.
+ *
+ * Two rows in the same paste are two lines the coordinator wrote, and the
+ * app has no business deciding they are the same job. What the content key
+ * is for is comparing a paste against what the DAY ALREADY HOLDS, so it is
+ * counted rather than set-tested: if the day has two of a key and the
+ * paste has five, three are new. That keeps every case right —
+ *
+ *   fresh day:            have 0, paste 5  -> add 5
+ *   pasted again:         have 5, paste 5  -> add 0
+ *   pasted with one more: have 5, paste 6  -> add 1
+ *
+ * — where a Set silently made the first case add one.
+ * ---------------------------------------------------------------------- */
+
+const pasteRefKey = (j) => canonKey(j.pmsRef);
+const pasteBodyKey = (j) =>
+  `${canonKey(j.property)}|${canonKey(j.unit)}|${canonKey(j.description).slice(0, 40)}`;
+
+/**
+ * @param {Array} existing jobs already on the day
+ * @param {Array} rows     rows just parsed out of a paste
+ * @returns {{add: Array, dupes: number, indistinct: Array}}
+ *   `indistinct` lists the keys where one paste carried several rows that
+ *   read identically, so the dialog can say so out loud — they are added,
+ *   but a technician cannot tell them apart on the day.
+ */
+export function pasteAdditions(existing, rows) {
+  const have = new Map();
+  (existing || []).forEach((j) => {
+    if (!j || j._tomb) return;
+    const k = pasteBodyKey(j);
+    have.set(k, (have.get(k) || 0) + 1);
+  });
+
+  const want = new Map();
+  (rows || []).forEach((r) => {
+    const k = pasteBodyKey(r);
+    want.set(k, (want.get(k) || 0) + 1);
+  });
+
+  /* How many of each key this paste is allowed to add. */
+  const budget = new Map();
+  want.forEach((n, k) => budget.set(k, Math.max(0, n - (have.get(k) || 0))));
+
+  /* A TSK reference stays a strict one-of: it identifies a single PMS task,
+     so a second row carrying it really is the same job twice. */
+  const seenRefs = new Set((existing || []).map(pasteRefKey).filter(Boolean));
+
+  const add = [];
+  let dupes = 0;
+  (rows || []).forEach((r) => {
+    const ref = pasteRefKey(r);
+    if (ref && seenRefs.has(ref)) { dupes++; return; }
+    const k = pasteBodyKey(r);
+    const left = budget.get(k) || 0;
+    if (left <= 0) { dupes++; return; }
+    budget.set(k, left - 1);
+    if (ref) seenRefs.add(ref);
+    add.push(r);
+  });
+
+  const indistinct = [];
+  want.forEach((n, k) => { if (n > 1) indistinct.push({ key: k, count: n }); });
+
+  return { add, dupes, indistinct };
+}
+
 export function makeEvent(kind, by, extra = {}) {
   return { at: Date.now(), kind, by: squash(by) || "unknown", ...extra };
 }

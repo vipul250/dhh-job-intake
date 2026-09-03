@@ -13,7 +13,7 @@ import {
   STATE_META, NOT_DONE_REASONS, MOVE_REASONS, MOVE_REASON_LABEL, SAY_WHAT_HAPPENED,
   splitTaskParts,
   moveReasonDisplaces, CANCEL_REASONS, EVENT_LABEL,
-  OUTCOME_OPTIONS, JOB_SOURCES, SOURCE_LABEL, HOW_REPORTED,
+  OUTCOME_OPTIONS, JOB_SOURCES, SOURCE_LABEL, HOW_REPORTED, pasteAdditions
 } from "../lib/job.js";
 import { parseWorkReport, fmtMin } from "../lib/workReport.js";
 import { parseAnyPaste } from "../lib/backlog.js";
@@ -381,25 +381,16 @@ export default function LiveBoard({
     let added = 0, dupes = 0;
     for (const [day, list] of byDay) {
       const existing = day === selectedDate ? jobs : liveJobs(migrateDay(await readDay(day), day));
-      /* A TSK reference is the reliable key, but the coordinator's sheet
-         only carries one on about four rows in ten. Without a second key on
-         the content itself, re-pasting a sheet — which people do, because
-         they added two more jobs at the bottom — would duplicate most of
-         the day. */
-      const refKey = (j) => canonKey(j.pmsRef);
-      const bodyKey = (j) =>
-        `${canonKey(j.property)}|${canonKey(j.unit)}|${canonKey(j.description).slice(0, 40)}`;
-      const seenRefs = new Set(existing.map(refKey).filter(Boolean));
-      const seenBodies = new Set(existing.map(bodyKey));
+      /* Deduplicated against what the DAY ALREADY HOLDS, and never against
+         the other rows of the same paste — five lines the coordinator wrote
+         are five jobs even when they read identically. See pasteAdditions
+         in job.js for the four of Resty's five pool cleanings this cost. */
+      const plan = pasteAdditions(existing, list);
+      dupes += plan.dupes;
       const dayLock = lockState(day, day === selectedDate ? post : await readPost(day));
-      const created = [];
-      list.forEach((r) => {
-        const ref = refKey(r), body = bodyKey(r);
-        if ((ref && seenRefs.has(ref)) || seenBodies.has(body)) { dupes++; return; }
-        if (ref) seenRefs.add(ref);
-        seenBodies.add(body);
+      const created = plan.add.map((r) => {
         const j = newJob(r, day, who);
-        created.push(dayLock.locked ? withEvent(j, "added_late", who, { lock: dayLock.kind }) : j);
+        return dayLock.locked ? withEvent(j, "added_late", who, { lock: dayLock.kind }) : j;
       });
       if (!created.length) continue;
       added += created.length;
@@ -3135,6 +3126,13 @@ function TaskPasteDialog({ date, seed, knownTechs, onCancel, onCommit }) {
   useEffect(() => { if (seed) read(seed); }, []);   // eslint-disable-line react-hooks/exhaustive-deps
 
   const rows = preview?.jobs || [];
+  /* Rows that read exactly alike. They are separate jobs and come in as
+     separate jobs — but nobody on the day can tell them apart, and that is
+     worth saying before it is a technician's problem. */
+  const indistinct = useMemo(
+    () => (rows.length ? pasteAdditions([], rows).indistinct : []),
+    [rows]
+  );
   const dates = preview?.dates || [];
   const elsewhere = dates.filter((d) => d && d !== date);
   const withTime = rows.filter((r) => squash(r.timeOfVisit)).length;
@@ -3178,6 +3176,26 @@ function TaskPasteDialog({ date, seed, knownTechs, onCancel, onCommit }) {
               <code> vacant</code>, <code>B2B</code>, <code>WC</code> — so they do not have to be typed
               again. A confirmed time is the first thing the day gets planned around.
             </p>
+          )}
+          {indistinct.length > 0 && (
+            <div className="mt-2 text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
+              <b>{indistinct.reduce((n, g) => n + g.count, 0)} rows read exactly alike</b>, because
+              the unit is blank on them:
+              <ul className="mt-0.5">
+                {indistinct.slice(0, 4).map((g) => {
+                  const [prop, unit, desc] = g.key.split("|");
+                  return (
+                    <li key={g.key}>
+                      · {g.count} × {prop || "(no property)"}{unit ? ` ${unit}` : ""} — {desc}
+                    </li>
+                  );
+                })}
+              </ul>
+              They come in as {indistinct.reduce((n, g) => n + g.count, 0)} separate jobs, which is
+              right — five pools are five jobs. But the technician cannot tell which is which, so
+              put the number in the sheet&rsquo;s <b>Unit / Villa No.</b> column and re-paste when
+              you can.
+            </div>
           )}
           {elsewhere.length > 0 && (
             <p className="mt-2 text-xs text-slate-800 bg-slate-100 border border-slate-200 rounded px-2 py-1.5">

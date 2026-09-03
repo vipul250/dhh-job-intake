@@ -97,61 +97,56 @@ changes as described. A `no-undef` sweep with a throwaway `npx eslint` found
 the one real scope bug (`onProjectToday` referenced inside `RosterStrip`);
 eslint was NOT added to `package.json`.
 
-### C. 3 September is still the mangled day — and now there is a number to check it against
+### C. Resty's five pools — SOLVED, and it was three faults in a chain
 
-He reported on 3 September that **Resty had 1 task on the board where the
-printed sheet shows 5**, and was worried the month-end productivity figures
-would under-count him. He is right that they will, and the cause is not a
-new bug: the day still holds the wreckage of the original quick-add paste.
+He cleared 3 September, re-pasted, and **Resty still showed one job where
+the schedule has five.** He was right that this would wreck the month-end
+productivity figures, and right again that it should produce five jobs
+regardless of the missing villa number: *"realistically he will be cleaning
+5 pools today."* Three separate things were wrong.
 
-**This was measured rather than guessed.** The real sheet and the current
-reader were both checked directly:
+**1. His printable view silently drops every villa number.** The
+*Printable Schedule (PDF)* tab is one Google Sheets `QUERY`, and on 3
+September it loses **10 of 32 units** with an exact pattern: all 20 numeric
+units survive, all 10 text ones are blank. That is `QUERY` coercing a
+mixed-type column to its majority type and returning empty for the
+minority — the apartment numbers are numbers, the villa codes (`E41`,
+`O56`, `O103`, `F30`, `L14`, `G382`, `L201`, `R01`, `P402`) are text.
 
-- The workbook's *Daily Input* tab has **32 rows for 2026-09-03**, and
-  Resty's five are five different villas — `Palm villa E41 / O56 / O103 /
-  F30 / L14`, each with the villa in its own Unit column.
-- Running `test/harness/day0903.txt` (the PDF-form paste) through
-  `parseSheetText` gives **32 rows, all five of Resty's villas distinct,
-  five distinct dedupe keys**. So a fresh paste into "Paste the day in"
-  works perfectly and nothing collapses.
+**2. That tab's Parking and Status headings are swapped.** The `QUERY`
+selects `F` (Status) before `G` (Parking) under headings that read
+`Parking No.` then `Status`. **This is the long-standing "printed sheet
+mismatches status and parking" complaint, and it was never the PDF export
+— it is these two headings.** §10 previously recorded that as unfixable.
+It is fixable, in his sheet, and both faults go with one formula. The
+replacement `FILTER` is written out in `docs/SHEET-PASTE.md`.
 
-His board shows **28 scheduled**, which is 32 minus 4, and Resty at 1 rather
-than 5 — the four "Close them off" cancelled as obvious damage, leaving one
-survivor. Cancelled jobs stay on the day, greyed, so they do not count as
-scheduled. **The day has never been cleared and re-pasted.**
+**3. The app was deduplicating a paste against itself — ours, and the
+reason 28 landed instead of 32.** The content key (property | unit |
+description) was kept in a `Set` that incoming rows were added to as they
+were read, so row two was compared against row one. With the villa numbers
+gone, Resty's five rows are all `palm villa | | pool cleaning`, and four
+were discarded as duplicates of a job created from the same paste.
 
-**The fix, and the exact result to check it worked:**
-hard-refresh → Live Board → 3 September → *Start this day again* / the red
-banner's **Clear 2026-09-03 and start again** → type the date → paste the
-sheet into **Paste the day in** (not the quick-add box).
+Fixed as `pasteAdditions()` in `job.js`: the content key now compares a
+paste against **what the day already holds**, counted rather than
+set-tested. `have 0 / paste 5 -> add 5`, `have 5 / paste 5 -> add 0`,
+`have 5 / paste 6 -> add 1`. **The old `Set` was also silently losing a job
+added at the bottom of an already-pasted sheet**, which nobody had noticed.
+A `TSK` reference stays a strict one-of. Covered by
+`test/suites/pastedupe.mjs` (6 checks) and verified in a browser against
+the real 3 September with the villas stripped the way his printable view
+strips them: **32 read, 32 added**, Resty 5, and a second paste adds
+nothing.
 
-Afterwards the day must read **32 jobs**, split:
+He said he will have the coordinators type villa numbers from tomorrow.
+Until they do, the paste dialog says out loud when rows are
+indistinguishable rather than letting it become the technician's problem
+on site.
 
-| Technician | Jobs |
-|---|---|
-| Resty | 5 |
-| Jabbar | 5 |
-| Daljit | 5 |
-| Vitalis | 4 |
-| Yousouf | 4 |
-| Abdul Riyaz and Bijaya | 3 |
-| Bright | 3 |
-| Anthony | 3 |
-
-If it does not read 32, ask what he sees when he presses the clear button —
-that distinction is the whole diagnosis and cannot be reproduced from here:
-
-- *"Could not archive the day, so nothing was cleared"* → the Supabase write
-  is being rejected. Look at RLS on `kv_store` for the `archive:` prefix, or
-  the row size (~119 jobs of JSON).
-- *nothing happens at all* → he is on an old bundle, or the button is not
-  rendering. Check `wasMisread` in `LiveBoard.jsx`.
-- *it clears and the rows come back* → the day watcher or a second tab is
-  writing the old array back.
-
-**Do not have him re-paste without clearing first.** The mangled rows key
-differently from the same rows parsed correctly, so no dedupe can match
-them: he would end up with 32 good rows *plus* the wreckage.
+**What he still has to do: clear 3 September and re-paste once more**, on
+the new build. The day currently on the board was pasted by the version that
+dropped four rows.
 
 ### Reaching his infrastructure from here
 
@@ -787,7 +782,16 @@ a schedule and hands it to the reader, and `isMisread` finds the rows the
 old path already damaged so they can be closed off with a reason. Full
 write-up in `docs/SHEET-PASTE.md`.
 
-**The printed sheet still mismatches status and parking, and always will.**
+**The printed sheet's status/parking mismatch IS fixable — this was wrong.**
+It was recorded here as Google Sheets' PDF export and therefore permanent.
+It is not: the *Printable Schedule* tab's `QUERY` returns Status before
+Parking under headings that say the opposite, and the same formula also
+drops every text unit. Both go with the `FILTER` replacement in
+`docs/SHEET-PASTE.md`. The paragraph below is kept because "Copy for the
+technician" is still the right answer for a technician reading a printout,
+but it is no longer the *only* answer.
+
+**The old note, for context.**
 167 of 492 rows have no parking bay, and the printed table has no
 gridlines, so the columns close up and the Guest-Confirmed Y/N sits under
 the "Parking No." heading. That is Google Sheets' PDF export and cannot be

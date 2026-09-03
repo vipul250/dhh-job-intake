@@ -935,6 +935,22 @@ function ProjectCrewPanel({ summary, picks, projects, onChange, busy }) {
         are picked up on their own and appear ticked.
       </p>
 
+      {/* Why the list above can read "nobody" on a day a crew plainly is on a
+          project: a job card is the only thing that says a project runs
+          BEYOND the days somebody wrote a daily task for it. Read back from
+          the linked jobs, a project can only ever reach its last scheduled
+          day — which is why the crew reappears as idle the moment the daily
+          rows stop, even though the card runs to the end of the week. */}
+      {(picks || []).length === 0 && (projects || []).some((p) => (p.crew || []).length) && (
+        <p className="text-[11px] text-slate-600 bg-slate-50 border border-slate-200 rounded px-2 py-1.5 mb-2">
+          No job card covers this day. A project only knows it runs past the days it has daily
+          tasks for if a card gives it an <b>Est. Completion Date</b> — that lives in the
+          workbook&rsquo;s <b>Job Cards (Projects)</b> tab. Paste it in on <b>Projects</b> and a
+          crew stays off the idle list until their card is due. Ticking names below does the same
+          thing for one day.
+        </p>
+      )}
+
       {candidates.length === 0 ? (
         <p className="text-xs text-slate-400">
           Nobody on the roster yet — paste the shift message first.
