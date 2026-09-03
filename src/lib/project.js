@@ -216,7 +216,11 @@ export function projectEndDate(project, today) {
   /* Still running: it has accrued up to today, and an overrun is real work
      rather than something to clip back to the target date. */
   if (project.status === "in_progress") return !target || target < now ? now : target;
-  if (project.status === "completed") return target && target < now ? target : now;
+  /* Completed with nothing recorded: say so. Falling back to today made
+     every finished project look like it was still running, so its crew
+     showed as on a project indefinitely. "I cannot say when this ended"
+     is the honest answer and keeps it off today's board. */
+  if (project.status === "completed") return target || "";
   return "";
 }
 
@@ -687,6 +691,70 @@ export function candidateProjects(jobs, found) {
 }
 
 /* ---------------------------------------------------------------------- *
+ * Filling in the crew on projects adopted before there was one.
+ *
+ * adoptProject used to throw away the crew that discovery had already
+ * worked out, so every project brought in from the schedule names nobody.
+ * The consequence showed up on the Roster: "On projects — nobody on a job
+ * card", with Adi, Khaled, Nizar and Shafeeq listed as idle on a day they
+ * were on a job card. Sixteen projects were already stored that way, and
+ * fixing adoptProject does nothing for those.
+ *
+ * They can be repaired without asking anybody anything, because the
+ * evidence is already there: a project carries linkedJobIds, and each of
+ * those daily jobs names the crew that worked it. That is the same source
+ * discovery read in the first place.
+ *
+ * Only ever fills a blank. It does not correct a crew somebody typed, and
+ * it does not touch a project with no linked jobs — there is nothing to
+ * read in that case, and inventing one would be worse than a blank. Same
+ * shape as backfillStaff(): the seed alone reaches nobody, because it only
+ * runs when there is no stored list.
+ * ---------------------------------------------------------------------- */
+export function backfillCrewFromJobs(projects, allJobs, by = "system") {
+  const byId = new Map((allJobs || []).map((j) => [j.id, j]));
+  let filled = 0;
+  const out = (projects || []).map((p) => {
+    const linked = (p.linkedJobIds || []).map((id) => byId.get(id)).filter(Boolean);
+    if (!linked.length) return p;
+
+    const next = { ...p };
+    const changed = [];
+
+    if (!(p.crew || []).length) {
+      const crew = [];
+      const seen = new Set();
+      linked.forEach((j) => splitCrew(j.team).forEach((t) => {
+        const k = canonKey(t);
+        if (k && !seen.has(k)) { seen.add(k); crew.push(t); }
+      }));
+      if (crew.length) { next.crew = crew; changed.push("crew"); }
+    }
+
+    /* Dates too, for the same reason: a project with no end date was
+       reported as still running, so its crew showed on a project they
+       finished in August. The days its jobs were scheduled bound it. */
+    const dates = linked.map((j) => j._date || j.scheduledDate).filter(Boolean).sort();
+    if (dates.length) {
+      if (!squash(p.startDate)) { next.startDate = dates[0]; changed.push("startDate"); }
+      const last = dates[dates.length - 1];
+      if (!squash(p.targetDate)) { next.targetDate = last; changed.push("targetDate"); }
+      if (p.status === "completed" && !squash(p.actualCompletionDate)) {
+        next.actualCompletionDate = last;
+        changed.push("actualCompletionDate");
+      }
+    }
+
+    if (!changed.length) return p;
+    filled++;
+    next.events = [...(p.events || []),
+                   makeEvent("edited", by, { from: "read back from the linked jobs", fields: changed })];
+    return next;
+  });
+  return { projects: filled ? out : projects, filled };
+}
+
+/* ---------------------------------------------------------------------- *
  * Bringing a job card in, and bringing it in again.
  *
  * The Job Cards tab is a living sheet: a card goes in as "In Progress"
@@ -763,16 +831,25 @@ export function updateFromCard(project, draft, by) {
 
 /** Turn a discovered project into a real one, keeping everything found. */
 export function adoptProject(found, by) {
+  const done = !!(found.lastDate && found.lastDate < new Date().toISOString().slice(0, 10));
   return newProject({
-    status: found.lastDate && found.lastDate < new Date().toISOString().slice(0, 10)
-      ? "completed" : "in_progress",
+    status: done ? "completed" : "in_progress",
     type: found.type,
     property: found.property,
     unit: found.unit,
     title: found.title,
     quotationRef: found.ref || "",
     startDate: found.firstDate || "",
-    actualCompletionDate: "",
+    /* The crew discovery already worked out, which was being thrown away.
+       Without it an adopted project names nobody, so the board went on
+       calling its crew idle — the whole point of adopting it. */
+    crew: found.crew || [],
+    /* And an end date. A project with no end at all was reported as
+       running until today for ever, which put its crew on a project they
+       finished in August. The last day the schedule saw work on it is the
+       best evidence there is. */
+    targetDate: found.lastDate || "",
+    actualCompletionDate: done ? (found.lastDate || "") : "",
     linkedJobIds: found.jobIds || [],
     notes: found.ref
       ? `Found in the schedule: ${found.days} day(s) of work booked against ${found.ref}.`

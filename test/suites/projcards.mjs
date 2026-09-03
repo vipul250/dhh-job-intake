@@ -19,8 +19,10 @@
 import assert from "node:assert/strict";
 import { parseJobCards, splitPastedRows, looksLikeJobCards, titleFromScope }
   from "../../src/lib/projectSheet.js";
-import { newProject, projectCost, projectCrewOn, projectSpanDates, projectActiveOn }
-  from "../../src/lib/project.js";
+import {
+  newProject, projectCost, projectCrewOn, projectSpanDates, projectActiveOn,
+  projectEndDate, discoverProjects, adoptProject, backfillCrewFromJobs,
+} from "../../src/lib/project.js";
 
 const HEADER = [
   "Property", "Unit", "Parking No.", "Job Type", "Quotation Ref", "Start Date",
@@ -224,7 +226,53 @@ const ok = (what) => { checks++; console.log("  ok  " + what); };
   ok("a day only counts when the board has a schedule and nothing else for that person");
 }
 
-/* ------------------------ 9. titles ---------------------------------- */
+/* --- 9. a project adopted from the schedule must name its crew -------- */
+{
+  /* Regression, reported from the live Roster: it read "On projects —
+     nobody on a job card" while four of them were listed as idle.
+     adoptProject was discarding found.crew, and set no end date at all, so
+     a finished project also reported itself as still running. */
+  const jobs = [
+    { id: "j1", _date: "2026-09-01", property: "Damac Towers", unit: "4301",
+      description: "ONB - Approved - Quotation - PC-2026-08-07 - AC servicing",
+      team: "Shafiq, Khaled & Nizar", estimatedTime: "3 hrs" },
+    { id: "j2", _date: "2026-09-02", property: "Damac Towers", unit: "4301",
+      description: "Contin Approved - Quotation - PC-2026-08-07 - AC servicing",
+      team: "Shafeeq, Khaled, Nizar", estimatedTime: "3 hrs" },
+  ];
+  const found = discoverProjects(jobs);
+  assert.equal(found.length, 1);
+  const adopted = adoptProject(found[0], "test");
+  assert.deepEqual(adopted.crew, ["Shafeeq", "Khaled", "Nizar"],
+    "the crew discovery found must survive being adopted");
+  assert.equal(adopted.startDate, "2026-09-01");
+  assert.equal(adopted.targetDate, "2026-09-02", "and it must have an end");
+
+  /* A completed project with no dates recorded must not claim to be
+     running today — that put its crew on a project they finished in
+     August, every day, for ever. */
+  const stale = { ...adopted, status: "completed", targetDate: "", actualCompletionDate: "" };
+  assert.equal(projectEndDate(stale, "2026-09-30"), "", "cannot say, so says nothing");
+  assert.equal(projectActiveOn(stale, "2026-09-30", "2026-09-30"), false);
+
+  /* And the sixteen already stored without a crew are read back from the
+     jobs linked to them rather than being asked about. */
+  const legacy = [{ ...adopted, crew: [], targetDate: "", actualCompletionDate: "" }];
+  const fixed = backfillCrewFromJobs(legacy, jobs, "test");
+  assert.equal(fixed.filled, 1);
+  assert.deepEqual(fixed.projects[0].crew, ["Shafeeq", "Khaled", "Nizar"]);
+  assert.equal(fixed.projects[0].targetDate, "2026-09-02");
+  assert.deepEqual(
+    projectCrewOn(fixed.projects, "2026-09-02", "2026-09-02").map((x) => x.name).sort(),
+    ["Khaled", "Nizar", "Shafeeq"]);
+
+  /* It fills blanks; it does not overwrite a crew somebody typed. */
+  const typed = [{ ...adopted, crew: ["Somebody Else"] }];
+  assert.equal(backfillCrewFromJobs(typed, jobs, "test").filled, 0);
+  ok("an adopted project keeps its crew, gets an end date, and old ones are read back");
+}
+
+/* ------------------------ 10. titles --------------------------------- */
 {
   assert.equal(titleFromScope('pending\n-Cp filter need to fixe', 'Onboarding'),
     "-Cp filter need to fixe", '"pending" says nothing, so it is passed over');

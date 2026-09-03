@@ -11,7 +11,7 @@ import {
   newProject, materialLine, projectCost, projectDuration, buildPriceBook,
   lookupPrice, findJobsForProject, extractQuotationRef, readQuotationRef,
   discoverProjects, candidateProjects, adoptProject,
-  projectFromCard, updateFromCard,
+  projectFromCard, updateFromCard, backfillCrewFromJobs,
   PROJECT_STATUS, PROJECT_STATUS_LABEL, PROJECT_TYPES,
 } from "../lib/project.js";
 import { parseJobCards, matchExisting } from "../lib/projectSheet.js";
@@ -60,6 +60,22 @@ export default function Projects({ knownDates, showToast }) {
       const map = {};
       Object.entries(days).forEach(([d, rows]) => { map[d] = liveJobs(migrateDay(rows, d)); });
       setJobsByDate(map);
+
+      /* Projects adopted from the schedule before a project could carry a
+         crew name nobody, which is why the Roster read "On projects —
+         nobody on a job card" while four of them were listed as idle. The
+         crew is already in their linked jobs, so it is read back rather
+         than asked for. Fills blanks only — see backfillCrewFromJobs. */
+      const withDates = Object.entries(map)
+        .flatMap(([d, rows]) => rows.map((j) => ({ ...j, _date: d })));
+      const fix = backfillCrewFromJobs(list, withDates, "read back from the schedule");
+      if (fix.filled) {
+        setProjects(fix.projects);
+        await storageSet("projects", JSON.stringify(fix.projects));
+        showToast?.(
+          `Filled in the crew on ${fix.filled} project(s) from the jobs already linked to them. ` +
+          "The board will stop calling them idle on those days.", "ok");
+      }
     })();
   }, [knownDates]);
 

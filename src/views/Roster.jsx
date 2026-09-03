@@ -481,11 +481,30 @@ function AccessPanel({ authRequired, setAuthRequired, session, showToast }) {
   const me = session ? identityFor(session, staff || []) : null;
   const canTurnOff = !!(me && me.admin);
   const admins = people.filter((x) => x.admin).map((x) => x.name);
-  const coordinators = people.filter((x) => x.trade === "coordinator");
-  const provedCoords = coordinators.filter(
-    (c) => squash(c.email) && provedEmails.includes(canonKey(c.email)));
-  const coordsNoEmail = coordinators.filter((c) => !squash(c.email));
-  const proved = provedCoords.length > 0;
+
+  /* ------------------------------------------------------------------ *
+   * The proof has to come from SOMEBODY ELSE'S address.
+   *
+   * Not specifically a coordinator's — that was too narrow. Under the
+   * current arrangement the coordinators do not use this app at all: they
+   * carry on with the Google Sheet, and the manager reviews what the sheet
+   * produced. Requiring a coordinator's code would have meant the switch
+   * could never be turned on.
+   *
+   * What has to be true is the same either way: a code must have reached
+   * an address that is not the administrator's own. His is the one that
+   * works whether or not anybody else's does, because he owns the Supabase
+   * account and its built-in email sender can be restricted to exactly
+   * that. So testing with it proves nothing about the other person, and
+   * the other person is the one who gets locked out.
+   * ------------------------------------------------------------------ */
+  const ownAddrs = new Set([
+    ...(session?.user?.email ? [canonKey(session.user.email)] : []),
+    ...people.filter((x) => x.admin && squash(x.email)).map((x) => canonKey(x.email)),
+  ]);
+  const others = people.filter((x) => squash(x.email) && !ownAddrs.has(canonKey(x.email)));
+  const provedOthers = others.filter((c) => provedEmails.includes(canonKey(c.email)));
+  const proved = provedOthers.length > 0;
   const withEmail = people.filter((x) => squash(x.email));
   const officeNoEmail = people.filter((x) => x.role === "office" && !squash(x.email));
 
@@ -506,12 +525,12 @@ function AccessPanel({ authRequired, setAuthRequired, session, showToast }) {
     const addr = canonKey(email);
     setProvedEmails((list) => (list.includes(addr) ? list : [...list, addr]));
     setStage("idle"); setCode("");
-    const isCoord = coordinators.some((c) => squash(c.email) && canonKey(c.email) === addr);
-    setMsg(isCoord
-      ? `That worked — a code reached ${email}, a coordinator's own address. The gate is safe to turn on.`
-      : `That worked, but ${email} is not one of the coordinators. Codes reaching your own address `
-        + "does not prove they reach theirs — the built-in sender can be restricted to the "
-        + "Supabase account's own addresses. Prove one of the coordinators next.");
+    const isOther = others.some((c) => canonKey(c.email) === addr);
+    setMsg(isOther
+      ? `That worked — a code reached ${email}, which is somebody else's address. The gate is safe to turn on.`
+      : `That worked, but ${email} is your own address, and yours would work whether or not `
+        + "anybody else's does — the built-in sender can be restricted to the Supabase "
+        + "account's own addresses. Send one to whoever else is meant to use this.");
   }
 
   async function toggle(on) {
@@ -561,23 +580,29 @@ function AccessPanel({ authRequired, setAuthRequired, session, showToast }) {
         </div>
         {!authRequired && !proved && (
           <p className="text-[11px] text-amber-800 mt-1.5">
-            The button unlocks once a code has reached <b>one of the coordinators&rsquo; own
-            addresses</b>{coordinators.length ? ` — ${coordinators.map((c) => c.name).join(", ")}` : ""} —
-            not yours. Yours would very likely work whether or not theirs does, so it proves the
-            wrong thing: this project uses Supabase&rsquo;s built-in email sender, which is
-            rate-limited and can be restricted to the Supabase account&rsquo;s own addresses.
-            They are the people who open this at 6am. See docs/ACCESS.md.
+            The button unlocks once a code has reached <b>somebody else&rsquo;s address</b> — not
+            yours. Yours would work whether or not theirs does, so it proves the wrong thing:
+            this project uses Supabase&rsquo;s built-in email sender, which is rate-limited and can
+            be restricted to the Supabase account&rsquo;s own addresses. Whoever else is meant to
+            open this is the one who gets locked out. See docs/ACCESS.md.
           </p>
         )}
-        {!authRequired && !proved && coordsNoEmail.length > 0 && (
+        {!authRequired && !proved && others.length === 0 && (
           <p className="text-[11px] text-red-800 mt-1">
-            {coordsNoEmail.map((c) => c.name).join(", ")} still have no work email on the team
-            list, so there is nothing to prove yet. Add it below first.
+            Nobody but you has a work email on the team list, so there is nothing to prove yet.
+            Add the address of whoever else should get in — the manager, to start with — in the
+            <b> Work email</b> column below.
+          </p>
+        )}
+        {!authRequired && !proved && others.length > 0 && (
+          <p className="text-[11px] text-slate-500 mt-1">
+            Available to prove: {others.slice(0, 6).map((c) => c.name).join(", ")}
+            {others.length > 6 ? ` and ${others.length - 6} more` : ""}.
           </p>
         )}
         {!authRequired && proved && (
           <p className="text-[11px] text-emerald-800 mt-1.5">
-            A code reached {provedCoords.map((c) => c.name).join(", ")}. Turning it on signs
+            A code reached {provedOthers.map((c) => c.name).join(", ")}. Turning it on signs
             everyone else out at once — which is the point, but tell the coordinators first.
           </p>
         )}
@@ -612,7 +637,7 @@ function AccessPanel({ authRequired, setAuthRequired, session, showToast }) {
 
       <div className="mt-2 flex flex-wrap items-end gap-2">
         <label className="text-[11px] text-slate-500 flex-1 min-w-[200px]">
-          Send a test code to (use a coordinator&rsquo;s address &mdash; ask them to read the
+          Send a test code to (somebody else&rsquo;s address &mdash; ask them to read the
           six-digit code back to you)
           <input type="email" name="access-test-email" value={email}
                  onChange={(e) => setEmail(e.target.value)}

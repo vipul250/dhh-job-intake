@@ -1,23 +1,47 @@
 # Signing in
 
-Until this build, "who are you" was a name typed into a box. That was fine
-while the app only needed attribution — a name against a move, a name
-against an outcome. It stops being fine now that the dashboard reads those
-names back as a judgement on a coordinator's decisions, because anybody
-could type anybody's name.
+## Where this stands: deferred, on purpose
 
-So there is now a real login: you enter your email, a six-digit code
-arrives in your inbox, you type it in. No passwords to forget, reset or
-share, which matters for a department where people rotate shifts and use
-whatever device is on the desk.
+**Sign-in is not being turned on yet, and that is a decision rather than an
+omission.** The arrangement Vipul chose on 3 September:
 
-**It ships switched off.** Turning a login screen on before email delivery
-is known to work would lock the whole department out of the tool they run
-their day on, and the only way back would be a redeploy. The gate reads a
-stored setting; the setting starts off; and the screen that turns it on
-(Roster → Access) will not let you turn it on until you have received a
-real code yourself. Work through this page first, prove it end to end, then
-flip it.
+- **Only he and Monish (manager) use the app.** Nobody else gets the link.
+- **The coordinators carry on with the Google Sheet exactly as before.**
+  They are not asked to change anything, and daily operations are not
+  touched.
+- **Monish's role in the app is auditor**, not data entry: paste the day in,
+  check what the sheet produced is actually accurate, and watch where the
+  teams are busy, how much work moves and what disappears.
+- **Sign-in gets turned on once he is confident the system is sound**, and
+  the machinery below is ready for that day.
+
+His reasoning, which is worth recording because it is right: handing the
+link to the whole department before the numbers can be trusted means people
+start changing things, and then nobody can tell a real figure from
+something somebody poked. Narrowing it to two people first makes the app
+observable without making it load-bearing.
+
+**What this means for the rest of this document:** everything below still
+applies, just later and to two addresses rather than five. That is a much
+easier version of the same job — the rate limit on the built-in email
+sender stops mattering, and there is no 6am lockout risk, because no
+coordinator depends on getting in.
+
+### Closing the link in the meantime
+
+The realistic options, given the Vercel project is on the **Hobby** plan:
+
+| Option | What it actually does |
+|---|---|
+| **Rename the Vercel project's domain** | The old link stops resolving immediately, for everyone. Free, instant, nothing else changes. **It is obscurity, not access control** — the new URL is public to anyone who has it, and it leaks through browser history, a forwarded message or autocomplete on a shared desktop. |
+| **Vercel Password Protection** | One shared password over everything, which is exactly the shape wanted here. **Not available on Hobby** — it needs Pro. |
+| **Vercel Authentication** | Already switched on for this project, but set to *all except custom domains*, which is why the production URL is still open. Setting it to *all* would demand a Vercel account with access to this project — on Hobby there are no team members, so it would lock **Monish out too**. |
+| **The OTP sign-in below** | Real access control, two invited addresses, and the coordinators are unaffected because they are not using the app. |
+
+Renaming is a reasonable answer to the actual problem — the people who
+already have the link — and it costs nothing. Just do not mistake it for a
+lock: the moment the new link reaches a third person it is as open as the
+old one was, and there is no record of who changed what.
 
 ---
 
@@ -133,16 +157,18 @@ A template that works:
 
 ## 3. Prove it, then switch it on
 
-Open **Roster → Access**. Send a test code to **a coordinator's address**,
-have them read the six digits back, and type them in. Only then does the
-switch become usable, and only a coordinator's address counts — see section
-2 for why your own proves the wrong thing. The one failure that cannot be
-recovered from inside the app is turning on a lock whose key does not
-arrive.
+Open **Roster → Access**. Send a test code to **somebody else's address** —
+under the current arrangement that is Monish — have them read the six digits
+back, and type them in. Only then does the switch become usable, and your
+own address does not count: see section 2 for why it proves the wrong
+thing. The one failure that cannot be recovered from inside the app is
+turning on a lock whose key does not arrive.
 
 Turning it on signs out everybody who is not on the invited list, straight
-away and without warning them. That is the point of it — but tell the
-coordinators first, because their next page load becomes a sign-in screen.
+away and without warning them. That is the point of it. While only two
+people use the app that is harmless; on the day the coordinators are
+brought in, tell them first, because their next page load becomes a
+sign-in screen.
 
 Once it is on, anyone opening the app sees the sign-in screen.
 

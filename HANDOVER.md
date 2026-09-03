@@ -10,58 +10,61 @@ rejected for a reason recorded below.
 
 **Two things are live in the code and both are waiting on him, not on us.**
 
-### A. Sign-in has to be switched on, and he chose the built-in email sender
+### A. Sign-in is DEFERRED, by his decision — do not push it
 
-He reported that people he had shared the link with were changing the board.
-The login is already built (email → six-digit code, `shouldCreateUser:false`
-as the allowlist) and still ships **off**, behind the `auth-required` key.
+He decided on 3 September not to turn the login on yet, and the reasoning is
+sound enough that it should not be re-argued:
 
-He was asked and chose **Supabase's built-in email sender** rather than
-configuring SMTP. That is workable for the five office addresses and it was
-built for, but it has two hard edges he has been told about:
+- **Only he and Monish (manager) use the app.** Nobody else gets the link.
+- **Coordinators carry on with the Google Sheet, unchanged.** Daily
+  operations are not touched at all.
+- **Monish's job in the app is auditing**, not data entry — paste the day
+  in, check what the sheet produced is accurate, watch where the teams are
+  busy and what moves or disappears.
+- **Login comes later**, once he trusts the numbers. In his words: the
+  moment the link is handed out, people start playing with it, and then a
+  real figure cannot be told from a poked one.
 
-- **A couple of emails an hour, project-wide.** Survivable only because a
-  session persists and refreshes itself, so a code is needed on a new
-  device or a cleared browser, not daily. **The first sign-ins must be
-  staggered.** It will not survive extending sign-in to the 16 technicians.
-- **It may refuse addresses outside the Supabase organisation.** If so,
-  `vipul@` gets codes and `haris@` does not.
+**What he asked for instead: rename the link.** He does that himself in
+Vercel → the project → Settings → Domains. Told to him plainly and worth
+repeating if it comes up: **renaming is obscurity, not access control.** It
+kills the old link for everyone, which is the actual problem, but the new
+URL is public to whoever holds it and there is no record of who changed
+what.
 
-Because of that second point, **the Access panel no longer unlocks on his
-own address.** It now requires a code proved against one of the
-*coordinators'* addresses — Haris, Kaja or Tiyana — since his own would work
-whether or not theirs does. He will not have their mailbox, so the way
-through is: send the test code to a coordinator, have them read the six
-digits back, type them in. That is the only thing that proves the department
-can get in tomorrow morning.
+**The Vercel plan is `hobby`, which closes the two better options.**
+Password Protection (one shared password — exactly the shape he wants) needs
+Pro. Vercel Authentication is already enabled but set to
+`all_except_custom_domains`, which is why the production URL is open;
+setting it to `all` would require a Vercel account per viewer, and Hobby has
+no team members, so **it would lock Monish out too**. Check with
+`get_project_deployment_protection` on
+`projectId: prj_BGnhCg0iChPcbmZ0SViIWrAWMVyX`.
 
-**What he still has to do, in order:**
-1. Roster → Team → make sure the coordinators' work emails are recorded.
-2. Supabase → Authentication → Users → Add user → Send invitation, for each
-   of the five addresses.
-3. Supabase → Authentication → Email Templates → Magic Link → must contain
-   `{{ .Token }}`. The default sends a clickable link; this app asks for a
-   typed code.
-4. Roster → Access → send a coordinator a test code → they read it back →
-   switch unlocks → turn it on. **Everyone not invited is signed out at
-   once, so tell the coordinators first.**
-5. A day later, run the RLS SQL in `docs/ACCESS.md`.
+**When he is ready, the login is now the easy version of itself:** two
+invited addresses instead of five. The rate limit on the built-in email
+sender stops mattering, and there is no 6am lockout risk because no
+coordinator depends on getting in. The steps are in `docs/ACCESS.md`;
+what he still has to do there is invite the two addresses and put
+`{{ .Token }}` in the Magic Link template.
 
-**The RLS SQL that was in `docs/ACCESS.md` was wrong and has been fixed.**
-It granted read/write to `authenticated` and nothing to `anon` — but
+**The proof gate was retargeted for this.** It used to demand a code proved
+against a *coordinator's* address — which under this arrangement would have
+meant the switch could never be turned on, since coordinators do not use the
+app. It now requires a code proved against **any address that is not the
+administrator's own**. The reason is unchanged: his address works whether or
+not anybody else's does, because he owns the Supabase account whose built-in
+sender may be restricted to it.
+
+**The RLS SQL in `docs/ACCESS.md` was wrong and has been fixed.** It granted
+read/write to `authenticated` and nothing to `anon` — but
 `isAuthRequired()` reads that flag *before* anyone signs in. The read would
 fail, `storageGet` returns null, the flag reads as "not required", and the
 app would render **with no sign-in screen at all** while every other request
-was denied: open and broken simultaneously. The corrected version gives
-`anon` SELECT on exactly `key = 'auth-required'` and nothing else, and adds
-no DELETE policy for anybody, which matches the app's own no-delete rule.
-
-**If he needs the old link dead today**, before any of the above: rename the
-Vercel project's domain. The old URL stops resolving immediately, the app
-keeps working, the coordinators get the new address. It is not
-authentication — anyone who kept the bundle still holds the anon key — but
-it ends casual poking the same afternoon. Written up at the end of
-`docs/ACCESS.md`.
+was denied. The corrected policy gives `anon` SELECT on exactly
+`key = 'auth-required'` and nothing else, and adds no DELETE policy for
+anybody. **Do not apply it while sign-in is off** — with no session, every
+write would fail.
 
 ### B. Job cards paste in, and the idle list is fixed
 
@@ -94,23 +97,61 @@ changes as described. A `no-undef` sweep with a throwaway `npx eslint` found
 the one real scope bug (`onProjectToday` referenced inside `RosterStrip`);
 eslint was NOT added to `package.json`.
 
-### C. Still unconfirmed from the previous session: was 3 September cleared?
+### C. 3 September is still the mangled day — and now there is a number to check it against
 
-This was the previous handover's headline and **he never confirmed it
-either way**, and it was not revisited this session. The route is still:
-hard-refresh → Live Board → 3 September → red banner → *Clear 2026-09-03
-and start again* → type the date → paste the sheet into "Paste the day in".
+He reported on 3 September that **Resty had 1 task on the board where the
+printed sheet shows 5**, and was worried the month-end productivity figures
+would under-count him. He is right that they will, and the cause is not a
+new bug: the day still holds the wreckage of the original quick-add paste.
 
-**If he says it still does not work, ask what he sees when he presses it.**
-That distinction is the whole diagnosis and cannot be reproduced from here:
+**This was measured rather than guessed.** The real sheet and the current
+reader were both checked directly:
+
+- The workbook's *Daily Input* tab has **32 rows for 2026-09-03**, and
+  Resty's five are five different villas — `Palm villa E41 / O56 / O103 /
+  F30 / L14`, each with the villa in its own Unit column.
+- Running `test/harness/day0903.txt` (the PDF-form paste) through
+  `parseSheetText` gives **32 rows, all five of Resty's villas distinct,
+  five distinct dedupe keys**. So a fresh paste into "Paste the day in"
+  works perfectly and nothing collapses.
+
+His board shows **28 scheduled**, which is 32 minus 4, and Resty at 1 rather
+than 5 — the four "Close them off" cancelled as obvious damage, leaving one
+survivor. Cancelled jobs stay on the day, greyed, so they do not count as
+scheduled. **The day has never been cleared and re-pasted.**
+
+**The fix, and the exact result to check it worked:**
+hard-refresh → Live Board → 3 September → *Start this day again* / the red
+banner's **Clear 2026-09-03 and start again** → type the date → paste the
+sheet into **Paste the day in** (not the quick-add box).
+
+Afterwards the day must read **32 jobs**, split:
+
+| Technician | Jobs |
+|---|---|
+| Resty | 5 |
+| Jabbar | 5 |
+| Daljit | 5 |
+| Vitalis | 4 |
+| Yousouf | 4 |
+| Abdul Riyaz and Bijaya | 3 |
+| Bright | 3 |
+| Anthony | 3 |
+
+If it does not read 32, ask what he sees when he presses the clear button —
+that distinction is the whole diagnosis and cannot be reproduced from here:
 
 - *"Could not archive the day, so nothing was cleared"* → the Supabase write
   is being rejected. Look at RLS on `kv_store` for the `archive:` prefix, or
   the row size (~119 jobs of JSON).
-- *nothing happens at all* → he is still on an old bundle, or the button is
-  not rendering. Check `wasMisread` in `LiveBoard.jsx`.
+- *nothing happens at all* → he is on an old bundle, or the button is not
+  rendering. Check `wasMisread` in `LiveBoard.jsx`.
 - *it clears and the rows come back* → the day watcher or a second tab is
   writing the old array back.
+
+**Do not have him re-paste without clearing first.** The mangled rows key
+differently from the same rows parsed correctly, so no dedupe can match
+them: he would end up with 32 good rows *plus* the wreckage.
 
 ### Reaching his infrastructure from here
 
@@ -245,7 +286,33 @@ shape. Say "I could not read this" instead.
 
 ---
 
-## 4. The daily operating rule (his decision, from 1 September)
+## 4. The daily operating rule
+
+**Superseded as of 3 September — read this first.** The rule below was
+designed for coordinators using the app. They are not: he narrowed access to
+himself and Monish, with the coordinators staying on the Google Sheet (see
+§0.A). So today the app has **one** touchpoint, and it is the manager's:
+paste the day in from the sheet, then review what it says.
+
+Three consequences to keep straight, because parts of the app still assume
+the old rule:
+
+- **The end-of-day review is now Monish's**, not a coordinator's, and it is
+  reconstruction rather than recall — he was not on the jobs.
+- **Change-churn measures something different.** It was "what a coordinator
+  changed after posting". With nobody editing in the app it becomes "what
+  changed between one paste of the sheet and the next", which is still worth
+  having — it is the disappearance metric — but it is not the same number
+  and must not be labelled as if it were.
+- **Attribution collapses to two names.** "Who did what" on the coordinator
+  side stops being informative until the coordinators are actually in.
+
+The nine-hour name expiry, the change-reason dialog and the post lock all
+still work; they are simply not doing much with two trusted users. None of
+it should be removed — this arrangement is explicitly temporary, and he
+returns to the rule below once he trusts the numbers.
+
+### The rule as designed, for when the coordinators come in
 
 Two touchpoints a day, each by somebody already at a desk.
 
@@ -408,6 +475,20 @@ month rather than by how wrong it looks).
 Shift message pasted rather than re-keyed. Team master with trade, base,
 licence (three-valued), **work email**, note, admin flag. **Add someone**.
 Access panel with the sign-in switch and its pre-flight check.
+
+**A project crew is read off the job cards.** `projectCrewOn(projects, date)`
+feeds `checkAgainstSchedule(roster, jobs, alsoOnProject)`, so anybody on a
+project whose dates cover the day comes off the idle list without a tick.
+Two bugs found here on 3 September, both reported from the live Roster
+showing *"On projects — nobody on a job card"* beside four idle
+technicians: **`adoptProject` was discarding `found.crew`**, so every
+project ever adopted from the schedule named nobody; and **it set no end
+date**, while `projectEndDate` fell back to *today* for a completed project
+with no dates — so a finished project reported itself as still running and
+would have put its crew on it indefinitely. Both fixed, and
+`backfillCrewFromJobs()` repairs the ones already stored by reading the crew
+back out of their linked jobs (fills blanks only, never overwrites, logs an
+event). It runs when the Projects tab loads and says how many it filled.
 
 **Who is on a project today.** Originally read from a `Project team` heading
 inside the shift message — wrong in practice, because that message arrives
@@ -620,11 +701,14 @@ anon key. Never write test rows into his live database.
 
 ## 10. Open threads
 
-**FIRST: has he turned sign-in on, and did a coordinator get a code?**
-See §0.A. That is the thread he opened this session and everything about
-access waits on it. The second question to ask is whether he wants the
-Supabase MCP repointed at the job-intake project, which would let a session
-apply the RLS itself instead of writing it out for him.
+**FIRST: did 3 September come back as 32 jobs with Resty on 5?** See §0.C.
+That is the one thing with a checkable answer, and his month-end numbers are
+wrong until it is done.
+
+**Sign-in is deferred and that is settled — do not push it.** §0.A. The
+useful question is whether he wants the Supabase MCP repointed at the
+job-intake project, which would let a session apply the RLS and read the
+auth logs directly instead of writing SQL out for him.
 
 **Two defects in HIS sheet, reported and not yet fixed by him.** Neither can
 be fixed from here and both keep costing something every paste:
@@ -780,6 +864,22 @@ him that the techs actually switch to it.
    `onProjectToday` was referenced inside `RosterStrip` where it is not in
    scope, blanking the Live Board. Both now have regression cover — the
    first in `projcards.mjs`, the second by the browser pass.
+5. **He then reported the Roster still saying "nobody on a job card".** He
+   was right, and it was two more real bugs rather than a misunderstanding:
+   `adoptProject` discarded the crew discovery had already found, and a
+   completed project with no dates reported itself as running today. Fixed,
+   plus a backfill for the sixteen already stored that way. Reproduced his
+   exact symptom in a browser first — nine legacy projects, zero with a
+   crew — then verified the tile reads *"On projects 7"* with only Resty
+   genuinely idle.
+6. **He deferred sign-in** and narrowed the app to himself and Monish, with
+   coordinators staying on the Sheet. §0.A and §4. The proof gate was
+   retargeted from "a coordinator's address" to "anybody's but yours",
+   because the first would have made the switch impossible to turn on.
+7. **Resty's missing four tasks** were traced to the un-cleared 3 September,
+   not to a parser or dedupe fault — both were checked against the real
+   sheet and found correct. §0.C now carries the exact 32-row breakdown to
+   check the repair against.
 
 ### The previous session
 
