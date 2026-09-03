@@ -35,7 +35,11 @@ await p.reload(); await p.waitForTimeout(1300);
 await p.locator('input[placeholder*="Ahmed"]').fill('Haris');
 await p.getByRole('button', { name: 'Start' }).click(); await p.waitForTimeout(900);
 await p.getByRole('button', { name: 'Roster' }).click(); await p.waitForTimeout(1500);
-await p.locator('input[type=date]').first().fill(D); await p.waitForTimeout(1200);
+/* Two date inputs on this screen: the app header's day picker first, then
+   the Roster tab's own. Setting the header one leaves the roster loading a
+   different day and the board renders nothing. */
+const rosterDate = () => p.locator('input[type=date]').nth(1);
+await rosterDate().fill(D); await p.waitForTimeout(1200);
 await p.locator('textarea').first().fill(MSG); await p.waitForTimeout(1200);
 await p.getByRole('button', { name: /^Save/ }).first().click(); await p.waitForTimeout(1800);
 
@@ -60,9 +64,9 @@ console.log('  "On projects" tile now:', (t.match(/On projects\s*\n\s*(\d+|—)\
 console.log('  project picker appeared:', /Which project\?/.test(t) ? 'yes' : '*** NO ***');
 
 // it must survive a reload, without a re-paste
-await p.reload(); await p.waitForTimeout(2000);
-await p.getByRole('button', { name: 'Roster' }).click(); await p.waitForTimeout(1200);
-await p.locator('input[type=date]').first().fill(D); await p.waitForTimeout(2000);
+await p.reload(); await p.waitForTimeout(2200);
+await p.getByRole('button', { name: 'Roster' }).click(); await p.waitForTimeout(1400);
+await rosterDate().fill(D); await p.waitForTimeout(2200);
 t = await p.innerText('body');
 console.log('  survives a reload:', /On projects\s*\n\s*2\b/.test(t) ? 'yes' : '*** LOST ***');
 console.log('  and they are not called idle:',

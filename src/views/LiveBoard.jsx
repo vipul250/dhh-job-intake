@@ -28,7 +28,7 @@ import { staffIndex, seedStaff, TRADE_LABEL } from "../lib/staff.js";
 import {
   seedCatalogue, matchCatalogue, applyCatalogue, newCatalogueEntry,
 } from "../lib/catalogue.js";
-import { readPost, postDay, lockState, CHANGE_REASONS } from "../lib/dayLock.js";
+import { readPost, postDay, clearPost, lockState, CHANGE_REASONS } from "../lib/dayLock.js";
 import { identityFor } from "../lib/auth.js";
 import { storageSet } from "../lib/storage.js";
 import { jobRequirement, checkCrew, checkDayCrewing } from "../lib/crewing.js";
@@ -138,6 +138,7 @@ export default function LiveBoard({
   const [closeOutFor, setCloseOutFor] = useState(null);
   const [nightLog, setNightLog] = useState(false);
   const [taskPaste, setTaskPaste] = useState(false);
+  const [clearing, setClearing] = useState(false);
   /* Carries a sheet the coordinator pasted into the wrong box across to
      the reader that understands it, so nobody has to copy it twice. */
   const [sheetSeed, setSheetSeed] = useState("");
@@ -454,6 +455,46 @@ export default function LiveBoard({
     () => jobs.filter((j) => !isResolved(j.state) && j.state !== "cancelled" && isMisread(j, selectedDate)),
     [jobs, selectedDate]
   );
+
+  /* ------------------------------------------------------------------ *
+   * Starting a day over.
+   *
+   * Nothing in this app is deleted, and that rule has earned its place —
+   * "where did that go" is the question the whole system exists to answer.
+   * This is the one deliberate exception, and it is not a delete: the day's
+   * rows are written to an archive key first and only then is the day
+   * emptied, so the board is genuinely clean while the record still exists
+   * for anyone who ever needs it back.
+   *
+   * It exists because 3 September could not be repaired job by job. A sheet
+   * read through the quick-add box produced wreckage of two kinds: the
+   * obvious sort, with the year as the unit number, which the mis-read
+   * banner finds — and a subtler sort that looks completely legitimate,
+   * where the parking bay landed in the unit ("La Vie B-257", whose unit is
+   * 3503) and the description snapped to a standard task so it reads
+   * cleanly. Telling those from real jobs means guessing, and guessing is
+   * what caused this. Clearing the day and pasting the sheet again is the
+   * only honest way back.
+   * ------------------------------------------------------------------ */
+  async function clearDay() {
+    const current = await readDay(selectedDate);
+    if (current && current.length) {
+      // Archived BEFORE the day is touched. If this write fails, nothing
+      // is emptied — losing the day quietly is the one unacceptable outcome.
+      await storageSet(
+        `archive:schedule:${selectedDate}:${Date.now()}`,
+        JSON.stringify({ date: selectedDate, clearedAt: Date.now(), clearedBy: who, rows: current })
+      );
+    }
+    await mutateDay(selectedDate, () => []);
+    await clearPost(selectedDate).catch(() => {});
+    setClearing(false);
+    await load(selectedDate);
+    showToast(
+      `${(current || []).length} row(s) taken off ${selectedDate} and archived. Paste the sheet in again.`,
+      "ok"
+    );
+  }
 
   async function clearMisread() {
     const ids = new Set(misread.map((j) => j.id));
@@ -932,6 +973,13 @@ export default function LiveBoard({
                 className="flex items-center gap-1.5 text-xs border border-slate-300 rounded-md px-2.5 py-1.5 hover:bg-slate-50">
           <Moon className="w-3.5 h-3.5" /> Log an out-of-hours job
         </button>
+        {rows && rows.length > 0 && (
+          <button onClick={() => setClearing(true)}
+                  title="Take everything off this day and paste the sheet again. The rows are archived, not destroyed."
+                  className="flex items-center gap-1.5 text-xs border border-red-300 text-red-700 rounded-md px-2.5 py-1.5 hover:bg-red-50 ml-auto">
+            <History className="w-3.5 h-3.5" /> Start this day again
+          </button>
+        )}
         <span className="text-[11px] text-slate-400">
           Anything that came in after the schedule was posted — the night call, the emergency, the
           job arranged over Google Chat. It happened, so it belongs on the day it happened.
@@ -1042,6 +1090,13 @@ export default function LiveBoard({
       )}
       {showLog && (
         <DayLog date={selectedDate} activity={activity} onCancel={() => setShowLog(false)} />
+      )}
+      {clearing && (
+        <ClearDayDialog
+          date={selectedDate} count={rows ? rows.length : 0}
+          onCancel={() => setClearing(false)}
+          onConfirm={clearDay}
+        />
       )}
       {taskPaste && (
         <TaskPasteDialog
@@ -2797,6 +2852,55 @@ function CloseOutDialog({ job, selectedDate, onCancel, onConfirm }) {
           Say what is still needed before closing — that text becomes the return visit.
         </p>
       )}
+    </Modal>
+  );
+}
+
+/* ====================================================================== *
+ * Start this day again.
+ *
+ * The only thing in the app that takes rows off a day. It is not a delete:
+ * everything is written to an archive record first, and the confirmation
+ * asks for the date to be typed, because a day cleared by a mis-click in a
+ * busy shift would be the worst failure this system could have.
+ * ====================================================================== */
+function ClearDayDialog({ date, count, onCancel, onConfirm }) {
+  const [typed, setTyped] = useState("");
+  const [busy, setBusy] = useState(false);
+  const ok = squash(typed) === date;
+
+  return (
+    <Modal title={`Start ${date} again`} onCancel={onCancel}>
+      <p className="text-sm text-slate-700">
+        This takes all <b>{count}</b> row{count === 1 ? "" : "s"} off {date} so you can paste the
+        sheet in cleanly.
+      </p>
+      <p className="text-xs text-slate-600 mt-2">
+        They are <b>archived, not deleted</b> — the whole day is written to a dated record first,
+        so it can be recovered. Outcomes, notes and the change log for this day go with them.
+        The day is also un-posted, so the paste is not blocked by the lock.
+      </p>
+      <p className="text-xs text-slate-600 mt-2">
+        Nothing on any other day is touched.
+      </p>
+
+      <label className="block text-xs text-slate-600 mt-3">
+        Type <span className="font-mono font-medium text-slate-900">{date}</span> to confirm
+        <input autoFocus value={typed} onChange={(e) => setTyped(e.target.value)}
+               placeholder={date}
+               className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm font-mono" />
+      </label>
+
+      <div className="flex justify-end gap-2 mt-4">
+        <button onClick={onCancel} className="text-sm border border-slate-300 px-3 py-1.5 rounded-md">
+          Keep the day as it is
+        </button>
+        <button disabled={!ok || busy}
+                onClick={async () => { setBusy(true); try { await onConfirm(); } finally { setBusy(false); } }}
+                className="text-sm bg-red-700 text-white px-3 py-1.5 rounded-md disabled:opacity-40">
+          {busy ? "Clearing…" : `Clear ${date} and start again`}
+        </button>
+      </div>
     </Modal>
   );
 }
