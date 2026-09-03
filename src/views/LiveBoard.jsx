@@ -456,6 +456,16 @@ export default function LiveBoard({
     [jobs, selectedDate]
   );
 
+  /* Evidence this day was damaged, whether or not the damaged rows are
+     still open. Closing them off used to make the banner disappear — and
+     with it the only visible route to starting the day over — leaving the
+     subtler wreckage on a board that now looked fine. A day that has ever
+     carried a mis-read row keeps saying so until it is cleared. */
+  const wasMisread = useMemo(
+    () => misread.length > 0 || jobs.some((j) => /mis-read paste/i.test(j.outcomeReason || "")),
+    [jobs, misread.length]
+  );
+
   /* ------------------------------------------------------------------ *
    * Starting a day over.
    *
@@ -479,12 +489,20 @@ export default function LiveBoard({
   async function clearDay() {
     const current = await readDay(selectedDate);
     if (current && current.length) {
-      // Archived BEFORE the day is touched. If this write fails, nothing
-      // is emptied — losing the day quietly is the one unacceptable outcome.
-      await storageSet(
+      /* Archived BEFORE the day is touched, and the write is CHECKED.
+         storageSet swallows its errors and answers null rather than
+         throwing, so an unchecked call would have emptied the day even when
+         nothing had been saved — the one unacceptable outcome, and exactly
+         the kind of silent loss this app exists to stop. */
+      const ok = await storageSet(
         `archive:schedule:${selectedDate}:${Date.now()}`,
         JSON.stringify({ date: selectedDate, clearedAt: Date.now(), clearedBy: who, rows: current })
       );
+      if (!ok) {
+        setClearing(false);
+        showToast("Could not archive the day, so nothing was cleared. Check the database connection and try again.", "bad");
+        return;
+      }
     }
     await mutateDay(selectedDate, () => []);
     await clearPost(selectedDate).catch(() => {});
@@ -870,35 +888,57 @@ export default function LiveBoard({
         </div>
       )}
 
-      {misread.length > 0 && (
+      {wasMisread && (
         <div className="rounded-lg border border-red-300 bg-red-50 px-3 py-2.5">
           <div className="flex flex-wrap items-center gap-2">
             <AlertTriangle className="w-4 h-4 text-red-700 shrink-0" />
             <span className="text-xs text-red-900">
-              <b>{misread.length} job{misread.length === 1 ? "" : "s"} on this day were read wrong</b>
-              {" "}— the daily sheet was pasted into the quick-add box, which reads one line as one
-              typed job. The building was lost and the year out of the date became the unit number.
+              {misread.length > 0 ? (
+                <>
+                  <b>{misread.length} job{misread.length === 1 ? "" : "s"} on this day were read wrong</b>
+                  {" "}— the daily sheet was pasted into the quick-add box, which reads one line as
+                  one typed job. The building was lost and the year out of the date became the unit
+                  number.
+                </>
+              ) : (
+                <>
+                  <b>This day carried rows that were read wrong.</b> They have been closed off, but
+                  closing off only finds the obvious damage — anything subtler is still here and
+                  looks like a real job.
+                </>
+              )}
             </span>
-            <button onClick={clearMisread}
-                    className="ml-auto text-xs bg-red-700 text-white rounded-md px-2.5 py-1.5 shrink-0">
-              Close them off
-            </button>
+            {misread.length > 0 && (
+              <button onClick={clearMisread}
+                      className="ml-auto text-xs bg-red-700 text-white rounded-md px-2.5 py-1.5 shrink-0">
+                Close them off
+              </button>
+            )}
           </div>
           <ul className="mt-2 space-y-0.5">
-            {misread.slice(0, 4).map((j) => (
+            {misread.slice(0, 3).map((j) => (
               <li key={j.id} className="text-[11px] text-red-800">
                 <span className="font-medium">{j.property || "(no building)"} {j.unit}</span>
                 <span className="text-red-600"> — {misreadSigns(j, selectedDate)[0]}</span>
               </li>
             ))}
-            {misread.length > 4 && (
-              <li className="text-[11px] text-red-600">+{misread.length - 4} more</li>
+            {misread.length > 3 && (
+              <li className="text-[11px] text-red-600">+{misread.length - 3} more</li>
             )}
           </ul>
-          <p className="text-[11px] text-red-700 mt-1.5">
-            Closing them off keeps them on record. Then paste the sheet into
-            “Paste the day in” — it now reads the sheet straight off the PDF, wrapped rows and all.
-          </p>
+          <div className="mt-2.5 pt-2.5 border-t border-red-200">
+            <p className="text-[11px] text-red-800">
+              <b>If the day is a mess, start it over instead.</b> Closing rows off leaves them on
+              the board, greyed — and it only finds the obvious damage. The subtler kind reads like
+              a real job (a parking bay sitting in the unit, a description snapped to a standard
+              task) and cannot be told apart from one. Clearing the day and pasting the sheet again
+              is the clean way back. Everything is archived first, nothing is destroyed.
+            </p>
+            <button onClick={() => setClearing(true)}
+                    className="mt-2 text-xs bg-red-800 text-white rounded-md px-3 py-1.5">
+              Clear {selectedDate} and start again
+            </button>
+          </div>
         </div>
       )}
 
