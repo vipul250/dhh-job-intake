@@ -78,14 +78,43 @@ email gets told the address is not set up, not a code.
 
 ## 2. Make sure the email actually arrives
 
-Supabase's built-in email sender is rate-limited to a handful of messages
-per hour and is meant for development. A maintenance department signing in
-across a morning shift will hit that limit and people will simply stop
-receiving codes, with no error to explain why.
+**This project uses Supabase's built-in email sender rather than its own
+SMTP.** That was a deliberate choice, and it is workable for five office
+addresses, but it has two hard edges that decide how the rollout has to be
+done.
 
-Configure your own SMTP before turning the gate on: **Project Settings →
-Authentication → SMTP Settings**. Any provider works. Fill in host, port,
-username, password, and a sender address on a domain you control.
+**It is rate-limited to a couple of messages an hour.** That is a project-wide
+limit, not per person. It is survivable here only because a code is *not* a
+daily event: Supabase keeps the session in the browser and refreshes it on
+its own, so somebody who signs in once stays signed in for weeks. A code is
+needed when a person uses a new device, clears their browser, opens a
+private window, or signs out.
+
+What that means in practice:
+
+- **Stagger the first sign-ins.** Five people signing in over five minutes
+  will hit the limit and the last three will get nothing, with no error that
+  explains why. Do them a few at a time, or one person per day.
+- **Do not extend sign-in to the sixteen technicians on this sender.** A
+  shift's worth of first-time sign-ins is far beyond a couple an hour. If
+  the field team ever needs to sign in, configure SMTP first (Project
+  Settings → Authentication → SMTP Settings — any provider).
+
+**It may only deliver to addresses on the Supabase account.** Depending on
+the project, the built-in sender will refuse addresses outside the Supabase
+organisation. If that applies here, `vipul@deluxehomes.com` receives codes
+and `haris@deluxehomes.com` does not — and testing with your own address
+tells you nothing, because yours is the one that works either way.
+
+**This is why the Access panel will not unlock on your own address.** It
+waits for a code proved against one of the *coordinators'* addresses. You
+will usually not have their mailbox, so the way to do it is to send the test
+code to Haris, Kaja or Tiyana and ask them to read the six digits back to
+you. That is one phone call, and it is the only thing that actually proves
+the department can get in tomorrow morning.
+
+If a coordinator's address is refused, you have found the restriction, and
+SMTP is no longer optional — configure it before going any further.
 
 Then check the code template: **Authentication → Email Templates → Magic
 Link**. It must contain `{{ .Token }}` — that is the six-digit code. The
@@ -104,10 +133,16 @@ A template that works:
 
 ## 3. Prove it, then switch it on
 
-Open **Roster → Access**. Enter your own email, request a code, and type
-the code in. Only once that succeeds does the switch become usable. This is
-deliberate: the one failure that cannot be recovered from inside the app is
-turning on a lock whose key does not arrive.
+Open **Roster → Access**. Send a test code to **a coordinator's address**,
+have them read the six digits back, and type them in. Only then does the
+switch become usable, and only a coordinator's address counts — see section
+2 for why your own proves the wrong thing. The one failure that cannot be
+recovered from inside the app is turning on a lock whose key does not
+arrive.
+
+Turning it on signs out everybody who is not on the invited list, straight
+away and without warning them. That is the point of it — but tell the
+coordinators first, because their next page load becomes a sign-in screen.
 
 Once it is on, anyone opening the app sees the sign-in screen.
 
@@ -128,32 +163,63 @@ administers the Supabase project can find it.
 ## Tightening the database
 
 The login gate controls the app. It does not, on its own, control the
-database — the anon key in the browser bundle can still read and write
-`kv_store` directly. That was an acceptable trade while the app was an
-internal tool behind an unlisted URL and identity was a typed name. It is
-worth closing now.
+database — the anon key is in the browser bundle, so anybody who has ever
+had the URL can still read and write `kv_store` directly with it. Turning
+the gate on stops them using the *board*; it does not stop them using the
+*key*. If the reason for switching sign-in on is that people who were given
+the link have been changing things, this section is the half that actually
+takes the key away, and it should follow within a day or two.
 
-Run this once you are confident sign-in works for everyone, because it
-makes the app unusable for anyone not signed in:
+**The SQL that was written here before was wrong, and would have opened the
+app rather than closing it.** It granted read and write to `authenticated`
+and nothing at all to `anon` — but the app reads the `auth-required` flag
+*before* anybody has signed in, to decide whether to show the sign-in
+screen. With no policy for `anon` that read fails, `storageGet` returns
+null, the flag reads as "not required", and the app renders with **no
+sign-in screen at all** while every other request is denied. Open and
+broken at the same time. The version below gives the anonymous role read
+access to that one key and nothing else.
+
+Run this once the department has been signing in normally for a day:
 
 ```sql
 alter table kv_store enable row level security;
 
-create policy "signed-in users read" on kv_store
+-- Exactly one key, read-only, to the anonymous role. This is what lets the
+-- app know a login is required before there is anybody to authenticate.
+create policy "anon reads the login flag" on kv_store
+  for select to anon using (key = 'auth-required');
+
+-- Everything else needs a session.
+create policy "signed-in reads" on kv_store
   for select to authenticated using (true);
 
-create policy "signed-in users write" on kv_store
+create policy "signed-in inserts" on kv_store
   for insert to authenticated with check (true);
 
-create policy "signed-in users update" on kv_store
-  for update to authenticated using (true);
+create policy "signed-in updates" on kv_store
+  for update to authenticated using (true) with check (true);
 ```
 
-Two things to know before you run it:
+Check it landed:
+
+```sql
+select policyname, roles, cmd, qual
+from pg_policies where tablename = 'kv_store';
+```
+
+Three things to know before you run it:
 
 - **Do it in this order.** Enable the login gate, confirm the department is
   signing in normally for a day, and only then enable row level security.
-  The reverse order breaks the app for everyone at once.
+  The reverse order breaks the app for everyone at once — and note that
+  with RLS on, the "Turn sign-in on" button itself needs a session, because
+  it writes that flag.
+- **There is deliberately no DELETE policy.** Deletes are denied to
+  everybody, including signed-in users. Nothing in this app is ever
+  deleted — a job is cancelled, a material line is voided, a day is
+  archived before it is cleared — so the database may as well enforce what
+  the app already promises.
 - **This is all-or-nothing access**, not per-person permissions. Every
   signed-in user can read and write every day's schedule, which is what the
   department actually does — a coordinator posts, an admin verifies, a
@@ -161,6 +227,17 @@ Two things to know before you run it:
   unlock a posted day, that is a policy on the `posted:*` keys, and it needs
   the role stored somewhere the database can see rather than in the team
   list.
+
+### Getting the old link out of circulation today
+
+Both steps above depend on email delivery you have not proved yet. If
+people who were given the link are changing the board *now*, the fastest
+thing that costs nothing is to **change the Vercel project's domain**:
+Vercel → the project → Settings → Domains → rename it. The old URL stops
+resolving immediately, the app keeps working, and the coordinators are told
+the new address. It is not authentication and it does not replace anything
+above — anybody who kept the bundle still holds the anon key — but it ends
+casual poking around the same afternoon.
 
 ## What is stored about a person
 

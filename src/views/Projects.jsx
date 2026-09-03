@@ -2,18 +2,21 @@ import React, { useState, useEffect, useMemo } from "react";
 import {
   Briefcase, Plus, Loader2, Link2, ExternalLink, Package,
   AlertTriangle, CheckCircle2, Clock, X, Wand2, Search, CalendarDays, Users,
+  ClipboardPaste,
 } from "lucide-react";
 import { storageGet, storageSet } from "../lib/storage.js";
 import { readDays, parseDay, migrateDay } from "../lib/jobStore.js";
 import { liveJobs, actualDuration } from "../lib/job.js";
 import {
   newProject, materialLine, projectCost, projectDuration, buildPriceBook,
-  lookupPrice, findJobsForProject, extractQuotationRef,
+  lookupPrice, findJobsForProject, extractQuotationRef, readQuotationRef,
   discoverProjects, candidateProjects, adoptProject,
+  projectFromCard, updateFromCard,
   PROJECT_STATUS, PROJECT_STATUS_LABEL, PROJECT_TYPES,
 } from "../lib/project.js";
+import { parseJobCards, matchExisting } from "../lib/projectSheet.js";
 import { DEFAULT_RATES } from "../lib/cost.js";
-import { squash, formatMinutes, parseDurationMinutes } from "../lib/normalize.js";
+import { squash, canonKey, splitCrew, formatMinutes, parseDurationMinutes } from "../lib/normalize.js";
 
 /* ---------------------------------------------------------------------- *
  * Projects.jsx — quoted work, and whether it made money.
@@ -38,6 +41,7 @@ export default function Projects({ knownDates, showToast }) {
   const [rates, setRates] = useState(DEFAULT_RATES);
   const [filter, setFilter] = useState("open");
   const [editing, setEditing] = useState(null);
+  const [pasting, setPasting] = useState(false);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -65,6 +69,29 @@ export default function Projects({ knownDates, showToast }) {
   );
   const priceBook = useMemo(() => buildPriceBook(projects || []), [projects]);
 
+  /* Who the board already had work for, day by day. This is what keeps a
+     card's open days from being read as worked days — see projectCost. A
+     date missing from this map is a date the board knows nothing about,
+     which is not the same as a date nobody worked. */
+  const busyByDate = useMemo(() => {
+    const m = new Map();
+    Object.entries(jobsByDate).forEach(([d, rows]) => {
+      const set = new Set();
+      (rows || []).forEach((j) => {
+        if (!j || j._tomb || j.state === "cancelled") return;
+        splitCrew(j.team).forEach((t) => set.add(canonKey(t)));
+      });
+      m.set(d, set);
+    });
+    return m;
+  }, [jobsByDate]);
+
+  /* Everything projectCost needs beyond the rates themselves. */
+  const costOpts = useMemo(
+    () => ({ ...rates, today: todayISO(), busyByDate }),
+    [rates, busyByDate]
+  );
+
   /* Projects the department has already run, read back out of the schedule
      they were written into. A discovered project stops being shown here the
      moment it is adopted — matched on the quotation reference, or on the
@@ -91,28 +118,89 @@ export default function Projects({ knownDates, showToast }) {
     ? projects.map((x) => (x.id === p.id ? p : x))
     : [...(projects || []), p]);
 
+  /* Commit a pasted Job Cards tab. New cards are created; cards already
+     here are updated on the fields the sheet owns and left alone on the
+     ones only a person can fill. Nothing about the approved amount or the
+     priced materials is touched — see updateFromCard. */
+  function commitCards(resolved) {
+    const next = [...(projects || [])];
+    let made = 0, updated = 0, unchanged = 0, linked = 0;
+    resolved.forEach(({ draft, existing }) => {
+      if (existing) {
+        const r = updateFromCard(existing, draft, "coordinator");
+        if (!r.changed.length) { unchanged++; return; }
+        const i = next.findIndex((x) => x.id === existing.id);
+        if (i >= 0) next[i] = linkByRef(r.project, (n) => { linked += n; });
+        updated++;
+      } else {
+        next.push(linkByRef(projectFromCard(draft, "coordinator"), (n) => { linked += n; }));
+        made++;
+      }
+    });
+    save(next);
+    setPasting(false);
+    const bits = [
+      made ? `${made} project(s) brought in` : "",
+      updated ? `${updated} updated` : "",
+      unchanged ? `${unchanged} already up to date` : "",
+      linked ? `${linked} daily job(s) linked by quotation number` : "",
+    ].filter(Boolean);
+    showToast?.(`${bits.join(", ")}. Add the approved amount to see a margin.`, "ok");
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Link the daily jobs that already carry this quotation number.
+   *
+   * Not a convenience — it is what stops a day being counted twice. A
+   * card's hours are read off its span for the days the board has no job
+   * row for; if the job rows are sitting there unlinked, those days look
+   * empty and collect inferred hours ON TOP of measured ones. The Damac
+   * 4301 card is exactly this case — the board already has task rows
+   * against PC-2026-08-07 on 31 August and 1 September.
+   *
+   * Matching is on the quotation reference and nothing else. That is the
+   * identity the department itself uses, so an exact match is a fact, not
+   * a guess. The looser property-and-unit match stays where it was:
+   * offered on the card for a person to confirm.
+   * ------------------------------------------------------------------ */
+  function linkByRef(project, count) {
+    const ref = squash(project.quotationRef).toUpperCase();
+    if (!ref) return project;
+    const ids = new Set(project.linkedJobIds || []);
+    let added = 0;
+    allJobs.forEach((j) => {
+      if (!j || j._tomb || ids.has(j.id)) return;
+      const text = `${j.description || ""} ${j.notes || ""} ${j.quotationRef || ""}`;
+      if (readQuotationRef(text) !== ref) return;
+      ids.add(j.id);
+      added++;
+    });
+    if (added) count?.(added);
+    return added ? { ...project, linkedJobIds: Array.from(ids) } : project;
+  }
+
   const filtered = useMemo(() => {
     const list = projects || [];
     if (filter === "open") return list.filter((p) => p.status !== "completed" && p.status !== "cancelled");
     if (filter === "completed") return list.filter((p) => p.status === "completed");
     if (filter === "losing") return list.filter((p) => {
-      const c = projectCost(p, jobsFor(p, allJobs), rates);
+      const c = projectCost(p, jobsFor(p, allJobs), costOpts);
       return c.margin != null && c.margin < 0;
     });
     return list;
-  }, [projects, filter, allJobs, rates]);
+  }, [projects, filter, allJobs, costOpts]);
 
   const portfolio = useMemo(() => {
     const list = projects || [];
     let quoted = 0, cost = 0, withQuote = 0, hours = 0, material = 0;
     list.forEach((p) => {
-      const c = projectCost(p, jobsFor(p, allJobs), rates);
+      const c = projectCost(p, jobsFor(p, allJobs), costOpts);
       cost += c.selfCost; hours += c.labourHours; material += c.materialCost;
       if (c.quoted != null) { quoted += c.quoted; withQuote++; }
     });
     return { quoted, cost, withQuote, hours, material, count: list.length,
              margin: withQuote ? quoted - cost : null };
-  }, [projects, allJobs, rates]);
+  }, [projects, allJobs, costOpts]);
 
   if (projects === null) {
     return <div className="flex items-center gap-2 text-sm text-slate-500 py-10 justify-center">
@@ -132,11 +220,22 @@ export default function Projects({ knownDates, showToast }) {
             the time the board measured between Start and Done, and the estimate where it has none.
             What you enter is the approved amount and the materials as they are bought.
           </p>
+          <p className="text-xs text-slate-500 mt-1.5 max-w-3xl">
+            The workbook&rsquo;s <b>Job Cards (Projects)</b> tab is already one row per project, so
+            paste it in rather than retyping it. A card records who is on it and between which
+            dates, which is also what stops the board calling a project crew idle.
+          </p>
         </div>
-        <button onClick={() => setEditing(newProject({ startDate: todayISO() }))}
-                className="flex items-center gap-1.5 text-sm bg-slate-900 text-white px-3 py-2 rounded-md shrink-0">
-          <Plus className="w-4 h-4" /> New project
-        </button>
+        <div className="flex gap-2 shrink-0">
+          <button onClick={() => setPasting(true)}
+                  className="flex items-center gap-1.5 text-sm border border-slate-300 bg-white px-3 py-2 rounded-md hover:bg-slate-50">
+            <ClipboardPaste className="w-4 h-4" /> Paste the job cards in
+          </button>
+          <button onClick={() => setEditing(newProject({ startDate: todayISO() }))}
+                  className="flex items-center gap-1.5 text-sm bg-slate-900 text-white px-3 py-2 rounded-md">
+            <Plus className="w-4 h-4" /> New project
+          </button>
+        </div>
       </div>
 
       {projects.length > 0 && (
@@ -191,7 +290,7 @@ export default function Projects({ knownDates, showToast }) {
 
       {filtered.map((p) => (
         <ProjectCard
-          key={p.id} project={p} allJobs={allJobs} rates={rates} priceBook={priceBook}
+          key={p.id} project={p} allJobs={allJobs} rates={costOpts} priceBook={priceBook}
           onChange={upsert} onEdit={() => setEditing(p)} showToast={showToast}
           /* Nothing is deleted in this app. A project that should not have
              been raised is cancelled, keeping its quotation reference, its
@@ -200,6 +299,14 @@ export default function Projects({ knownDates, showToast }) {
           onCancelProject={() => upsert({ ...p, status: "cancelled" })}
         />
       ))}
+
+      {pasting && (
+        <JobCardsPasteDialog
+          projects={projects}
+          onCancel={() => setPasting(false)}
+          onCommit={commitCards}
+        />
+      )}
 
       {editing && (
         <ProjectForm
@@ -424,7 +531,9 @@ function ProjectCard({ project, allJobs, rates, priceBook, onChange, onEdit, onC
         <div className="flex flex-wrap items-start gap-4 text-xs">
           <Figure label="Labour" value={`${cost.labourHours}h`}
                   sub={`${cur} ${cost.labourCost.toLocaleString()}`}
-                  note={cost.measuredJobs ? `${cost.measuredHours}h measured` : "all estimated"} />
+                  note={cost.inferredHours > 0
+                    ? `${cost.inferredHours}h from the span${cost.measuredHours ? `, ${cost.measuredHours}h measured` : ""}`
+                    : cost.measuredJobs ? `${cost.measuredHours}h measured` : "all estimated"} />
           <Figure label="Material" value={`${cur} ${cost.materialCost.toLocaleString()}`}
                   sub={`${(project.materials || []).length} line${(project.materials || []).length === 1 ? "" : "s"}`} />
           <Figure label="Our cost" value={`${cur} ${cost.selfCost.toLocaleString()}`} strong />
@@ -443,10 +552,43 @@ function ProjectCard({ project, allJobs, rates, priceBook, onChange, onEdit, onC
           have measured time). Treat it as a forecast until the linked jobs are closed out on the board.
         </div>
       )}
-      {cost.linkedJobCount === 0 && (
+      {cost.linkedJobCount === 0 && cost.inferredHours === 0 && (
         <div className="mx-3 mb-2 text-[11px] text-slate-600 bg-slate-50 border border-slate-200 rounded px-2 py-1">
           No daily jobs linked yet, so labour reads zero. Link them below and the hours roll in on
           their own.
+        </div>
+      )}
+
+      {/* Hours nobody recorded. Said out loud, with the sum shown, because
+          this is the one figure on the card that was never measured and
+          never estimated by a person — it is read off the card's own dates.
+          A margin built on it is an illustration. */}
+      {cost.inferredHours > 0 && (
+        <div className="mx-3 mb-2 text-[11px] text-slate-700 bg-slate-50 border border-slate-200 rounded px-2 py-1">
+          <b>{cost.inferredHours}h of the labour above was never recorded.</b>{" "}
+          {cost.inferredFrom === "sheet"
+            ? "It is the total this card carries in the sheet."
+            : cost.inferredFrom === "unbooked"
+            ? `It is ${cost.inferredPersonDays} crew-day${cost.inferredPersonDays === 1 ? "" : "s"} at
+               ${cost.shiftHours}h — days inside this card's dates when the board had a schedule and
+               had nothing else for them, across ${cost.inferredDays} day${cost.inferredDays === 1 ? "" : "s"}.`
+            : `It is ${cost.inferredDays} day${cost.inferredDays === 1 ? "" : "s"} of the card's span
+               times a crew of ${cost.crewSize} at ${cost.shiftHours}h.`}
+          {cost.inferredFrom !== "sheet" && (
+            <> A day the board already recorded is not counted twice, and a day it knows nothing
+              about is not counted at all. Close this work out on the Live Board and measured time
+              replaces it on its own.</>
+          )}
+        </div>
+      )}
+
+      {/* The crew the card puts on a project, which is what keeps them off
+          the board's idle list. */}
+      {(project.crew || []).length > 0 && (
+        <div className="mx-3 mb-2 text-[11px] text-slate-500 flex items-start gap-1.5">
+          <Users className="w-3 h-3 mt-0.5 shrink-0" />
+          <span>On this card: {project.crew.join(", ")} — not counted idle on the board between
+            its dates.</span>
         </div>
       )}
 
@@ -795,5 +937,208 @@ function Field({ label, value, onChange, placeholder, full }) {
       <input value={value || ""} onChange={(e) => onChange(e.target.value)} placeholder={placeholder}
              className="mt-0.5 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
     </label>
+  );
+}
+
+/* ====================================================================== *
+ * Pasting the Job Cards tab.
+ *
+ * The same habit as "Paste the day in" on the Live Board, for the other
+ * sheet the department already keeps. It exists for two reasons and the
+ * second one is the one that was actually hurting:
+ *
+ *   A project's schedule was being typed twice — once into the workbook's
+ *   Job Cards tab, once into this form — so it was typed once and this tab
+ *   stayed empty.
+ *
+ *   And a project crew has no daily job row naming them, so the board
+ *   counted them idle. On 3 September it listed Khaled, Nizar and Shafeeq
+ *   with nothing to do while all three were named on the Damac 4301 card,
+ *   in progress, due on the 4th. A card carries its crew and its dates, so
+ *   once it is in, the day can say where they are.
+ *
+ * Nothing commits until it has been looked at, and a row whose dates
+ * contradict each other does not commit at all until somebody says which
+ * reading is right. That is not caution for its own sake: the real tab has
+ * two rows where 1 September was stored as 9 January, and a project on the
+ * wrong dates puts a crew on the wrong days and invents the hours to match.
+ * ====================================================================== */
+function JobCardsPasteDialog({ projects, onCancel, onCommit }) {
+  const [text, setText] = useState("");
+  const [parsed, setParsed] = useState(null);
+  /* line number -> "fixed" | "written" | "blank". Deliberately empty to
+     start: a row with impossible dates has no default reading. */
+  const [dateChoice, setDateChoice] = useState({});
+
+  function read(v) {
+    setText(v);
+    setDateChoice({});
+    if (!squash(v)) { setParsed(null); return; }
+    const r = parseJobCards(v);
+    setParsed({ ...r, drafts: matchExisting(r.drafts, projects) });
+  }
+
+  const drafts = parsed?.drafts || [];
+  const problems = drafts.filter((d) => d.dateProblem);
+  const undecided = problems.filter((d) => !dateChoice[d.line]);
+
+  /* Rows ready to commit, with the chosen reading applied. */
+  const resolved = useMemo(() => drafts.map((d) => {
+    if (!d.dateProblem) return { draft: d, existing: d.existing };
+    const choice = dateChoice[d.line];
+    if (!choice) return null;
+    if (choice === "written") return { draft: d, existing: d.existing };
+    if (choice === "blank") {
+      return { draft: { ...d, startDate: "", targetDate: "", actualCompletionDate: "" },
+               existing: d.existing };
+    }
+    return { draft: { ...d, ...d.dateProblem.suggestion }, existing: d.existing };
+  }).filter(Boolean), [drafts, dateChoice]);
+
+  const fresh = resolved.filter((r) => !r.existing).length;
+  const again = resolved.filter((r) => r.existing).length;
+  const withRef = drafts.filter((d) => d.quotationRef).length;
+  const withCrew = drafts.filter((d) => d.crew?.length).length;
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-900/40 flex items-start justify-center overflow-y-auto p-4"
+         onClick={(e) => { if (e.target === e.currentTarget) onCancel(); }}>
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-3xl mt-8 p-4">
+        <div className="flex items-start justify-between">
+          <h3 className="text-sm font-semibold text-slate-900">Paste the job cards in</h3>
+          <button onClick={onCancel} className="text-slate-400 hover:text-slate-600"><X className="w-4 h-4" /></button>
+        </div>
+
+        <p className="text-xs text-slate-600 mt-1.5">
+          Open the workbook&rsquo;s <b>Job Cards (Projects)</b> tab, select the header row and the
+          project rows together, and paste. Column order does not matter. Pasting it again is
+          safe — a card already here is <b>updated</b> on what the sheet decides (status, dates,
+          crew, scope) and left alone on what only you can fill: the approved amount, the priced
+          materials and the quotation link.
+        </p>
+
+        <textarea autoFocus value={text} onChange={(e) => read(e.target.value)} rows={6}
+                  placeholder="Property	Unit	Parking No.	Job Type	Quotation Ref	Start Date	Team Assigned	Scope of Work…"
+                  className="mt-2 w-full border border-slate-300 rounded-md px-2 py-1.5 text-xs font-mono" />
+
+        {parsed?.error && (
+          <p className="mt-2 text-xs text-red-800 bg-red-50 border border-red-200 rounded px-2 py-1.5">
+            {parsed.error}
+          </p>
+        )}
+
+        {drafts.length > 0 && (
+          <>
+            <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs text-slate-600">
+              <span className="rounded px-1.5 bg-slate-900 text-white text-[11px]">job cards</span>
+              <span><b className="text-slate-900">{drafts.length}</b> card(s) read</span>
+              <span><b>{withRef}</b> carry a quotation number</span>
+              <span><b>{withCrew}</b> name a crew</span>
+              {again > 0 && <span className="text-slate-500">{again} already here</span>}
+              {problems.length > 0 && (
+                <span className="text-amber-700">{problems.length} with dates that cannot be right</span>
+              )}
+            </div>
+
+            {parsed.skipped?.length > 0 && (
+              <div className="mt-2 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
+                {parsed.skipped.length} row(s) could not be read:
+                <ul className="mt-0.5 space-y-0.5">
+                  {parsed.skipped.map((s, i) => (
+                    <li key={i}>· line {s.line} — {s.reason} {s.sample ? <i>({s.sample})</i> : null}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {problems.length > 0 && (
+              <div className="mt-2 rounded-md border border-amber-300 bg-amber-50 p-2.5">
+                <div className="flex items-center gap-1.5 text-xs font-medium text-amber-900">
+                  <AlertTriangle className="w-3.5 h-3.5" />
+                  {problems.length} card&rsquo;s dates contradict each other
+                </div>
+                <p className="text-[11px] text-amber-800 mt-1">
+                  This is the day-first / month-first collision: <code>01/09/2026</code> typed into
+                  a sheet reading it month-first is stored as 9 January. The other reading is
+                  worked out below, but nothing is assumed — a project on the wrong dates puts its
+                  crew on the wrong days. Pick one for each.
+                </p>
+                <div className="mt-2 space-y-2">
+                  {problems.map((d) => {
+                    const sug = d.dateProblem.suggestion;
+                    return (
+                      <div key={d.line} className="text-[11px] bg-white border border-amber-200 rounded px-2 py-1.5">
+                        <div className="font-medium text-slate-900">
+                          {d.property} {d.unit} <span className="font-normal text-slate-500">— {d.title}</span>
+                        </div>
+                        <div className="text-slate-600">as written: {d.dateProblem.reason}</div>
+                        <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                          {sug && (
+                            <button onClick={() => setDateChoice((m) => ({ ...m, [d.line]: "fixed" }))}
+                                    className={`rounded border px-2 py-0.5 ${dateChoice[d.line] === "fixed"
+                                      ? "bg-slate-900 text-white border-slate-900" : "border-slate-300 hover:bg-slate-50"}`}>
+                              read day-first: {sug.startDate} → {sug.actualCompletionDate || sug.targetDate}
+                            </button>
+                          )}
+                          <button onClick={() => setDateChoice((m) => ({ ...m, [d.line]: "written" }))}
+                                  className={`rounded border px-2 py-0.5 ${dateChoice[d.line] === "written"
+                                    ? "bg-slate-900 text-white border-slate-900" : "border-slate-300 hover:bg-slate-50"}`}>
+                            keep as written: {d.startDate} → {d.actualCompletionDate || d.targetDate}
+                          </button>
+                          <button onClick={() => setDateChoice((m) => ({ ...m, [d.line]: "blank" }))}
+                                  className={`rounded border px-2 py-0.5 ${dateChoice[d.line] === "blank"
+                                    ? "bg-slate-900 text-white border-slate-900" : "border-slate-300 hover:bg-slate-50"}`}>
+                            leave the dates blank
+                          </button>
+                        </div>
+                        {dateChoice[d.line] === "blank" && (
+                          <p className="text-slate-500 mt-1">
+                            It comes in with its crew and scope. With no dates it cannot say which
+                            days they were on it, so it adds no hours and keeps nobody off the idle
+                            list until you fill them in.
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            <div className="mt-2 max-h-56 overflow-y-auto border border-slate-200 rounded-md divide-y divide-slate-100">
+              {drafts.map((d) => {
+                const blocked = d.dateProblem && !dateChoice[d.line];
+                return (
+                  <div key={d.line} className={`px-2 py-1.5 text-xs flex flex-wrap items-baseline gap-x-2 ${blocked ? "opacity-40" : ""}`}>
+                    <span className="font-medium text-slate-900">{d.property} {d.unit}</span>
+                    <span className="text-slate-600 flex-1 min-w-0 truncate">{d.title}</span>
+                    {d.quotationRef && <span className="text-[11px] font-mono text-slate-500">{d.quotationRef}{d.revision ? ` rev ${d.revision}` : ""}</span>}
+                    <span className="text-[11px] rounded px-1.5 bg-slate-100 text-slate-600">{PROJECT_STATUS_LABEL[d.status] || d.status}</span>
+                    {d.crew?.length > 0 && <span className="text-[11px] text-slate-500">{d.crew.join(", ")}</span>}
+                    {d.existing && <span className="text-[11px] rounded px-1.5 bg-blue-100 text-blue-800">already here — will update</span>}
+                    {blocked && <span className="text-[11px] text-amber-700">needs a date decision</span>}
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
+
+        <div className="flex items-center justify-end gap-2 mt-4">
+          {undecided.length > 0 && (
+            <span className="text-[11px] text-amber-700 mr-auto">
+              {undecided.length} card(s) waiting on a date decision — they will be left out.
+            </span>
+          )}
+          <button onClick={onCancel} className="text-sm border border-slate-300 px-3 py-1.5 rounded-md">Cancel</button>
+          <button onClick={() => onCommit(resolved)} disabled={!resolved.length}
+                  className="text-sm bg-slate-900 text-white px-3 py-1.5 rounded-md disabled:opacity-40">
+            {fresh > 0 && again > 0 ? `Bring in ${fresh}, update ${again}`
+              : again > 0 ? `Update ${again}`
+              : `Bring in ${resolved.length || ""}`}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }

@@ -8,41 +8,98 @@ rejected for a reason recorded below.
 
 ## 0. WHERE THINGS STAND RIGHT NOW — read this first
 
-**Last deployed:** `f3a8bef` on `main`, production READY.
+**Two things are live in the code and both are waiting on him, not on us.**
 
-**The one thing that is not finished: 3 September on the live board is
-still a mess, and he is waiting to clear it.**
+### A. Sign-in has to be switched on, and he chose the built-in email sender
 
-What happened, in order:
+He reported that people he had shared the link with were changing the board.
+The login is already built (email → six-digit code, `shouldCreateUser:false`
+as the allowlist) and still ships **off**, behind the `auth-required` key.
 
-1. The daily sheet was pasted into the **quick-add box** instead of "Paste
-   the day in". Quick-add reads one line as one hand-typed job, so the year
-   out of `2026-09-03` became the unit number on every row, the building was
-   lost, and each PDF-wrapped line became a separate job. Resty showed 15
-   jobs where the sheet had 5.
-2. That was fixed (`src/lib/sheetText.js`) and the day was given a repair
-   banner with "Close them off".
-3. **He pressed it and the board still looked wrong**, twice. The reason is
-   a dead end I built: "Close them off" only finds the OBVIOUS damage — a
-   unit equal to the year of its own day. The subtler damage survives and
-   looks like a real job:
+He was asked and chose **Supabase's built-in email sender** rather than
+configuring SMTP. That is workable for the five office addresses and it was
+built for, but it has two hard edges he has been told about:
 
-   | On the board | What it should be |
-   |---|---|
-   | `La Vie B-257` | `La Vie 3503`, parking bay B-257 |
-   | `3802 / Door lock repair` | `Elite Residence 3802` |
-   | `Marina Apartments 3 408 232` / `CLG- Not N "Pending Work*:` | `Marina Apartments 3 / 408`, parking `CLG-232` |
+- **A couple of emails an hour, project-wide.** Survivable only because a
+  session persists and refreshes itself, so a code is needed on a new
+  device or a cleared browser, not daily. **The first sign-ins must be
+  staggered.** It will not survive extending sign-in to the 16 technicians.
+- **It may refuse addresses outside the Supabase organisation.** If so,
+  `vipul@` gets codes and `haris@` does not.
 
-   Reproduced: three mangled rows in, the button cancels **one** and leaves
-   **two** open. And the banner then disappeared, because it only counted
-   rows still open — taking the only visible route with it.
-4. Now: a day that has ever carried a mis-read row keeps saying so until it
-   is cleared, and the banner carries **"Clear <date> and start again"** as
-   its own action.
+Because of that second point, **the Access panel no longer unlocks on his
+own address.** It now requires a code proved against one of the
+*coordinators'* addresses — Haris, Kaja or Tiyana — since his own would work
+whether or not theirs does. He will not have their mailbox, so the way
+through is: send the test code to a coordinator, have them read the six
+digits back, type them in. That is the only thing that proves the department
+can get in tomorrow morning.
 
-**What he has to do (he has been told, not yet confirmed done):**
-hard-refresh → Live Board → 3 September → red banner → *Clear 2026-09-03 and
-start again* → type the date → paste the sheet into "Paste the day in".
+**What he still has to do, in order:**
+1. Roster → Team → make sure the coordinators' work emails are recorded.
+2. Supabase → Authentication → Users → Add user → Send invitation, for each
+   of the five addresses.
+3. Supabase → Authentication → Email Templates → Magic Link → must contain
+   `{{ .Token }}`. The default sends a clickable link; this app asks for a
+   typed code.
+4. Roster → Access → send a coordinator a test code → they read it back →
+   switch unlocks → turn it on. **Everyone not invited is signed out at
+   once, so tell the coordinators first.**
+5. A day later, run the RLS SQL in `docs/ACCESS.md`.
+
+**The RLS SQL that was in `docs/ACCESS.md` was wrong and has been fixed.**
+It granted read/write to `authenticated` and nothing to `anon` — but
+`isAuthRequired()` reads that flag *before* anyone signs in. The read would
+fail, `storageGet` returns null, the flag reads as "not required", and the
+app would render **with no sign-in screen at all** while every other request
+was denied: open and broken simultaneously. The corrected version gives
+`anon` SELECT on exactly `key = 'auth-required'` and nothing else, and adds
+no DELETE policy for anybody, which matches the app's own no-delete rule.
+
+**If he needs the old link dead today**, before any of the above: rename the
+Vercel project's domain. The old URL stops resolving immediately, the app
+keeps working, the coordinators get the new address. It is not
+authentication — anyone who kept the bundle still holds the anon key — but
+it ends casual poking the same afternoon. Written up at the end of
+`docs/ACCESS.md`.
+
+### B. Job cards paste in, and the idle list is fixed
+
+**Projects → Paste the job cards in.** The workbook's *Job Cards (Projects)*
+tab is one row per project with everything except the approved amount, and
+it was being ignored. Full write-up in `docs/SHEET-PASTE.md`; the short
+version is that this also fixes the thing he actually complained about —
+project crews showing as idle. On 1 September the board now reads
+`on projects: Adi, Bijaya, Imtiaz, Khaled, Nizar, Shafeeq` with `idle:
+Resty` alone, where before all seven were called idle.
+
+**Two things in his sheet need his attention and cannot be fixed from
+here:**
+
+- **"Total Elapsed time" holds a priority on all nine rows** (`P2-High`) —
+  it is a copy of the Priority column beside it. So the tab carries no
+  hours at all. The parser reads that column only when it genuinely parses
+  as a duration, so repairing the sheet starts feeding real hours in with
+  no code change. Worth telling him: this is the single change that would
+  turn the inferred project hours into measured ones.
+- **Two rows store 1 September as 9 January**, because `01/09/2026` was
+  typed day-first into a sheet reading it month-first. One of them is the
+  Damac 4301 card. The app detects it, offers the other reading and refuses
+  to import until somebody picks — it does not guess. But the sheet itself
+  is still wrong, and every fresh paste will ask again until it is fixed.
+
+**Verified in a browser, not just built** — all eight tabs render with no
+console errors, the paste reads all nine real rows, and the idle line
+changes as described. A `no-undef` sweep with a throwaway `npx eslint` found
+the one real scope bug (`onProjectToday` referenced inside `RosterStrip`);
+eslint was NOT added to `package.json`.
+
+### C. Still unconfirmed from the previous session: was 3 September cleared?
+
+This was the previous handover's headline and **he never confirmed it
+either way**, and it was not revisited this session. The route is still:
+hard-refresh → Live Board → 3 September → red banner → *Clear 2026-09-03
+and start again* → type the date → paste the sheet into "Paste the day in".
 
 **If he says it still does not work, ask what he sees when he presses it.**
 That distinction is the whole diagnosis and cannot be reproduced from here:
@@ -55,15 +112,30 @@ That distinction is the whole diagnosis and cannot be reproduced from here:
 - *it clears and the rows come back* → the day watcher or a second tab is
   writing the old array back.
 
-**The network here cannot reach his app or his database.** The egress proxy
+### Reaching his infrastructure from here
+
+**The network cannot reach his app or his database.** The egress proxy
 returns 403 for both `dhh-job-intake.vercel.app` and
 `otbgwnbzhemuqqsvdsql.supabase.co`, so his data can only be changed through
 the app itself. The deployed bundle can be *read* via the Vercel MCP tool
-`web_fetch_vercel_url`, which is how the Supabase URL was found. Deploy
-status: `mcp__Vercel__list_deployments` with
+`web_fetch_vercel_url`. Deploy status: `mcp__Vercel__list_deployments` with
 `projectId: "dhh-job-intake"`, `teamId: "team_Qj0Mhh8W7ln8erTreArrvADa"`.
 
----
+**The Supabase MCP server is pointed at the WRONG project.**
+`~/Downloads/Dependencies/.mcp.json` carries
+`project_ref=zxwxdiifvuigaefzlenw`, which is his housekeeping /
+inspections / payouts database — not job-intake
+(`otbgwnbzhemuqqsvdsql`). So SQL cannot be applied to the board's database
+from here, and the RLS and the user invitations remain his to do in the
+dashboard. **Changing that project_ref would let a future session apply the
+RLS, check the invited users and read the auth logs directly** — worth
+offering him, since it removes the slowest part of this whole thread.
+
+**Working copy:** the two local clones in `~/Downloads/dhh-job-intake` and
+`~/Documents/GitHub/dhh-job-intake` were both stale single-commit trees.
+Work happens in `~/Documents/GitHub/dhh-job-intake` on a branch tracking
+`origin/claude/dhh-intake-metrics-dashboard-dgyrrs`. `npm install` is needed
+there; `node_modules` was absent.
 
 ## 1. Who this is for
 
@@ -292,6 +364,27 @@ On 15 real issues: 15 past due, **three vacant units with work 29–53 days
 overdue and nothing stopping them**, six waiting on a checkout already in
 PMS, five blocked on a guest, two genuine conflicts.
 
+### Projects — pasted in, and read back out of the schedule
+
+**Paste the job cards in** takes the workbook's *Job Cards (Projects)* tab —
+one row per project, everything but the approved amount. It handles the
+multi-line quotation cells, all four written forms of a reference, and the
+locale-damaged dates (offered, never guessed). Re-pasting updates: the sheet
+owns status, dates, crew and scope; it never touches the approved amount,
+the priced materials or the quotation link, and a blank cell never erases a
+recorded value. Daily jobs carrying the same quotation number are linked
+automatically, which is what stops a day being counted twice.
+
+A card carries its **crew** and its **dates**, and that is what fixed the
+idle list — `projectCrewOn(projects, date)` feeds
+`checkAgainstSchedule(roster, jobs, alsoOnProject)`, whose `projectTeam`
+exclusion already existed but had nothing behind it except a person
+remembering to tick names each morning. Project labour is a third,
+explicitly weaker tier: days inside the card's dates when the board had a
+schedule and nothing else for that person. See `docs/SHEET-PASTE.md` for why
+it is that and not the whole span (the whole span read half the
+department's monthly capacity).
+
 ### Projects — read back out of the schedule
 The tab was empty because it only listed projects somebody typed in. The
 projects were in the task text all along, keyed by quotation number
@@ -359,18 +452,29 @@ list exists), without overwriting anything typed by hand.
 open to anybody; turning it *off* requires an admin. Nothing else is gated
 by role, deliberately.
 
+**The switch will not unlock on his own address.** It requires a code
+proved against a *coordinator's* address — see §0.A. He chose Supabase's
+built-in email sender over SMTP, and that sender may only deliver to
+addresses on the Supabase account, so proving it with the administrator's
+address proves the wrong thing.
+
 ### Still outstanding — only he can do it, in Supabase
 1. Invite the five addresses (Authentication → Users → Add user → Send invitation)
-2. **Configure SMTP** (Project Settings → Authentication → SMTP). Not optional — the built-in sender allows a handful of emails an hour, so the morning shift would silently stop receiving codes.
-3. Put `{{ .Token }}` in the Magic Link template. The default sends a clickable link; this app asks for a typed code, because the email is read on a phone while the app is open on the office desktop.
-4. Then Roster → Access → send himself a code → switch unlocks.
+2. Put `{{ .Token }}` in the Magic Link template. The default sends a clickable link; this app asks for a typed code, because the email is read on a phone while the app is open on the office desktop.
+3. Then Roster → Access → send a **coordinator** a test code → they read the six digits back → switch unlocks.
+4. **SMTP is not configured, by his choice.** Stagger the first sign-ins; do not extend sign-in to the technicians without it.
 
 `docs/ACCESS.md` has all of it plus the lockout SQL:
 `update kv_store set value = 'false' where key = 'auth-required';`
 
 **Row-level security is written but NOT applied** (SQL in `docs/ACCESS.md`).
 Run it only after sign-in has worked for the whole department for a day —
-doing it first breaks the app for everyone at once.
+doing it first breaks the app for everyone at once. **The SQL that used to
+be in that file was wrong**: it gave `anon` nothing, and the app reads
+`auth-required` before anybody signs in, so it would have rendered with no
+sign-in screen while every other request was denied. The corrected policy
+gives `anon` SELECT on that one key only. Until RLS is applied, the login
+gate stops people using the *board* but not the *anon key in the bundle*.
 
 ---
 
@@ -419,6 +523,10 @@ src/lib/
   metrics.js           1135  ~18 metric computations, all coverage-first
   job.js                721  the job entity, states, reasons, quick-add parse
   backlog.js            721  occupancy, SLA, the day rule, PMS/sheet parsing
+  projectSheet.js       460  reads the workbook's Job Cards (Projects) tab.
+                             Tokenises quoted multi-line cells, offers the
+                             other reading of a day/month-damaged date and
+                             refuses to import until somebody picks
   sheetText.js          440  reads the daily sheet as it is ACTUALLY pasted:
                              copied off the locked PDF, spaces not tabs, rows
                              wrapped. Also isMisread, which finds the rows a
@@ -444,6 +552,9 @@ src/lib/
   supabase.js            62  client, or a failure-safe stub if unconfigured
 docs/  WORKFLOW.md 895 · METRICS.md 345 · ACCESS.md 170 · SHEET-PASTE.md 125
 test/  README.md, harness/, suites/  (39 browser suites)
+       suites/projcards.mjs is the exception: plain `node`, no browser,
+       because what it checks is arithmetic and refusal, not rendering.
+       `node test/suites/projcards.mjs` — 10 checks, ~1s.
 ```
 
 ### Concurrency — do not break this
@@ -509,7 +620,30 @@ anon key. Never write test rows into his live database.
 
 ## 10. Open threads
 
-**FIRST: is 3 September clean?** See §0. Everything else waits on that.
+**FIRST: has he turned sign-in on, and did a coordinator get a code?**
+See §0.A. That is the thread he opened this session and everything about
+access waits on it. The second question to ask is whether he wants the
+Supabase MCP repointed at the job-intake project, which would let a session
+apply the RLS itself instead of writing it out for him.
+
+**Two defects in HIS sheet, reported and not yet fixed by him.** Neither can
+be fixed from here and both keep costing something every paste:
+*Total Elapsed time* holds a priority on all nine rows, so the Job Cards tab
+carries no hours at all — repairing that one column is what would turn the
+inferred project hours into measured ones. And two rows store 1 September as
+9 January from a day-first / month-first collision; the app offers the other
+reading and refuses to guess, but it will ask again on every fresh paste
+until the sheet is corrected.
+
+**Project hours over-count somebody on leave.** A day counts toward a
+project when the board has a schedule for it and no job for that person —
+but the roster is not read in the Projects view, so annual leave mid-project
+looks the same as a project day. Marked with a `ponytail:` note in
+`project.js` naming the upgrade path (load `roster:<date>` across the span
+and drop anyone in `unavailable`). Left alone because it needs a read per
+day in the span and the error is small next to the one it replaced.
+
+**3 September: still unconfirmed.** See §0.C. Not revisited this session.
 
 **The mis-read detector only finds the obvious damage, by design.** A unit
 equal to the year of its own day is conclusive; the torn date, the shift
@@ -612,7 +746,43 @@ him that the techs actually switch to it.
 
 ---
 
-## 12. This session, in order — so nothing gets re-litigated
+## 12. Sessions, in order — so nothing gets re-litigated
+
+### This session (3 September)
+
+1. **"Can we secure this system?"** People he had shared the link with were
+   changing the board. The answer was mostly *the login is already built,
+   here is the sequence* — plus three real changes: the Access panel now
+   demands a coordinator's proof rather than his own, the RLS SQL in
+   `docs/ACCESS.md` was **wrong** and is fixed (it would have opened the app
+   rather than closing it), and the domain-rename stopgap is written down.
+   He chose the **built-in email sender** over SMTP after being told the
+   limits; that decision is his and has been made, do not re-argue it —
+   but do hold the line on staggering the first sign-ins and on not
+   extending sign-in to the technicians without SMTP.
+2. **"The best way to update the projects."** Built the Job Cards paste,
+   with re-paste as an update rather than a duplicate. The design question
+   he was asked was how project labour should count, and he chose
+   **inferred from the span, labelled as inferred**.
+3. **The span turned out to be too crude and was narrowed.** Span × crew ×
+   shift read AED 42,125 across nine cards — half the department's monthly
+   capacity, on cards mostly carrying one man, the worst being 405 hours for
+   a snag card that was merely *open* for 45 days. Narrowed to days the
+   board has a schedule for and has nothing else for that person: 837h, and
+   the top contributors became the two five-person onboardings at about
+   seven hours per person per day. **This is a change to what he chose, in
+   the direction he would have chosen** — the label he asked for is intact
+   and the number is now defensible — but he has not seen the reasoning yet,
+   so lead with it.
+4. **Two bugs the build passed and the browser caught**, both of the exact
+   classes §9 warns about: `CARD_OWNED` omitted `property` and `unit`, so
+   every imported card had a blank address and looked plausible; and
+   `onProjectToday` was referenced inside `RosterStrip` where it is not in
+   scope, blanking the Live Board. Both now have regression cover — the
+   first in `projcards.mjs`, the second by the browser pass.
+
+### The previous session
+
 
 1. **Real times over guessed estimates.** His stated priority: *"measure the
    number of tasks done and how much time it realistically took by their

@@ -335,9 +335,33 @@ export function shiftFor(roster, tech) {
  * team? Assigning work to somebody on annual leave has always been
  * possible and nothing said a word about it.
  * ---------------------------------------------------------------------- */
-export function checkAgainstSchedule(roster, jobs) {
+export function checkAgainstSchedule(roster, jobs, alsoOnProject) {
   const summary = rosterSummary(roster);
   if (!summary) return null;
+
+  /* ------------------------------------------------------------------ *
+   * Names the job cards themselves put on a project today.
+   *
+   * The ticked list below already keeps a project crew off the idle list,
+   * and it worked — but only for whoever remembered to tick four names
+   * every morning. A job card already says who is on it and between which
+   * dates, so on 3 September Shafeeq, Khaled and Nizar were named on the
+   * Damac 4301 card, due on the 4th, and listed as idle on the board at
+   * the same time. Those names come in here, and the ticks stay for
+   * anything the sheet does not say.
+   * ------------------------------------------------------------------ */
+  if (alsoOnProject && alsoOnProject.length) {
+    const merged = new Set(summary.projectTeam || []);
+    const fromCards = [];
+    alsoOnProject.forEach((n) => {
+      const t = canonTech(typeof n === "string" ? n : n && n.name);
+      if (!t) return;
+      merged.add(t);
+      fromCards.push(t);
+    });
+    summary.projectTeam = Array.from(merged).sort();
+    summary.projectTeamFromCards = Array.from(new Set(fromCards)).sort();
+  }
 
   const unavailable = new Set(summary.unavailable);
   const known = new Set([...summary.onShift, ...summary.standby, ...summary.offsite,

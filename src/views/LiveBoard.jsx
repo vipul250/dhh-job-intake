@@ -23,6 +23,7 @@ import { readGoLive, isLive, isPreGoLive } from "../lib/goLive.js";
 import { readLearned, refreshLearned, isStale, learnedFor } from "../lib/learned.js";
 import { parseSheetPaste } from "../lib/importSheet.js";
 import { checkAgainstSchedule } from "../lib/roster.js";
+import { projectCrewOn } from "../lib/project.js";
 import { storageGet } from "../lib/storage.js";
 import { staffIndex, seedStaff, TRADE_LABEL } from "../lib/staff.js";
 import {
@@ -148,6 +149,9 @@ export default function LiveBoard({
   const [todayOpen, setTodayOpen] = useState(null);
   const [goLive, setGoLiveDate] = useState(null);
   const [roster, setRoster] = useState(null);
+  /* Read so the day can tell a crew on a multi-day job card apart from a
+     crew with nothing to do. Without it the board called them idle. */
+  const [projects, setProjects] = useState([]);
   const [loadError, setLoadError] = useState("");
   const [post, setPost] = useState(null);
   const [changeReasonFor, setChangeReasonFor] = useState(null);
@@ -330,6 +334,10 @@ export default function LiveBoard({
       const raw = await storageGet(`roster:${selectedDate}`);
       if (cancelled) return;
       try { setRoster(raw ? JSON.parse(raw) : null); } catch { setRoster(null); }
+
+      const praw = await storageGet("projects");
+      if (cancelled) return;
+      try { setProjects(praw ? JSON.parse(praw) : []); } catch { setProjects([]); }
     })();
     return () => { cancelled = true; };
   }, [selectedDate]);
@@ -536,9 +544,15 @@ export default function LiveBoard({
      this is here to show. */
   const activity = useMemo(() => dayActivity(rows || [], post), [rows, post]);
 
+  /* Who a job card has on a project on the day being looked at. Passed to
+     the roster check so those names come off the idle list. */
+  const onProjectToday = useMemo(
+    () => projectCrewOn(projects, selectedDate),
+    [projects, selectedDate]
+  );
   const rosterCheck = useMemo(
-    () => (roster ? checkAgainstSchedule(roster, jobs) : null),
-    [roster, jobs]
+    () => (roster ? checkAgainstSchedule(roster, jobs, onProjectToday) : null),
+    [roster, jobs, onProjectToday]
   );
   const staffIdx = useMemo(() => (staff ? staffIndex(staff) : null), [staff]);
   const crewing = useMemo(
@@ -972,7 +986,7 @@ export default function LiveBoard({
         </div>
       )}
 
-      {rosterCheck && <RosterStrip check={rosterCheck} />}
+      {rosterCheck && <RosterStrip check={rosterCheck} onProject={onProjectToday} />}
       {crewing && <CrewStrip crewing={crewing} />}
 
       {rollover && (
@@ -1808,7 +1822,7 @@ function CrewStrip({ crewing }) {
  * the morning. The check runs against the roster saved for the day.
  * ============================================================== */
 
-function RosterStrip({ check }) {
+function RosterStrip({ check, onProject }) {
   const s = check.summary;
   const problems = check.assignedAway.length > 0 || check.notOnRosterTechs.length > 0;
 
@@ -1833,6 +1847,12 @@ function RosterStrip({ check }) {
           <span className="text-slate-500">
             stand-by: <span className="text-slate-700">{s.standby.join(", ")}</span>
             {s.standbyBlock && s.standbyBlock.phone && <span className="text-slate-400"> {s.standbyBlock.phone}</span>}
+          </span>
+        )}
+        {check.summary.projectTeam?.length > 0 && (
+          <span className="text-slate-600"
+                title={(onProject || []).map((x) => `${x.name} — ${x.title}`).join("\n")}>
+            on projects: {check.summary.projectTeam.join(", ")}
           </span>
         )}
         {check.idle.length > 0 && (
