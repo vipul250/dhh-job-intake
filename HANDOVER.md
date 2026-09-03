@@ -210,8 +210,13 @@ state, and an append-only event log.** Nothing ever leaves a day silently.
 ### Constraints that are fixed, not negotiable
 
 - **No PMS API.** "our ceo wont entertain that." Do not propose it again.
-- **No live Google Sheets connection.** Offered, considered, declined —
-  manual paste is preferred. Do not re-propose.
+- **A live Google Sheets connection is now IN, reversing the earlier
+  decision.** It was offered, considered and declined in favour of manual
+  paste; on 3 September he asked for it and supplied the code. Do not argue
+  with either direction — it is his call and he has made it twice. See
+  `docs/SHEET-SYNC.md`, including the four limits to settle before the
+  environment variables are set (most importantly: a job moved to another
+  day is restored to its original day on every run).
 - **PMS stays the system of record.** It holds reservations, the owner
   portal, guest links, task refs, and the technicians' photos and comments.
   The app is a lens on it, never a replacement.
@@ -406,6 +411,18 @@ named and `Parking: not given` said out loud.
 
 **Start this day again.** See §0 and §3.
 
+### Automatic Google Sheet sync — built, inert until configured
+`api/sync-sheet.js` + `vercel.json` (a `crons` block only, so the zero-config
+Vite build is untouched). His code, and well judged: it reuses
+`parseSheetPaste -> pasteAdditions -> newJob` rather than building a second
+import path, and checks `CRON_SECRET`. Reviewed, one blocking bug fixed —
+`migrateDay` was imported from `jobStore.js`, which cannot load in a Node
+function at all, so it was extracted to `src/lib/dayMigrate.js` with
+`jobStore.js` re-exporting it. Verified: the handler loads in plain Node,
+answers 401 with no/incorrect/absent `CRON_SECRET`, and returns a clean 500
+naming the missing variable. **It is inert until all four env vars exist.**
+Four known limits in `docs/SHEET-SYNC.md`.
+
 ### Queue — the decision that was invisible
 The PMS Issues list pasted in, with a **stated rule** answering *which day,
 and why*:
@@ -595,7 +612,13 @@ src/views/
   Roster.jsx            720  shift paste, team master, access panel
   Backlog.jsx           446  the queue and the scheduling rule, applied
   SignIn.jsx            109  email → code screen
+api/
+  sync-sheet.js         167  reads the live Sheet on a daily cron and feeds
+                             it through the SAME paste pipeline as the button
+  parse.js               58  the Anthropic proxy (AI import, since removed)
 src/lib/
+  dayMigrate.js          98  migrateDay/migrateRow/needsMigration, kept free
+                             of storage so api/ can import them at all
   metrics.js           1135  ~18 metric computations, all coverage-first
   job.js                721  the job entity, states, reasons, quick-add parse
   backlog.js            721  occupancy, SLA, the day rule, PMS/sheet parsing

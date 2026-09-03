@@ -22,7 +22,6 @@ import {
   storageGet, storageSet, storageList, storageGetVersioned, storageCompareAndSet,
 } from "./storage.js";
 import { isTombstone } from "./job.js";
-import { splitTrailingUnit } from "./normalize.js";
 
 const key = (date) => `schedule:${date}`;
 
@@ -167,71 +166,8 @@ export function createDayWatcher({ intervalMs = 10000, quietMs = 4000 } = {}) {
 }
 
 /* ---------------------------------------------------------------------- *
- * Migration.
- *
- * Everything already stored — including the 474 rows imported from the
- * workbook — predates job identity. Those rows have an id but no state, no
- * origin date and no event log. Rather than a one-shot migration script
- * that has to be run at the right moment, a day is upgraded lazily the
- * first time it is opened. Old data keeps working, and the first edit to
- * any job gives it a proper history from that point on.
- * -------------------------------------------------------------------- */
-export function migrateRow(row, date) {
-  if (isTombstone(row)) return row;
-
-  /* Runs on every row, migrated or not: a quarter of the stored month has
-     the unit written on the end of the building with the unit column empty,
-     and until it is split those rows each count as a building of their own. */
-  const fixed = splitUnitIfStuck(row);
-  if (fixed.state && fixed.events) return fixed;
-  const row_ = fixed;
-
-  // The previous build recorded outcomes under `verify`; carry them across
-  // rather than dropping work the admin already did.
-  let state = "scheduled";
-  let outcomeReason = "";
-  const v = row_.verify;
-  if (v && v.outcome === "done") state = "fixed";
-  else if (v && v.outcome === "not-done") { state = "not_done"; outcomeReason = v.reason || ""; }
-  else if (v && v.outcome === "partial") { state = "not_done"; outcomeReason = v.reason || "Partially completed"; }
-
-  const events = [];
-  if (row_.createdAt) events.push({ at: row_.createdAt, kind: "created", by: row_.importedAt ? "import" : "unknown" });
-  if (v && v.verifiedAt) {
-    events.push({ at: v.verifiedAt, kind: state === "done" ? "done" : "not_done", by: v.verifiedBy || "admin", reason: outcomeReason });
-  }
-  if (!events.length) events.push({ at: Date.now(), kind: "created", by: "unknown" });
-
-  return {
-    ...row_,
-    state,
-    outcomeReason,
-    scheduledDate: row_.scheduledDate || date,
-    originDate: row_.originDate || date,
-    pushCount: row_.pushCount || 0,
-    inPms: row_.inPms !== undefined ? row_.inPms : (v ? v.inPms : (row_.sheetInPms ?? null)),
-    pmsRef: row_.pmsRef || (v ? v.pmsRef : "") || row_.sheetPmsRef || "",
-    actualMinutes: row_.actualMinutes ?? (v ? v.actualMinutes : null) ?? null,
-    createdBy: row_.createdBy || "unknown",
-    events,
-  };
-}
-
-/* Only ever writes back a property that lost its trailing unit, and only
-   when the unit column was empty. See splitTrailingUnit for why that is the
-   one shape safe to move. */
-function splitUnitIfStuck(row) {
-  const s = splitTrailingUnit(row.property, row.unit);
-  return s.split ? { ...row, property: s.property, unit: s.unit } : row;
-}
-
-export function migrateDay(rows, date) {
-  return (rows || []).map((r) => migrateRow(r, date));
-}
-
-/* Does this day need writing back after migration? Only if something
-   actually changed, so opening an already-migrated day is a pure read. */
-export function needsMigration(rows) {
-  return (rows || []).some((r) => !isTombstone(r) &&
-    (!r.state || !r.events || splitTrailingUnit(r.property, r.unit).split));
-}
+ * Migration moved to dayMigrate.js so that code outside the browser can
+ * use it — see the header there. Re-exported here so every existing
+ * importer keeps working unchanged.
+ * ---------------------------------------------------------------------- */
+export { migrateRow, migrateDay, needsMigration } from "./dayMigrate.js";
