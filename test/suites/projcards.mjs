@@ -17,11 +17,11 @@
  * ---------------------------------------------------------------------- */
 
 import assert from "node:assert/strict";
-import { parseJobCards, splitPastedRows, looksLikeJobCards, titleFromScope }
+import { parseJobCards, splitPastedRows, looksLikeJobCards, titleFromScope, matchExisting }
   from "../../src/lib/projectSheet.js";
 import {
   newProject, projectCost, projectCrewOn, projectSpanDates, projectActiveOn,
-  projectEndDate, discoverProjects, adoptProject, backfillCrewFromJobs,
+  projectEndDate, discoverProjects, adoptProject, backfillCrewFromJobs, updateFromCard,
 } from "../../src/lib/project.js";
 
 const HEADER = [
@@ -272,7 +272,93 @@ const ok = (what) => { checks++; console.log("  ok  " + what); };
   ok("an adopted project keeps its crew, gets an end date, and old ones are read back");
 }
 
-/* ------------------------ 10. titles --------------------------------- */
+/* --- 10. pasting the tab over projects already in the app ------------- */
+{
+  /* Measured against the real data: of nine cards, five match projects the
+     Projects tab already holds and four are new. The one that used to go
+     wrong is The Palm Tower 3706 — in the app as "Pick and Drop onboarding
+     team" with no quotation number, and on a card carrying PC-2026-08-08
+     from the same day. On reference alone that made a second project for
+     one unit. */
+  const inApp = [
+    { id: "p1", property: "The Palm Tower", unit: "3706", quotationRef: "",
+      status: "completed", startDate: "2026-08-18", targetDate: "2026-08-18",
+      actualCompletionDate: "2026-08-18", crew: ["Resty"] },
+    { id: "p2", property: "Al Fattain Marine Tower", unit: "2903",
+      quotationRef: "PC-2026-08-28", status: "completed",
+      startDate: "2026-08-31", targetDate: "2026-09-01", crew: ["Adi"] },
+    { id: "p3", property: "Sunrise Bay Tower 1", unit: "902",
+      quotationRef: "PC-2026-08-03", status: "completed",
+      startDate: "2026-08-18", targetDate: "2026-08-29", crew: ["Adi"] },
+  ];
+
+  const cards = [
+    { property: "The Palm Tower", unit: "3706", quotationRef: "PC-2026-08-08",
+      startDate: "2026-08-18", targetDate: "2026-08-20", actualCompletionDate: "2026-08-21" },
+    { property: "Al Fattain Marine Tower", unit: "2903", quotationRef: "PC-2026-08-05",
+      startDate: "2026-08-20", targetDate: "2026-08-21", actualCompletionDate: "2026-08-21" },
+    { property: "Sunrise Bay Tower 1", unit: "902", quotationRef: "PC-2026-08-03",
+      startDate: "2026-08-18", targetDate: "2026-08-21", actualCompletionDate: "2026-08-29" },
+    { property: "Somewhere New", unit: "101", quotationRef: "PC-2026-08-99",
+      startDate: "2026-08-18", targetDate: "2026-08-19" },
+  ];
+
+  const m = matchExisting(cards, inApp);
+  assert.equal(m[0].existing?.id, "p1",
+    "a card's number attaches to the unquoted project already on that unit");
+  assert.equal(m[0].matchedBy, "unit");
+  assert.equal(m[1].existing, null,
+    "two quotations on one unit stay two projects — PC-08-05 must not eat PC-08-28");
+  assert.equal(m[2].existing?.id, "p3", "an exact reference match is conclusive");
+  assert.equal(m[2].matchedBy, "ref");
+  assert.equal(m[3].existing, null, "a genuinely new unit is new");
+
+  /* A unit quoted again months later is a different project. */
+  const later = matchExisting(
+    [{ ...cards[0], startDate: "2026-11-01", targetDate: "2026-11-04",
+       actualCompletionDate: "2026-11-04" }], inApp);
+  assert.equal(later[0].existing, null, "beyond a fortnight it is a new project");
+  ok("a card attaches to an unquoted project on its unit, and never merges two quotations");
+}
+
+/* --- 11. "In Progress" invalidates a recorded completion date --------- */
+{
+  /* Damac 4301 was adopted from the schedule as completed on 1 September,
+     because that is the last day the schedule had a task for it. Its card
+     says In Progress, due the 4th. Keeping the old completion date meant
+     the project still ended on the 1st however the card was read, and its
+     crew went on reading as idle on the 3rd. */
+  const adopted = {
+    id: "p9", property: "Damac Towers", unit: "4301", quotationRef: "PC-2026-08-07",
+    status: "completed", startDate: "2026-08-31", targetDate: "2026-09-01",
+    actualCompletionDate: "2026-09-01", crew: ["Shafeeq", "Khaled", "Nizar"], events: [],
+  };
+  const card = {
+    property: "Damac Towers", unit: "4301", quotationRef: "PC-2026-08-07",
+    status: "in_progress", startDate: "2026-09-01", targetDate: "2026-09-04",
+    actualCompletionDate: "", crew: ["Shafeeq", "Khaled", "Nizar"],
+  };
+  const { project, changed } = updateFromCard(adopted, card, "test");
+  assert.equal(project.status, "in_progress");
+  assert.equal(project.targetDate, "2026-09-04");
+  assert.equal(project.actualCompletionDate, "", "the stale completion date is dropped");
+  assert.ok(changed.includes("actualCompletionDate"), "and the change is recorded");
+  assert.equal(projectEndDate(project, "2026-09-03"), "2026-09-04");
+  assert.deepEqual(
+    projectCrewOn([project], "2026-09-03", "2026-09-03").map((x) => x.name),
+    ["Shafeeq", "Khaled", "Nizar"], "so the crew is on a project on the 3rd");
+  assert.equal(projectActiveOn(project, "2026-09-05", "2026-09-03"), false,
+    "and off it once the card is past due");
+
+  /* A completed card still keeps its date — the exception is only for work
+     the sheet says is unfinished. */
+  const finished = updateFromCard(adopted,
+    { ...card, status: "completed", actualCompletionDate: "2026-09-04" }, "test");
+  assert.equal(finished.project.actualCompletionDate, "2026-09-04");
+  ok("a card saying In Progress clears a completion date it contradicts");
+}
+
+/* ------------------------ 12. titles --------------------------------- */
 {
   assert.equal(titleFromScope('pending\n-Cp filter need to fixe', 'Onboarding'),
     "-Cp filter need to fixe", '"pending" says nothing, so it is passed over');

@@ -211,7 +211,12 @@ export function projectEndDate(project, today) {
   if (!project || !project.startDate) return "";
   const now = today || todayISO();
   if (project.status === "cancelled") return project.actualCompletionDate || "";
-  if (project.actualCompletionDate) return project.actualCompletionDate;
+  /* A project in progress has not completed, so a completion date on it is
+     stale whatever put it there. Trusting it made a running project end in
+     the past and its crew read as idle. */
+  if (project.actualCompletionDate && project.status !== "in_progress") {
+    return project.actualCompletionDate;
+  }
   const target = project.startDate && project.targetDate ? project.targetDate : "";
   /* Still running: it has accrued up to today, and an overrun is real work
      rather than something to clip back to the target date. */
@@ -822,6 +827,25 @@ export function updateFromCard(project, draft, by) {
     changed.push(f);
     next[f] = now;
   });
+
+  /* ------------------------------------------------------------------ *
+   * One exception to "a blank cell never erases a recorded value".
+   *
+   * A card that says In Progress is saying the work is NOT finished, and
+   * that contradicts any completion date already on the project — so the
+   * date is stale, not merely unstated. This is not hypothetical: the
+   * Damac 4301 project was discovered from the schedule and adopted as
+   * completed on 1 September, because that is the last day the schedule
+   * had a task for it. Its job card says In Progress, due on the 4th.
+   * Keeping the old completion date meant the project still ended on the
+   * 1st however the card was read, so its crew went on reading as idle on
+   * the 3rd — which is exactly the complaint this was meant to answer.
+   * ------------------------------------------------------------------ */
+  const unfinished = ["in_progress", "approved", "quoted"].includes(squash(draft.status));
+  if (unfinished && squash(next.actualCompletionDate)) {
+    next.actualCompletionDate = "";
+    changed.push("actualCompletionDate");
+  }
 
   if (!changed.length) return { project, changed: [] };
   next.events = [...(project.events || []),

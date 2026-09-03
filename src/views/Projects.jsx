@@ -1131,7 +1131,15 @@ function JobCardsPasteDialog({ projects, onCancel, onCommit }) {
                     {d.quotationRef && <span className="text-[11px] font-mono text-slate-500">{d.quotationRef}{d.revision ? ` rev ${d.revision}` : ""}</span>}
                     <span className="text-[11px] rounded px-1.5 bg-slate-100 text-slate-600">{PROJECT_STATUS_LABEL[d.status] || d.status}</span>
                     {d.crew?.length > 0 && <span className="text-[11px] text-slate-500">{d.crew.join(", ")}</span>}
-                    {d.existing && <span className="text-[11px] rounded px-1.5 bg-blue-100 text-blue-800">already here — will update</span>}
+                    {d.existing && d.matchedBy === "ref" && (
+                      <span className="text-[11px] rounded px-1.5 bg-blue-100 text-blue-800">already here — will update</span>
+                    )}
+                    {d.existing && d.matchedBy === "unit" && (
+                      <span className="text-[11px] rounded px-1.5 bg-blue-100 text-blue-800"
+                            title="Found in the schedule without a quotation number. The card's number will be attached to it rather than a second project being created for this unit.">
+                        already here with no quotation number — will attach it
+                      </span>
+                    )}
                     {blocked && <span className="text-[11px] text-amber-700">needs a date decision</span>}
                   </div>
                 );

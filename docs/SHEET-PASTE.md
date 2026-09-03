@@ -349,3 +349,83 @@ letting it become the technician's problem on site:
 > They come in as 5 separate jobs, which is right — five pools are five
 > jobs. But the technician cannot tell which is which, so put the number in
 > the sheet's **Unit / Villa No.** column and re-paste when you can.
+
+---
+
+# Pasting the Job Cards tab when the app already has projects
+
+The question that matters: the Projects tab already holds projects
+*discovered* out of the daily schedule, and the Job Cards tab holds cards
+for some of the same work plus older ones. Copying the whole tab has to
+land on the right side of that, every time.
+
+**Copy the whole tab, header row included, old rows and all.** Measured
+against the real data — nine cards over the nine projects discovery had
+already adopted:
+
+```
+9 projects  ->  13     (5 updated, 4 created)
+units carrying more than one project: none
+completed cards: 12 of 13  (history only — nobody is on them today)
+```
+
+## How a card finds the project it belongs to
+
+1. **By quotation number.** Exact, and conclusive. `PC-2026-08-03` on a
+   card is the `PC-2026-08-03` already in the app.
+2. **Failing that, by unit — but only against a project with no number of
+   its own, and only if the dates are within a fortnight.** This is the
+   case that used to duplicate. The Palm Tower 3706 sits in the app as
+   "Pick and Drop onboarding team" with no quotation number, because the
+   coordinator wrote the work before the quotation was written up; its card
+   carries `PC-2026-08-08` and starts the same day. On number alone that
+   read as new work and the unit ended up with two projects. The card's
+   number is now attached to the project already there.
+3. **Otherwise it is new.**
+
+Two quotations on one unit stay two projects — Al Fattain 2903 has
+`PC-2026-08-05` on its card and `PC-2026-08-28` in the app, and those are
+genuinely different work. Beyond a fortnight it is new work too: a unit
+onboarded in August and quoted again in November is not the same job.
+
+The dialog says which of the three happened to every row before anything is
+committed.
+
+## Old cards are safe, and worth having
+
+A completed card comes in with its status and its completion date, so it is
+**history**: it lands in the month's cost and margin, and it puts nobody on
+a project today. Only a card the sheet says is unfinished, whose dates cover
+the day, keeps a crew off the idle list. Of the nine real cards, one — Damac
+4301, In Progress, due 4 September — does that, and it puts Shafeeq, Khaled
+and Nizar on a project on the 2nd, 3rd and 4th, and nobody on the 5th.
+
+So there is no reason to pick through the tab first. Paste it whole.
+
+## One exception to "a blank cell never erases a recorded value"
+
+**A card that says In Progress clears a completion date already on the
+project.** Everywhere else a blank cell in the sheet means "not filled in"
+and never overwrites something recorded, but a card saying the work is
+unfinished directly contradicts a completion date, so that date is stale
+rather than merely unstated.
+
+This is not hypothetical, and it was the last thing standing between the
+job cards and the idle list. Damac 4301 was adopted from the schedule as
+**completed on 1 September**, because the 1st is the last day the schedule
+carried a task for it. Its card says **In Progress, due the 4th**. With the
+old completion date kept, `projectEndDate` returned 1 September however the
+card was read — so the project still ended before today and its crew went on
+reading as idle on the 3rd, which is the exact complaint the job cards were
+brought in to answer. A completed card still keeps its date; the exception
+applies only to work the sheet says is unfinished.
+
+## What to do after pasting
+
+Two of the nine cards will ask which way to read their dates — that is the
+day-first / month-first damage described above, and the app will not import
+them until one is chosen. Everything else commits straight through.
+
+Then add the **approved amount** to the cards that have one. It is the only
+field in the whole exercise the sheet does not carry, and without it a card
+shows its cost with no margin against it.

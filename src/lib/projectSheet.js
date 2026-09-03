@@ -423,23 +423,85 @@ export function parseJobCards(text) {
 /* ---------------------------------------------------------------------- *
  * Which of these are already here.
  *
- * Matched on the quotation reference where there is one, because that is
- * the identity the department uses, and on property + unit where there is
- * not. Pasting the tab twice must be safe — the daily paste is, and this
- * is the same habit.
+ * The quotation reference is the identity the department uses, so it is
+ * tried first and an exact match is conclusive. Pasting the tab twice has
+ * to be safe.
+ *
+ * The reference alone is not enough, though, and the gap is not
+ * theoretical — it was measured against the real data. The Projects tab
+ * already holds projects DISCOVERED out of the daily schedule, and some of
+ * those have no quotation number, because the coordinator wrote the work
+ * before the quotation was written up. The Palm Tower 3706 is in the app as
+ * "Pick and Drop onboarding team" with no reference, and the job card for
+ * that same unit carries PC-2026-08-08 starting the same day. On reference
+ * alone that reads as a new project, and the unit ends up with two — which
+ * is exactly the fragmentation the Projects tab was built to end.
+ *
+ * So a card whose reference matches nothing also looks for a project on the
+ * SAME UNIT that has NO reference of its own and whose dates sit alongside
+ * the card's. Both conditions matter:
+ *
+ *   Only a reference-less project is a candidate. Two projects on one unit
+ *   that each carry their own quotation number are two projects — Al
+ *   Fattain 2903 has PC-2026-08-05 on its card and PC-2026-08-28 in the
+ *   app, and merging those would be wrong.
+ *
+ *   And the dates have to be close. A unit onboarded in August and quoted
+ *   again in November is not the same job, so a fortnight's slack either
+ *   side is the limit. Beyond that it is a new project.
+ *
+ * discoverProjects already folds a reference-less group into a referenced
+ * one for the same unit, for this same reason; this is the same rule
+ * applied across the boundary. How each row matched is reported so the
+ * dialog can say which it was rather than just "already here".
  * ---------------------------------------------------------------------- */
+
+const SLACK_DAYS = 14;
+
+const rangeOf = (x) => {
+  const a = squash(x.startDate);
+  const b = squash(x.actualCompletionDate) || squash(x.targetDate) || a;
+  return a ? [a, b >= a ? b : a] : null;
+};
+
+/** Do these two spans sit within a fortnight of each other? */
+function nearby(a, b) {
+  const ra = rangeOf(a), rb = rangeOf(b);
+  if (!ra || !rb) return false;
+  const gap = Math.max(
+    daysApart(ra[1], rb[0]),   // b starts after a ends
+    daysApart(rb[1], ra[0]),   // a starts after b ends
+  );
+  return gap <= SLACK_DAYS;
+}
+
 export function matchExisting(drafts, projects) {
   const byRef = new Map();
   const byUnit = new Map();
   (projects || []).forEach((p) => {
     const r = squash(p.quotationRef).toUpperCase();
     if (r) byRef.set(r, p);
-    byUnit.set(`${canonKey(p.property)}|${canonKey(p.unit)}`, p);
+    const k = `${canonKey(p.property)}|${canonKey(p.unit)}`;
+    if (!byUnit.has(k)) byUnit.set(k, []);
+    byUnit.get(k).push(p);
   });
+
   return (drafts || []).map((d) => {
-    const existing = (d.quotationRef && byRef.get(d.quotationRef.toUpperCase()))
-      || (!d.quotationRef && byUnit.get(`${canonKey(d.property)}|${canonKey(d.unit)}`))
-      || null;
-    return { ...d, existing };
+    const onUnit = byUnit.get(`${canonKey(d.property)}|${canonKey(d.unit)}`) || [];
+
+    if (d.quotationRef) {
+      const byReference = byRef.get(d.quotationRef.toUpperCase());
+      if (byReference) return { ...d, existing: byReference, matchedBy: "ref" };
+      const unquoted = onUnit.find((p) => !squash(p.quotationRef) && nearby(p, d));
+      if (unquoted) return { ...d, existing: unquoted, matchedBy: "unit" };
+      return { ...d, existing: null, matchedBy: "" };
+    }
+
+    /* No reference on the card either. Prefer a project that has none, so a
+       quoted project on the same unit is not quietly overwritten by an
+       unquoted card. */
+    const unquoted = onUnit.find((p) => !squash(p.quotationRef));
+    if (unquoted) return { ...d, existing: unquoted, matchedBy: "unit" };
+    return { ...d, existing: null, matchedBy: "" };
   });
 }
