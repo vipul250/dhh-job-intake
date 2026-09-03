@@ -13,6 +13,7 @@ import {
   TRADES, TRADE_LABEL, describeStaff,
 } from "../lib/staff.js";
 import { checkDayCrewing } from "../lib/crewing.js";
+import { projectCrewOn } from "../lib/project.js";
 import { sendCode, verifyCode, setAuthRequired as persistAuthRequired, signOut, identityFor } from "../lib/auth.js";
 
 /* ---------------------------------------------------------------------- *
@@ -62,9 +63,13 @@ export default function Roster({ selectedDate, setSelectedDate, showToast, authR
 
   const preview = useMemo(() => (text.trim() ? parseRosterMessage(text) : null), [text]);
   const active = editing ? preview : saved;
+  /* The job cards already say who is on a project between which dates, so
+     the ticked list below is no longer the only way a project crew stays
+     off the idle list. */
+  const onProjectToday = useMemo(() => projectCrewOn(projects, date), [projects, date]);
   const check = useMemo(
-    () => (active ? checkAgainstSchedule(active, jobs) : null),
-    [active, jobs]
+    () => (active ? checkAgainstSchedule(active, jobs, onProjectToday) : null),
+    [active, jobs, onProjectToday]
   );
 
   async function save() {
@@ -421,7 +426,24 @@ function AccessPanel({ authRequired, setAuthRequired, session, showToast }) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
-  const [proved, setProved] = useState(!!session);
+  /* ------------------------------------------------------------------ *
+   * WHICH address the code arrived at, not merely that one did.
+   *
+   * This used to unlock on any successful code, and the natural thing to
+   * test with is your own address. That proves almost nothing about the
+   * people who would actually be locked out. Supabase's built-in email
+   * sender — which is what this project uses rather than its own SMTP — is
+   * rate-limited to a couple of messages an hour and, depending on the
+   * project, may only deliver to addresses belonging to the Supabase
+   * organisation. The administrator's address is exactly the one that
+   * would work anyway.
+   *
+   * So the switch waits for a code proved against a COORDINATOR's address.
+   * They are the three people who open this at 6am, and they are the ones
+   * whose lockout can only be undone with SQL.
+   * ------------------------------------------------------------------ */
+  const [provedEmails, setProvedEmails] = useState(
+    () => (session?.user?.email ? [canonKey(session.user.email)] : []));
   const [staff, setStaff] = useState(null);
 
   /* Read the team list so the panel can say, before the switch is thrown,
@@ -459,6 +481,11 @@ function AccessPanel({ authRequired, setAuthRequired, session, showToast }) {
   const me = session ? identityFor(session, staff || []) : null;
   const canTurnOff = !!(me && me.admin);
   const admins = people.filter((x) => x.admin).map((x) => x.name);
+  const coordinators = people.filter((x) => x.trade === "coordinator");
+  const provedCoords = coordinators.filter(
+    (c) => squash(c.email) && provedEmails.includes(canonKey(c.email)));
+  const coordsNoEmail = coordinators.filter((c) => !squash(c.email));
+  const proved = provedCoords.length > 0;
   const withEmail = people.filter((x) => squash(x.email));
   const officeNoEmail = people.filter((x) => x.role === "office" && !squash(x.email));
 
@@ -476,8 +503,15 @@ function AccessPanel({ authRequired, setAuthRequired, session, showToast }) {
     const r = await verifyCode(email, code);
     setBusy(false);
     if (!r.ok) { setErr(r.error); return; }
-    setProved(true); setStage("idle"); setCode("");
-    setMsg("That worked. Email delivery is working, so the sign-in gate is safe to turn on.");
+    const addr = canonKey(email);
+    setProvedEmails((list) => (list.includes(addr) ? list : [...list, addr]));
+    setStage("idle"); setCode("");
+    const isCoord = coordinators.some((c) => squash(c.email) && canonKey(c.email) === addr);
+    setMsg(isCoord
+      ? `That worked — a code reached ${email}, a coordinator's own address. The gate is safe to turn on.`
+      : `That worked, but ${email} is not one of the coordinators. Codes reaching your own address `
+        + "does not prove they reach theirs — the built-in sender can be restricted to the "
+        + "Supabase account's own addresses. Prove one of the coordinators next.");
   }
 
   async function toggle(on) {
@@ -509,7 +543,8 @@ function AccessPanel({ authRequired, setAuthRequired, session, showToast }) {
           <div className="ml-auto flex gap-1.5">
             {!authRequired && (
               <button onClick={() => toggle(true)} disabled={!proved}
-                      title={proved ? "" : "Send yourself a code first — this stays disabled until one arrives."}
+                      title={proved ? "" :
+                        "Stays disabled until a code has reached one of the coordinators' own addresses."}
                       className="text-xs bg-slate-900 text-white rounded-md px-2.5 py-1 disabled:opacity-40">
                 Turn sign-in on
               </button>
@@ -526,9 +561,24 @@ function AccessPanel({ authRequired, setAuthRequired, session, showToast }) {
         </div>
         {!authRequired && !proved && (
           <p className="text-[11px] text-amber-800 mt-1.5">
-            The button unlocks once you have received and entered a code below. Before that, see
-            docs/ACCESS.md — Supabase needs email enabled, an SMTP sender configured, and each
-            person invited.
+            The button unlocks once a code has reached <b>one of the coordinators&rsquo; own
+            addresses</b>{coordinators.length ? ` — ${coordinators.map((c) => c.name).join(", ")}` : ""} —
+            not yours. Yours would very likely work whether or not theirs does, so it proves the
+            wrong thing: this project uses Supabase&rsquo;s built-in email sender, which is
+            rate-limited and can be restricted to the Supabase account&rsquo;s own addresses.
+            They are the people who open this at 6am. See docs/ACCESS.md.
+          </p>
+        )}
+        {!authRequired && !proved && coordsNoEmail.length > 0 && (
+          <p className="text-[11px] text-red-800 mt-1">
+            {coordsNoEmail.map((c) => c.name).join(", ")} still have no work email on the team
+            list, so there is nothing to prove yet. Add it below first.
+          </p>
+        )}
+        {!authRequired && proved && (
+          <p className="text-[11px] text-emerald-800 mt-1.5">
+            A code reached {provedCoords.map((c) => c.name).join(", ")}. Turning it on signs
+            everyone else out at once — which is the point, but tell the coordinators first.
           </p>
         )}
       </div>
@@ -562,7 +612,8 @@ function AccessPanel({ authRequired, setAuthRequired, session, showToast }) {
 
       <div className="mt-2 flex flex-wrap items-end gap-2">
         <label className="text-[11px] text-slate-500 flex-1 min-w-[200px]">
-          Send a test code to
+          Send a test code to (use a coordinator&rsquo;s address &mdash; ask them to read the
+          six-digit code back to you)
           <input type="email" name="access-test-email" value={email}
                  onChange={(e) => setEmail(e.target.value)}
                  placeholder="you@deluxehomes.com"

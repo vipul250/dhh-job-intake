@@ -123,3 +123,117 @@ out loud rather than leaving a gap for the eye to fill in wrongly:
 
 `pmsText` had the same hole — it omitted parking when blank — and now
 always states it.
+
+---
+
+# The other sheet: Job Cards (Projects)
+
+The workbook has a second tab the app was ignoring. **Job Cards (Projects)**
+is one row per project, twenty-two columns, and the department has been
+keeping it properly: property, unit, job type, quotation ref, start date,
+team assigned, scope of work from the quotation, materials list, estimated
+and actual completion, job status.
+
+Everything a project needs is in there **except the amount the client
+approved**, which is exactly the field only a person can supply. So it is
+pasted, not retyped: **Projects → Paste the job cards in**.
+
+## Why it matters more than saving typing
+
+A project runs for days off one job card. The daily board only knows about
+it on the days somebody also wrote a task row for it — so the crew on it
+had no job naming them, and the board called them idle.
+
+On 3 September the Live Board listed **Khaled, Nizar and Shafeeq as idle**
+while all three were named on the Damac 4301 card, in progress, due on the
+4th. With the cards in, the same day reads `on projects: …` instead, and
+only the genuinely unoccupied technician is listed as idle. The mechanism
+was already there — `checkAgainstSchedule` has always kept a ticked project
+crew off the idle list — it just had nothing feeding it but a person
+remembering to tick four names every morning.
+
+## What it reads, and what it refuses
+
+**Multi-line cells stay in one column.** Scope of Work is the quotation
+pasted whole; the real Damac row carries twenty-two numbered clauses. A cell
+holding newlines comes off the clipboard wrapped in double quotes with
+internal quotes doubled, so the paste is tokenised rather than split on
+newlines. Splitting first is what tore a pasted day into fragments on the
+Live Board.
+
+**The messy quotation refs all read.** All four real forms —
+`Quotation - PC-2026-08-08`, `PC-2026-07-23 -`, `REV 01 - PC-2026-08-09`,
+`REV01 - PC-2026-08-07` — reduce to one reference and a revision number,
+reusing `readQuotationRef` from the discovery path.
+
+**"Total Elapsed time" is not read as time.** On all nine real rows that
+column holds a *priority* (`P2-High`) — it is a copy of the column beside
+it. It is only read when it genuinely parses as a duration, so repairing
+the sheet starts feeding real hours in with no change here. Until then the
+card's dates do the work.
+
+**"Materials List" is not turned into priced lines.** It is prose:
+"Materials arranged by ADI", or a shopping list with quantities and no
+costs. Importing that at zero cost would put a fictional margin on a card,
+so it is carried across as what the quotation *asks for*, and the priced
+lines stay something a person enters as the money is spent.
+
+**Contradictory dates stop the row.** The real tab has locale damage in it:
+two rows store 1 September as **9 January**, because `01/09/2026` was typed
+day-first into a sheet reading it month-first. One of them is the Damac 4301
+card. The app works out the other reading, shows both, and will not bring
+the row in until somebody picks one — a project on the wrong dates puts its
+crew on the wrong days and invents the hours to match. Where two readings
+both hold together it offers the shorter span, because the longest real job
+card ran fourteen days.
+
+## Pasting it again
+
+Safe, and the intended way to keep it current. A card already here is
+**updated** on the fields the sheet owns — status, dates, crew, scope,
+reference — and **left alone** on the ones only a person can fill: the
+approved amount, the priced materials, the quotation link. A blank cell
+never erases a recorded value, because an empty Actual Completion column
+means "not filled in", not "it never completed". What moved is written to
+the project's own event log.
+
+Daily jobs carrying the same quotation number are linked automatically. That
+is not a convenience: a card's unrecorded hours are counted from its dates,
+so an unlinked job row would leave that day looking empty and collect
+inferred hours on top of the measured ones.
+
+## The hours, and how far to trust them
+
+The board measures labour from Start and Done, and falls back to the
+coordinator's estimate. A project card has neither. So there is a third and
+weakest tier, reported separately everywhere it appears and labelled on the
+card:
+
+> **81h of the labour above was never recorded.** It is 9 crew-days at 9h —
+> days inside this card's dates when the board had a schedule and had
+> nothing else for them.
+
+Counting the card's whole span instead read **AED 42,125 across nine
+cards**, about half the department's monthly capacity, on cards mostly
+carrying one technician. The worst was a snag card open from 8 July to 21
+August: 45 days, one man, 405 hours. It was *open* for 45 days. Nobody
+worked it for 45 days. So a day only counts when:
+
+- the board has a schedule for that day at all — no schedule is not
+  evidence that somebody was idle, and it is what turned an empty July into
+  24 invented days; and
+- that person appears on no job anywhere on the board that day — not merely
+  no job on this project, since a technician in another building that
+  morning was not on this card.
+
+That took the same nine cards to 837h, and the largest contributors became
+the two five-person onboardings at about seven hours per person per day,
+which is what an onboarding project actually looks like.
+
+**Known overcount:** somebody on annual leave mid-project has no job that
+day either, and the roster is not read here. Marked in `project.js` with the
+upgrade path.
+
+The honest reading of any of these figures: they say *these people were on
+this card and not idle*, which was the question. They are not a measurement
+of hours worked, and the card says so.
