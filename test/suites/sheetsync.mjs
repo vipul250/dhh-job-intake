@@ -230,5 +230,110 @@ const { default: handler, syncValues, syncWindow, shiftDate } =
   ok("the endpoint refuses anything without the exact secret, and fails closed");
 }
 
+/* ---------------------- 8. a dry run writes nothing ------------------ */
+{
+  seedStore();
+  const before = JSON.stringify(store.get(`schedule:${TODAY}`));
+  const b = await syncValues(SHEET_ROWS, { dryRun: true });
+
+  assert.equal(b.dryRun, true);
+  assert.match(b.message, /nothing was written/i);
+  assert.equal(writes.length, 0, "not one write left the process");
+  assert.equal(JSON.stringify(store.get(`schedule:${TODAY}`)), before,
+    "and the day is byte-for-byte what it was");
+
+  /* But it still reports what it WOULD do, or it is not a report. */
+  assert.equal(b.totalAdded, 3, "two pools plus tomorrow's job");
+  const today = b.byDate.find((x) => x.date === TODAY);
+  assert.equal(today.added, 2, "two of the three pools");
+  /* Three already accounted for: one pool, La Vie, and the moved job's
+     tombstone — which is the whole point of countTombstones. */
+  assert.equal(today.alreadyHad, 3);
+  assert.ok(today.rows.some((r) => /Pool Cleaning/.test(r)),
+    "and names the rows rather than only counting them");
+  assert.ok(!today.rows.some((r) => /Afnan/.test(r)),
+    "the moved job is still excluded on a dry run");
+
+  /* A real run straight after must still write — the flag is per-call. */
+  const real = await syncValues(SHEET_ROWS);
+  assert.equal(real.dryRun, false);
+  assert.ok(writes.length > 0, "the next real run writes");
+  ok("a dry run reports what it would add and writes nothing");
+}
+
+/* ---------------------- 9. failures reach the log, scrubbed ---------- */
+{
+  const lines = [];
+  const realErr = console.error, realWarn = console.warn, realLog = console.log;
+  console.error = (...a) => lines.push(["error", a.join(" ")]);
+  console.warn = (...a) => lines.push(["warn", a.join(" ")]);
+  console.log = (...a) => lines.push(["log", a.join(" ")]);
+  try {
+    /* A 401 must say WHICH kind it is — a probe, or CRON_SECRET missing. */
+    const saved = process.env.CRON_SECRET;
+    delete process.env.CRON_SECRET;
+    await handler({ headers: {} }, mkRes());
+    process.env.CRON_SECRET = saved;
+    assert.ok(lines.some(([lvl, m]) => lvl === "warn" && /CRON_SECRET is not set/.test(m)),
+      "an unset secret is distinguishable from somebody probing the URL");
+
+    /* And a real failure logs at error level, with no key in it. */
+    lines.length = 0;
+    const KEY = "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBg\n-----END PRIVATE KEY-----";
+    process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL = "x@y.iam.gserviceaccount.com";
+    process.env.GOOGLE_SERVICE_ACCOUNT_KEY = KEY;
+    process.env.GOOGLE_SHEET_ID = "sheet";
+    const res = mkRes();
+    await handler({ headers: { authorization: `Bearer ${SECRET}` } }, res);
+    assert.equal(res.code, 500, "a broken key is a 500");
+    const errLine = lines.find(([lvl]) => lvl === "error");
+    assert.ok(errLine, "the failure is logged at error level, not swallowed");
+    assert.match(errLine[1], /\[sync-sheet\] FAILED/);
+    assert.ok(!/BEGIN PRIVATE KEY/.test(errLine[1]),
+      "and the private key is not in the log line");
+    assert.ok(!/MIIEvQIBADANBg/.test(errLine[1]), "nor any of its body");
+    delete process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
+    delete process.env.GOOGLE_SERVICE_ACCOUNT_KEY;
+    delete process.env.GOOGLE_SHEET_ID;
+  } finally {
+    console.error = realErr; console.warn = realWarn; console.log = realLog;
+  }
+  ok("a failure lands in the log at error level with the key scrubbed");
+}
+
+/* ---------------- 10. the handler reads ?dryRun off the URL ---------- */
+{
+  /* syncValues is driven directly above, so this checks the one thing
+     that is only exercised through the handler: the query parsing that
+     he will actually type. A broken key makes it fail, and the flag has
+     to survive into the error body — which is what proves it parsed. */
+  process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL = "x@y.iam.gserviceaccount.com";
+  process.env.GOOGLE_SERVICE_ACCOUNT_KEY = "-----BEGIN PRIVATE KEY-----\nbad\n-----END PRIVATE KEY-----";
+  process.env.GOOGLE_SHEET_ID = "sheet";
+  const realErr = console.error, realWarn = console.warn;
+  console.error = () => {}; console.warn = () => {};
+  try {
+    const ask = async (url, query) => {
+      const res = mkRes();
+      await handler({ headers: { authorization: `Bearer ${SECRET}` }, url, query }, res);
+      return res.body.dryRun;
+    };
+    assert.equal(await ask("/api/sync-sheet?dryRun=1"), true, "?dryRun=1");
+    assert.equal(await ask("/api/sync-sheet?dryRun=true"), true, "?dryRun=true");
+    assert.equal(await ask("/api/sync-sheet?DRYRUN=1"), true, "case does not matter");
+    assert.equal(await ask("/api/sync-sheet?foo=1&dryRun=1"), true, "second parameter");
+    assert.equal(await ask("/api/sync-sheet"), false, "absent means a real run");
+    assert.equal(await ask("/api/sync-sheet?dryRun=0"), false, "=0 means a real run");
+    assert.equal(await ask("/api/sync-sheet", { dryRun: "1" }), true,
+      "and req.query works where the platform provides it");
+  } finally {
+    console.error = realErr; console.warn = realWarn;
+    delete process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
+    delete process.env.GOOGLE_SERVICE_ACCOUNT_KEY;
+    delete process.env.GOOGLE_SHEET_ID;
+  }
+  ok("the handler reads ?dryRun from the URL, and defaults to a real run");
+}
+
 globalThis.fetch = realFetch;
 console.log(`\n${checks} checks passed.`);

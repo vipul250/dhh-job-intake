@@ -30,6 +30,7 @@ import { GoogleAuth } from "google-auth-library";
 import { createClient } from "@supabase/supabase-js";
 
 import { parseSheetPaste, groupByDate } from "../src/lib/importSheet.js";
+import { squash } from "../src/lib/normalize.js";
 import { pasteAdditions, newJob } from "../src/lib/job.js";
 // NOT from jobStore.js: that pulls in storage.js -> supabase.js, which reads
 // import.meta.env (a Vite build-time substitution, undefined in a Node
@@ -183,7 +184,8 @@ function valuesToTsv(values) {
  * validate anyway: it works with real credentials or it does not, and
  * docs/SHEET-SYNC.md says to trigger a run by hand once to find out.
  * ---------------------------------------------------------------------- */
-export async function syncValues(values) {
+export async function syncValues(values, opts = {}) {
+  const dryRun = !!opts.dryRun;
   const text = valuesToTsv(values);
     const { jobs, skipped, warnings } = parseSheetPaste(text, null);
     const byDate = groupByDate(jobs);
@@ -211,16 +213,28 @@ export async function syncValues(values) {
       const plan = pasteAdditions(existing, rows, { countTombstones: true });
       const created = plan.add.map((r) => newJob(r, date, "Google Sheet sync"));
 
-      if (created.length) {
+      if (created.length && !dryRun) {
         await writeDayServer(supabase, date, [...existing, ...created]);
       }
 
       totalAdded += created.length;
       totalDupes += plan.dupes;
-      results.push({ date, added: created.length, alreadyHad: plan.dupes });
+      results.push({
+        date,
+        added: created.length,
+        alreadyHad: plan.dupes,
+        /* On a dry run the counts alone are not much of a report — what
+           somebody wants to know is WHICH rows would land. Capped, because
+           this goes into a log line as well as the response. */
+        rows: plan.add.slice(0, 8).map((r) =>
+          [squash(r.property), squash(r.unit), squash(r.description).slice(0, 40)]
+            .filter(Boolean).join(" · ")),
+      });
     }
 
   return {
+      dryRun,
+      ...(dryRun ? { message: "Dry run — nothing was written. `added` is what WOULD be added." } : {}),
       rowsRead: values.length - 1,
       rowsSkipped: skipped,
       warnings,
@@ -235,29 +249,81 @@ export async function syncValues(values) {
   };
 }
 
+/* ---------------------------------------------------------------------- *
+ * Never let a private key reach a log line.
+ *
+ * The error from a malformed service-account key is the single most likely
+ * failure here, and error text from a crypto or auth library can carry the
+ * material it was handed. A runtime log is readable by anyone with access
+ * to the Vercel project and it persists, so PEM blocks are stripped before
+ * anything is written. Cheap, and the alternative is unrecoverable.
+ * ---------------------------------------------------------------------- */
+function scrub(text) {
+  return String(text == null ? "" : text)
+    .replace(/-----BEGIN[\s\S]*?END[^-]*-----/g, "[private key redacted]")
+    .replace(/\b[A-Za-z0-9_-]{100,}\b/g, "[long token redacted]");
+}
+
+/* ---------------------------------------------------------------------- *
+ * Why this logs at all.
+ *
+ * The first real run came back 500 and the reason was unrecoverable: the
+ * handler put the message in the HTTP RESPONSE, which the cron trigger
+ * received and nothing kept. Vercel's runtime log recorded
+ * "GET /api/sync-sheet 500" and no more, and its error tracker saw nothing
+ * at all because the error was caught rather than thrown. A nightly job
+ * nobody watches has to say what it did in the one place that is still
+ * there in the morning.
+ * ---------------------------------------------------------------------- */
 export default async function handler(req, res) {
   const authHeader = req.headers.authorization;
   const cronSecret = process.env.CRON_SECRET;
   if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
+    /* Logged as a warning: a 401 is either somebody probing the URL or —
+       far more likely, and worth being able to tell apart — CRON_SECRET not
+       being set on the project at all. */
+    console.warn("[sync-sheet] 401 unauthorized" +
+      (cronSecret ? "" : " — CRON_SECRET is not set on this project"));
     res.status(401).json({ error: "Unauthorized" });
     return;
   }
+
+  /* ?dryRun=1 reads the Sheet and reports exactly what it would add,
+     writing nothing. Still behind the secret. */
+  const dryRun = /[?&]dryrun=(1|true)\b/i.test(String(req.url || "")) ||
+    ["1", "true"].includes(String(req.query?.dryRun ?? "").toLowerCase());
 
   const startedAt = new Date().toISOString();
   try {
     const values = await fetchSheetValues();
     if (!values.length) {
-      res.status(200).json({ ok: true, message: "Sheet range was empty.", startedAt });
+      const empty = { ok: true, message: "Sheet range was empty.", startedAt };
+      console.log("[sync-sheet]", JSON.stringify(empty));
+      res.status(200).json(empty);
       return;
     }
-    const summary = await syncValues(values);
-    res.status(200).json({
+    const summary = await syncValues(values, { dryRun });
+    const body = {
       ok: true,
       startedAt,
       finishedAt: new Date().toISOString(),
       ...summary,
-    });
+    };
+    /* One line, the whole outcome, in the runtime log. */
+    console.log("[sync-sheet]", JSON.stringify(body));
+    res.status(200).json(body);
   } catch (err) {
-    res.status(500).json({ ok: false, startedAt, error: err.message || String(err) });
+    const body = {
+      ok: false,
+      startedAt,
+      dryRun,
+      error: scrub(err && err.message ? err.message : err),
+    };
+    /* console.error so it lands at error level and get_runtime_logs can be
+       filtered to it. The stack is worth having — the message alone does
+       not say whether the Sheet read or the database write failed. */
+    console.error("[sync-sheet] FAILED", JSON.stringify(body),
+      scrub(err && err.stack ? err.stack : ""));
+    res.status(500).json(body);
   }
 }

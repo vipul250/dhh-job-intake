@@ -71,7 +71,25 @@ registers the cron job — nothing else to configure.
 
 ## Testing it before waiting for the schedule
 
-Once deployed, you can trigger it manually:
+**Do a dry run first.** It reads the Sheet and reports exactly what it would
+add, writing nothing:
+
+```
+GET /api/sync-sheet?dryRun=1
+```
+
+Also accepts `?dryRun=true`, and the secret is still required. The response
+carries `"dryRun": true`, a `message` saying nothing was written, and per
+date the rows that *would* land — named, not just counted:
+
+```json
+"byDate": [
+  { "date": "2026-09-03", "added": 2, "alreadyHad": 3,
+    "rows": ["Palm villa · Pool Cleaning", "Palm villa · Pool Cleaning"] }
+]
+```
+
+Then for real:
 
 ```bash
 vercel crons run /api/sync-sheet
@@ -79,10 +97,39 @@ vercel crons run /api/sync-sheet
 
 Or from the Vercel dashboard: **Project → Cron Jobs → sync-sheet → Run**.
 
-Check the response — it reports rows read, rows added per date, and any
-warnings (e.g. rows with no readable date). If `ok: false`, the `error`
-field says exactly what failed — almost always a missing/mistyped
-environment variable the first time.
+If `ok: false`, the `error` field says what failed — almost always a
+missing or mistyped environment variable the first time.
+
+## Where to look when nobody was watching
+
+The whole outcome goes into the **runtime log** as well as the response, on
+one line, because a nightly job has to say what it did somewhere that is
+still there in the morning:
+
+```
+[sync-sheet] {"ok":true,"totalAdded":4,"window":{...},"byDate":[...]}
+[sync-sheet] FAILED {"ok":false,"error":"..."}   <- console.error, error level
+[sync-sheet] 401 unauthorized — CRON_SECRET is not set on this project
+```
+
+This exists because the first real run came back **500 and the reason was
+unrecoverable**: the message went into the HTTP response, which the trigger
+received and nothing kept. Vercel's log recorded `GET /api/sync-sheet 500`
+and no more, and its error tracker saw nothing at all, because the handler
+catches the error rather than throwing it.
+
+That last line matters for diagnosis: a `401` is either somebody probing the
+URL or `CRON_SECRET` not being set on the project, and the log now says
+which.
+
+**Private keys are stripped from anything logged.** A malformed
+service-account key is the likeliest failure here, and error text from an
+auth library can carry the material it was handed — a runtime log is
+readable by anyone with project access and it persists. PEM blocks and long
+tokens are replaced before the line is written.
+
+Read the logs from the dashboard, or with the Vercel MCP
+`get_runtime_logs` filtered to `level: error`.
 
 ## Testing without waiting, and without touching production
 

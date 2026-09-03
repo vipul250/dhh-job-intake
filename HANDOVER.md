@@ -431,6 +431,17 @@ still open are the anon key (it needs the service-role key once RLS is
 applied) and the blind upsert where the rest of the app uses compare-and-set.
 `docs/SHEET-SYNC.md` has all of it.
 
+**The first real run returned 500 and the reason was unrecoverable** — the
+handler put the message in the HTTP response, which the cron trigger
+received and nothing kept; Vercel logged `GET /api/sync-sheet 500` and no
+more, and its error tracker saw nothing because the error was caught rather
+than thrown. So the outcome is now logged on one line
+(`[sync-sheet] {...}` / `[sync-sheet] FAILED {...}` at error level), a `401`
+says whether `CRON_SECRET` is simply unset, and PEM blocks are scrubbed
+before anything is written — a malformed key is the likeliest failure and a
+runtime log persists. **`?dryRun=1`** reads the Sheet and reports what it
+would add, naming the rows, writing nothing.
+
 `test/suites/sheetsync.mjs` drives the sync end to end with Supabase stubbed
 and no network — the window, the tombstone rule, the top-up behaviour, the
 no-op second run, and that the endpoint fails closed. `fetchSheetValues` is
