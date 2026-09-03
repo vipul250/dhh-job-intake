@@ -6,6 +6,65 @@ rejected for a reason recorded below.
 
 ---
 
+## 0. WHERE THINGS STAND RIGHT NOW — read this first
+
+**Last deployed:** `f3a8bef` on `main`, production READY.
+
+**The one thing that is not finished: 3 September on the live board is
+still a mess, and he is waiting to clear it.**
+
+What happened, in order:
+
+1. The daily sheet was pasted into the **quick-add box** instead of "Paste
+   the day in". Quick-add reads one line as one hand-typed job, so the year
+   out of `2026-09-03` became the unit number on every row, the building was
+   lost, and each PDF-wrapped line became a separate job. Resty showed 15
+   jobs where the sheet had 5.
+2. That was fixed (`src/lib/sheetText.js`) and the day was given a repair
+   banner with "Close them off".
+3. **He pressed it and the board still looked wrong**, twice. The reason is
+   a dead end I built: "Close them off" only finds the OBVIOUS damage — a
+   unit equal to the year of its own day. The subtler damage survives and
+   looks like a real job:
+
+   | On the board | What it should be |
+   |---|---|
+   | `La Vie B-257` | `La Vie 3503`, parking bay B-257 |
+   | `3802 / Door lock repair` | `Elite Residence 3802` |
+   | `Marina Apartments 3 408 232` / `CLG- Not N "Pending Work*:` | `Marina Apartments 3 / 408`, parking `CLG-232` |
+
+   Reproduced: three mangled rows in, the button cancels **one** and leaves
+   **two** open. And the banner then disappeared, because it only counted
+   rows still open — taking the only visible route with it.
+4. Now: a day that has ever carried a mis-read row keeps saying so until it
+   is cleared, and the banner carries **"Clear <date> and start again"** as
+   its own action.
+
+**What he has to do (he has been told, not yet confirmed done):**
+hard-refresh → Live Board → 3 September → red banner → *Clear 2026-09-03 and
+start again* → type the date → paste the sheet into "Paste the day in".
+
+**If he says it still does not work, ask what he sees when he presses it.**
+That distinction is the whole diagnosis and cannot be reproduced from here:
+
+- *"Could not archive the day, so nothing was cleared"* → the Supabase write
+  is being rejected. Look at RLS on `kv_store` for the `archive:` prefix, or
+  the row size (~119 jobs of JSON).
+- *nothing happens at all* → he is still on an old bundle, or the button is
+  not rendering. Check `wasMisread` in `LiveBoard.jsx`.
+- *it clears and the rows come back* → the day watcher or a second tab is
+  writing the old array back.
+
+**The network here cannot reach his app or his database.** The egress proxy
+returns 403 for both `dhh-job-intake.vercel.app` and
+`otbgwnbzhemuqqsvdsql.supabase.co`, so his data can only be changed through
+the app itself. The deployed bundle can be *read* via the Vercel MCP tool
+`web_fetch_vercel_url`, which is how the Supabase URL was found. Deploy
+status: `mcp__Vercel__list_deployments` with
+`projectId: "dhh-job-intake"`, `teamId: "team_Qj0Mhh8W7ln8erTreArrvADa"`.
+
+---
+
 ## 1. Who this is for
 
 **Vipul Baibhav** (`vipul@deluxehomes.com`), Deluxe Holiday Homes, Dubai.
@@ -156,6 +215,63 @@ report; move-with-displacement capture; post lock and change-reason dialog;
 end-of-day review; the day's activity log; crew-size and roster warnings;
 technician suggestion by trade, licence, location and load.
 
+**Reading the sheet as it actually arrives** (`sheetText.js`). The live
+sheet is shared as a **locked PDF**, so the clipboard gets the *rendered*
+table — single spaces where tabs should be, rows wrapped over two or three
+lines. `importSheet.js` only understood tab-separated cells and refused it,
+which is *why* it ended up in the quick-add box. There are no delimiters to
+rely on, so each row is parsed from both ends inwards on the columns that
+identify themselves by shape (ISO date, shift window, roster name, status
+word, parking bay, duration, `P#-` priority, PMS link) and whatever is left
+in the middle is the scope of work — the one column that cannot be
+recognised by shape and must never be guessed. Wrapped lines are rejoined
+first. Graded on all 493 rows of the real sheet:
+
+| Field | Read | |
+|---|---|---|
+| Scope of work | 492/492 | 100% |
+| Building | 487/492 | 99% |
+| Unit status | 483/492 | 98% |
+| Technician | 484/492 | 98% |
+| Unit | 475/492 | 97% |
+| Estimated time | 470/492 | 96% |
+| Priority · parking · PMS ref | — | **100% of the rows that have one** |
+
+Those last three look low and are not: the cells are blank in the sheet.
+A field it cannot read is left empty, because a blank field is visible and a
+wrong one is not. **A tab-separated paste still goes to `importSheet.js`** —
+an exact read beats one inferred from shape (`looksLikeSheetText` returns
+false when the text contains a tab).
+
+**Quick-add refuses a schedule.** `looksLikeSheetText` catches it before a
+single line is parsed, says why, and hands the same paste to the reader that
+understands it. Nobody copies twice.
+
+**Real arrival and departure at close-out.** Two fields plus a *Now* button,
+showing the span and its gap against the estimate as you type
+(`1h 15m on site — estimated 30m, over by 45m`). This is the number he
+actually asked for: *"the coordinator filling in the est time doesn't even
+know how much time it will really take, but after a month I can compare
+based on historic data."* A clock pair beats a typed total beats the
+Start/Done click trail, and the dashboard reports the three apart so he can
+see how much of the month is genuinely measured.
+
+**The estimate stops being a guess** (`learned.js`). Once a kind of work has
+`MIN_CONFIDENT` (5) measured jobs, its measured median replaces the seeded
+catalogue default on the quick-add line, and says so: *"time from what it
+actually took — 1h 15m across 5 jobs, not the 30m usually estimated"*. Below
+five it keeps quoting the default and keeps quiet. Recomputed from the days
+themselves and cached for 6h, so a corrected close-out corrects the library.
+
+**Copy for the technician.** The printed sheet has **167 of 492 rows with no
+parking bay**, and no gridlines — so the columns close up and the
+Guest-Confirmed `Y`/`N` slides under the "Parking No." heading. That is
+Google Sheets' PDF export and cannot be fixed from here, so the tech should
+not read it. This emits his whole day in working order with every value
+named and `Parking: not given` said out loud.
+
+**Start this day again.** See §0 and §3.
+
 ### Queue — the decision that was invisible
 The PMS Issues list pasted in, with a **stated rule** answering *which day,
 and why*:
@@ -185,16 +301,41 @@ spanning multiple days. Parses the real mess: `Approevd`, `Quotation -PC-`,
 hours but not the approved amount, so each is *offered* and adopting one
 opens the form on the one field only a person has.
 
-### Dashboard — 12 sections
+### Dashboard — 14 sections
 Fix-before-this-day-runs · Stopped, not finished · Where work comes from ·
 **Who did what** · **The coordinator's calls** (displacement) · Where jobs
 went · Why we keep going back · How long jobs actually take · Trend · Cost ·
-**Why each job is on the day it is on** · What the numbers stand on.
+**Why each job is on the day it is on** · What the numbers stand on ·
+**Tasks done and time on site** (real-times coverage reported apart from
+typed totals and Start/Done clicks) · **What the work really takes** (per
+standard task, measured vs estimated, sorted by what the gap costs over a
+month rather than by how wrong it looks).
 
 ### Roster & Team
 Shift message pasted rather than re-keyed. Team master with trade, base,
 licence (three-valued), **work email**, note, admin flag. **Add someone**.
 Access panel with the sign-in switch and its pre-flight check.
+
+**Who is on a project today.** Originally read from a `Project team` heading
+inside the shift message — wrong in practice, because that message arrives
+from somebody else on WhatsApp, so using the heading meant hand-editing it
+every morning, and there was no visible place to do it either. It is now a
+tick-chip panel using the names the roster already knows. A project crew has
+no daily job naming them, so without this the board calls them idle and the
+day looks half empty. Naming the project is optional and rolls their hours
+into that project's own cost — the roster→Projects link he asked for. Ticks
+save immediately (an unsaved tick is a tick that did nothing) and a re-paste
+of the shift message keeps them. The heading still works for anyone who
+writes it.
+
+**Absences are read both ways round.** The message writes
+`Week off - Imtiaz` *and* `Tiyana - Week Off`; only the first was understood,
+so the second became a coordinator's *name*. "Coordinators on" read 3 on a
+day two people worked, while the hours beside it correctly read 18h. The
+count now includes only coordinators with hours, the off one is named on the
+tile, and **which section the absence was written under matters** — a
+coordinator's week off must not appear in the technicians' "Not available"
+tile.
 
 ---
 
@@ -278,7 +419,7 @@ src/lib/
   metrics.js           1135  ~18 metric computations, all coverage-first
   job.js                721  the job entity, states, reasons, quick-add parse
   backlog.js            721  occupancy, SLA, the day rule, PMS/sheet parsing
-  sheetText.js          330  reads the daily sheet as it is ACTUALLY pasted:
+  sheetText.js          440  reads the daily sheet as it is ACTUALLY pasted:
                              copied off the locked PDF, spaces not tabs, rows
                              wrapped. Also isMisread, which finds the rows a
                              quick-add paste already mangled
@@ -298,11 +439,11 @@ src/lib/
   storage.js            152  Supabase kv_store adapter (SWAP FOR TESTS)
   activity.js           148  who built the day, who changed it
   auth.js               146  OTP, identity, the auth-required flag
-  dayLock.js            100  open / posted / started / past
+  dayLock.js            112  open / posted / started / past, and clearPost
   faultFamily.js         75  trade families and return reasons
   supabase.js            62  client, or a failure-safe stub if unconfigured
 docs/  WORKFLOW.md 895 · METRICS.md 345 · ACCESS.md 170 · SHEET-PASTE.md 125
-test/  README.md, harness/, suites/  (33 browser suites)
+test/  README.md, harness/, suites/  (39 browser suites)
 ```
 
 ### Concurrency — do not break this
@@ -333,6 +474,26 @@ So: always run a browser suite, and always capture `pageerror` and
 **Restore `src/lib/storage.js` before committing.** Committing the mock
 would deploy an app storing the department's schedule in one browser.
 
+### Three things that will waste your time if you do not know them
+
+1. **The two stand-ins are mutually exclusive.** `mock-storage.js` replaces
+   the storage module; `supabase-stub.mjs` intercepts the network
+   *underneath* it. The four suites that call `installStubs` —
+   `authgate`, `authready`, `authtest`, `emails` — need the **real**
+   `src/lib/storage.js` in place, or they fail in a way that looks exactly
+   like an app bug and is not. Run them separately after
+   `git checkout src/lib/storage.js` and a rebuild.
+2. **`.env.local` is needed for the tests and must be deleted before a
+   production build.** Without it `createClient` takes the not-configured
+   path and several suites record a console error. With it committed you
+   would ship a stub URL. It is gitignored; the recipe is in
+   `test/README.md`.
+3. **Watch which date input you fill.** The app header has one, and the
+   Dashboard and Roster tabs each add their own. `input[type=date]`
+   `.first()` is the *header* — filling that leaves the tab loading a
+   different day and rendering nothing. This has produced two false
+   failures; use `.nth(1)` (and `.nth(2)`) instead.
+
 ### Verifying the live app
 This sandbox's proxy blocks `vercel.app` and `supabase.co` for a browser.
 The way round it, which genuinely tests the deployed artifact:
@@ -347,6 +508,21 @@ anon key. Never write test rows into his live database.
 ---
 
 ## 10. Open threads
+
+**FIRST: is 3 September clean?** See §0. Everything else waits on that.
+
+**The mis-read detector only finds the obvious damage, by design.** A unit
+equal to the year of its own day is conclusive; the torn date, the shift
+window or a PMS link inside the scope need a second sign. Deliberately
+narrow, because a false positive would cancel a real job. The cost is that
+the subtler wreckage is invisible, which is exactly why "Start this day
+again" had to exist. **Do not widen it into guesswork** — if a day is
+questionable, clearing and re-pasting is the honest answer.
+
+**A residual leading "N" in some scopes.** Rows written
+`… Occupied CLG-232 Not Confirmed N Pending Work*: …` have two
+guest-confirmed tokens; the phrase is consumed and the bare `N` is left at
+the head of the description. Cosmetic, one row in the sample, not chased.
 
 **Cost rates are still my assumptions.** AED 25/tech/hour, 30 min travel per
 building hop, 9-hour shift. Every cost figure is an illustration until he
@@ -418,3 +594,53 @@ him that the techs actually switch to it.
   typing; the sheet is locked; PMS categories are too generic). Accept the
   correction, say what it changes, move on.
 - Commit messages here are long and explain the *why*. Keep that.
+- **He asks for a merge to `main` when he wants it deployed.** The branch
+  rules say not to push elsewhere without permission; he has given it each
+  time, but ask rather than assume — `main` is the live board his
+  coordinators use that evening.
+- **A green `vite build` proves nothing and he has been told so.** Both real
+  bug classes this project produced pass the build: a helper used in a view
+  without being imported, and a name resolved from the wrong column. Drive
+  the browser, capture console and page errors, and quote the actual output
+  when reporting. Do not claim something works because it compiled.
+- **When a fix does not land, find out why before shipping another one.**
+  The 3 September clear was shipped twice on reasoning that turned out to be
+  wrong about *his* situation. The third time started by reproducing his
+  exact sequence — press "Close them off" on three mangled rows — which
+  showed immediately that it cancels one of three and then hides the banner.
+  Reproduce first.
+
+---
+
+## 12. This session, in order — so nothing gets re-litigated
+
+1. **Real times over guessed estimates.** His stated priority: *"measure the
+   number of tasks done and how much time it realistically took by their
+   real arrival and departure time … after a month I can compare based on
+   historic data."* Built: clock fields at close-out, `learned.js`, two
+   dashboard sections. He had already **rejected** a property-level
+   open-issue count as *"too much of details"* — do not re-propose it.
+2. **The 3 September duplicates.** Diagnosed to the quick-add box, fixed
+   with `sheetText.js`, quick-add guarded, mis-read banner added.
+3. **The printable PDF mismatching status and parking.** Confirmed real —
+   167 of 492 rows have no bay and the columns collapse. Answered with
+   "Copy for the technician", since the export itself cannot be fixed.
+4. **Coordinator count said 3 with Tiyana on week off.** Name-first
+   absences were not understood.
+5. **Nowhere to paste the project team.** The heading-in-the-message design
+   was wrong; replaced with a panel.
+6. **"Just clear everything for the 3rd."** Built "Start this day again" —
+   archive-then-clear, typed-date confirmation, the single exception to the
+   no-delete rule.
+7. **"It still shows all the old ones."** The dead end in §0. Fixed; **not
+   yet confirmed working by him.**
+
+Two claims of mine that turned out to be wrong, and were corrected to him:
+
+- I said the re-paste dedupe might be broken. **It is not** — pasting all of
+  3 September twice adds 32 rows then zero. What duplicated was old mangled
+  rows keying differently from the same rows parsed correctly, which no
+  dedupe could catch.
+- My clear action's comment claimed nothing would be emptied if the archive
+  write failed. **It did not check** — `storageSet` swallows errors and
+  returns null rather than throwing. Fixed; it now aborts and says so.
