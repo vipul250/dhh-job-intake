@@ -74,6 +74,22 @@ deleting and must not look like it). Instead:
 | a queue item | take it off with a reason, into a list you can restore from |
 | moving a job off a day | leave a **tombstone** naming where it went, who moved it and why |
 
+**The single exception, added at his explicit request: "Start this day
+again".** 3 September could not be repaired job by job. A sheet read through
+the quick-add box produced wreckage of two kinds — the obvious sort with the
+year as the unit number, which `isMisread` finds, and a subtler sort that
+looks entirely legitimate, where the parking bay landed in the unit ("La Vie
+B-257", whose unit is 3503) and the description snapped to a standard task so
+it reads cleanly. Separating those from real jobs means guessing, and guessing
+is what caused it.
+
+So one action takes rows off a day, and even it is not a delete: the whole day
+is written to `archive:schedule:<date>:<ts>` **before** anything is emptied, so
+it is recoverable, and the confirmation asks for the date to be typed. Do not
+add a second way to remove anything. If he asks for one, this is the shape it
+takes: archive first, confirm by typing, one day at a time, and say plainly in
+the dialog that it is archived rather than deleted.
+
 **No "Other" on any dropdown.** It costs one second to click and makes the
 row permanently uncountable; over a month it becomes the biggest bucket on
 every chart. Lists were widened with the answers that were hiding under it.

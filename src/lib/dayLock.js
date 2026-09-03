@@ -39,6 +39,18 @@ export async function postDay(date, by, jobCount) {
   return rec;
 }
 
+/**
+ * Undo a posting, so a day cleared back to empty is not still locked
+ * against the paste that is about to rebuild it.
+ *
+ * Only ever called alongside clearing the day itself. On its own it would
+ * be a way to quietly unlock a published schedule, which is the opposite of
+ * what the lock is for.
+ */
+export async function clearPost(date) {
+  await storageSet(key(date), "");
+}
+
 const isoToday = () => new Date().toISOString().slice(0, 10);
 
 /**
