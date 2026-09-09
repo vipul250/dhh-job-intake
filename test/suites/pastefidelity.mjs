@@ -26,6 +26,7 @@ import { parseSheetPaste } from "../../src/lib/importSheet.js";
 import { isMisread } from "../../src/lib/sheetText.js";
 import {
   squash, canonKey, canonTech, TECH_ALIASES, splitCrew, splitTrailingUnit,
+  parseDurationMinutes,
 } from "../../src/lib/normalize.js";
 
 const ok = [];
@@ -249,44 +250,85 @@ t("no row in the whole sheet keeps the unit in both places", () => {
  * instruction rows are included.
  * ---------------------------------------------------------------------- */
 
+/* The real header row 5, read off the sheet, in the order its QUERY
+   produces: SELECT B,C,D,E,G,F,H,I,J,K,L,M,N,O,P,R,T,U,Q.
+
+   Three things about that list matter and none of them is obvious:
+     no column A, so there is NO DATE — every row takes the day the board
+       has open, and opening the wrong day files a whole schedule wrongly;
+     no column S, so the PMS Ticket / Task Ref is absent — that is the
+       reliable dedup key, and without it a re-paste falls back to matching
+       on property, unit and the first forty characters of the description;
+     Parking comes before Status, the opposite of the input tab, which is
+       harmless only because columns are matched by name. */
+const PRINTABLE_HEADER = [
+  "Shift", "Team", "Property", "Unit", "Parking No.", "Status", "Time of Visit",
+  "Guest Confirmed", "Task Description", "Material?", "Material Details", "Est. Time",
+  "Pending?", "Pending Details", "Priority", "In PMS ?", "Changed?", "What Changed", "Notes",
+];
+
+/* Two real rows off 9 September, multi-line descriptions and all. */
+const PRINTABLE_ROWS = [
+  ["09:00-18:00", "Yousoufu", "Jumeirah Gate Tower 1", "5804", "B2-374 | B2-375", "Handover", "", "N",
+   "1.Owner reported that there's barely water coming out in the Maids room\nbathroom, could you please urgently",
+   "N", "", "30mins", "", "", "P3-Medium", "", "", "", ""],
+  ["09:00-18:00", "Abdul Riyaz", "Damac Towers by Paramount A", "5306", "", "Vacant", "", "N",
+   "sanding the repatching ceiling\nand reapply again the gypsum putty\nresending and repainting.",
+   "Y", "Paint. Putty", "1 - 2 Hours", "N", "", "P3-Medium", "", "", "", ""],
+];
+
 const PRINTABLE = [
   ["Select Date to Display:", "09-09-2026", "\u2191 Change the date to view/print a different day."],
   [""],
   ["Do not type anything into the data rows below — a single QUERY formula in row 6 fills all rows."],
   [""],
-  ["Shift", "Team", "Property", "Unit", "Parking No.", "Status", "Time of Visit",
-   "Guest Confirmed", "Task Description (Scope of Work)"],
-  ["09:00-18:00", "Yousoufu", "Elite Residence", "3808", "P2-86", "Occupied - GC",
-   "GC morning to evening", "Y", "bad smell issue"],
-  ["09:00-18:00", "Abdul Riyaz", "Damac Towers by Paramount A", "5306", "", "Vacant",
-   "", "N", "sanding and reapply"],
+  PRINTABLE_HEADER,
+  ...PRINTABLE_ROWS,
 ];
-const tsv = (a) => a.map((r) => r.join("\t")).join("\n");
+/* Quoted the way a clipboard quotes a cell holding a newline. */
+const cell = (c) => (/[\t\n\r"]/.test(c) ? `"${String(c).replace(/"/g, '""')}"` : c);
+const tsv = (a) => a.map((r) => r.map(cell).join("\t")).join("\n");
+
+t("every column of the real Printable header resolves", () => {
+  const r = parseSheetPaste(tsv([PRINTABLE_HEADER, ...PRINTABLE_ROWS]), "2026-09-09");
+  assert.equal(r.jobs.length, 2);
+  assert.deepEqual(r.warnings, []);
+  const [a, b] = r.jobs;
+  assert.equal(a.team, "Yousoufu");
+  assert.equal(a.property, "Jumeirah Gate Tower 1");
+  assert.equal(a.unit, "5804");
+  assert.equal(a.status, "Handover");
+  assert.equal(a.parking, "B2-374 | B2-375");
+  assert.equal(a.priority, "PRI-3");
+  assert.equal(a.estimatedTime, "30mins");
+  assert.ok(a.description.startsWith("1.Owner reported"));
+  assert.ok(/urgently/.test(a.description), "the second line of the cell was lost");
+  /* The awkward one on the real sheet, and it must not read as no estimate. */
+  assert.equal(b.estimatedTime, "1 - 2 Hours");
+  assert.equal(parseDurationMinutes(b.estimatedTime), 120);
+  assert.equal(b.materialDetails, "Paint. Putty");
+  assert.ok(/repainting/.test(b.description));
+});
+
+t("the Printable tab carries no date and no PMS reference", () => {
+  const r = parseSheetPaste(tsv([PRINTABLE_HEADER, ...PRINTABLE_ROWS]), "2026-09-09");
+  /* Not a defect — a consequence of the QUERY, and both change how it must
+     be used. Asserted so that a change to the sheet's SELECT list shows up
+     here rather than as a wrongly-filed schedule. */
+  r.jobs.forEach((j) => {
+    assert.equal(j._date, "2026-09-09", "no Date column, so it must take the open day");
+    assert.equal(squash(j.pmsRef), "", "column S is not in the QUERY");
+  });
+});
 
 t("the Printable tab reads correctly even pasted whole", () => {
   const r = parseSheetPaste(tsv(PRINTABLE), "2026-09-09");
   assert.equal(r.jobs.length, 2, "the header row or an instruction line became a job");
   assert.equal(r.skipped, 0);
-  const [a] = r.jobs;
-  assert.equal(a.team, "Yousoufu");
-  assert.equal(a.property, "Elite Residence");
-  assert.equal(a.unit, "3808");
-  /* Printable puts Parking BEFORE Status; matching is by name, so both land
-     right even though the order differs from the input tab. */
-  assert.equal(a.status, "Occupied - GC");
-  assert.equal(a.parking, "P2-86");
-  assert.equal(a.description, "bad smell issue");
-  /* No Date column, so every row takes the day the board has open. */
-  assert.equal(a._date, "2026-09-09");
+  assert.equal(r.jobs[0].team, "Yousoufu");
+  assert.equal(r.jobs[0].property, "Jumeirah Gate Tower 1");
   assert.ok(r.warnings.some((w) => /Ignored 2 row\(s\) above the header/.test(w)),
     "dropping rows silently is how a month goes wrong unnoticed");
-});
-
-t("selecting from the header row down reads the same", () => {
-  const r = parseSheetPaste(tsv(PRINTABLE.slice(4)), "2026-09-09");
-  assert.equal(r.jobs.length, 2);
-  assert.equal(r.jobs[0].description, "bad smell issue");
-  assert.equal(r.warnings.length, 0);
 });
 
 t("a task description is never mistaken for a header row", () => {
