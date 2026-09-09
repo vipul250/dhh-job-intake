@@ -430,8 +430,62 @@ export function misreadSigns(job, date) {
   if (!squash(job && job.property) && /\b(?:vacant|occupied|checkout|check-in|handover)\b/i.test(desc)) {
     signs.push("no building, and the status word is inside the scope");
   }
+
+  /* ------------------------------------------------------------------ *
+   * The second tear, and the one that ran for ten days.
+   *
+   * The signs above all describe the DATE column bleeding rightwards into
+   * the scope of work. This is the opposite shape: the nightly sync used to
+   * hand the parser an unquoted newline in the middle of a row, so the row
+   * ended early and every column after the description shifted LEFT into a
+   * fragment of its own. See the header of valuesToTsv in api/sync-sheet.js.
+   *
+   * The result is a job whose "technician" is a unit status or a line of a
+   * material list, and whose "building" is a duration. Two of those are
+   * conclusive on their own, for the same reason a unit numbered 2026 is:
+   * nobody in the department is called Vacant, and no building is called
+   * "2 hr".
+   * ------------------------------------------------------------------ */
+  const team = squash(job && job.team);
+  const property = squash(job && job.property);
+
+  if (team && UNIT_STATE_RE.test(team)) {
+    signs.push(`the technician reads "${team}", which is a unit status`);
+  }
+  if (property && DURATION_RE.test(property)) {
+    signs.push(`the building reads "${property}", which is an estimate`);
+  }
+  if (team && DURATION_RE.test(team)) {
+    signs.push(`the technician reads "${team}", which is an estimate`);
+  }
+  /* Weaker, and needing a second sign: a material list or a stray line of a
+     task description landing in the technician column. "Shafeeq & Bijaya"
+     is a real two-person crew, so a separator alone proves nothing — but
+     three or more words with no ampersand is prose, not a crew. */
+  if (team && !UNIT_STATE_RE.test(team) && team.split(/\s+/).length >= 3 && !/[&+]/.test(team)) {
+    signs.push(`the technician reads "${team}", which is a sentence`);
+  }
+  if (/^[YN]$/i.test(squash(job && job.unit))) {
+    signs.push("the unit is a yes/no answer");
+  }
+  /* Neither a building nor a task. Every real job has at least one of the
+     two — the board will not let you add one without — so a row carrying
+     only a name is the tail end of a torn row. One sign, not conclusive,
+     because it is the pairing with a nonsense technician that makes it
+     certain. */
+  if (!property && !desc) {
+    signs.push("no building and no task at all");
+  }
   return signs;
 }
+
+/* Values the Status column holds. A technician never matches one. */
+const UNIT_STATE_RE =
+  /^(?:vacant|occupied(?:\s*[-–]\s*gc)?|check\s*-?\s*in|check\s*-?\s*out|b2b|not\s+confirmed|handover)$/i;
+
+/* "2 hr", "30mins", "1 hour" — the Estimated Time column, in a column that
+   should hold a building name. */
+const DURATION_RE = /^\d+\s*(?:hr|hrs|hour|hours|min|mins|minute|minutes)\.?$/i;
 
 /* A unit that is exactly the year of the day the job sits on is conclusive
    on its own. No unit in the portfolio is numbered 2026, and the only way
@@ -440,6 +494,10 @@ export function misreadSigns(job, date) {
 export function isMisread(job, date) {
   const signs = misreadSigns(job, date);
   if (!signs.length) return false;
-  if (signs[0].includes("year out of the date column")) return true;
+  /* Each of these three can only be produced by a shifted row, so one is
+     enough. The rest still need corroboration. */
+  if (signs.some((x) => x.includes("year out of the date column")
+                     || x.includes("which is a unit status")
+                     || x.includes("which is an estimate"))) return true;
   return signs.length >= 2;
 }

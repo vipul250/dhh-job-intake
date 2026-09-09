@@ -167,8 +167,33 @@ async function fetchSheetValues() {
 // Rebuild the same tab-separated text the paste box expects, so this feeds
 // through parseSheetPaste unchanged — one parser, one set of rules, for
 // both the human path and this one.
-function valuesToTsv(values) {
-  return values.map((row) => row.map((c) => String(c ?? "")).join("\t")).join("\n");
+//
+// THE QUOTING IS NOT OPTIONAL, and leaving it out cost ten days of data.
+//
+// A coordinator types a multi-line task description into one cell with
+// Alt+Enter — "Washroom shower floor area have paint issues / Paint, putty
+// needed / water heater along with Flexible hose". The clipboard wraps a
+// cell like that in quotes, which is why the manual paste has always
+// worked: splitRows in importSheet.js honours exactly that quoting so the
+// cell stays one cell.
+//
+// The Sheets API hands back the raw value with the newlines still in it.
+// Joining those with tabs and nothing else put a bare newline in the middle
+// of a row, splitRows read it as end-of-row, and every column after the
+// description shifted left into the next fragment. The result on the board
+// was technicians called "Paint , putty" and "water heater along with
+// Flexible hose", properties called "2 hr", and jobs that lost their
+// estimate — for every row whose description had a line break in it. Rows
+// with single-line descriptions were untouched, which is why the damage
+// looked random rather than systematic.
+//
+// Covered by test/suites/sheettear.mjs.
+export function valuesToTsv(values) {
+  const cell = (c) => {
+    const s = String(c == null ? "" : c);
+    return /[\t\n\r"]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  return values.map((row) => row.map(cell).join("\t")).join("\n");
 }
 
 /* ---------------------------------------------------------------------- *
