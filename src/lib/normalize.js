@@ -195,11 +195,43 @@ const UNIT_TAIL = /^(?:\d{3,}[A-Za-z]?|[A-Za-z]{1,2}\d{2,})$/;
 
 export function splitTrailingUnit(property, unit) {
   const prop = squash(property);
-  if (squash(unit)) return { property: prop, unit: squash(unit), split: false };
+  const given = squash(unit);
   const parts = prop.split(/\s+/);
-  if (parts.length < 2) return { property: prop, unit: "", split: false };
-  const tail = parts[parts.length - 1];
-  if (!UNIT_TAIL.test(tail)) return { property: prop, unit: "", split: false };
+  const tail = parts.length >= 2 ? parts[parts.length - 1] : "";
+  const tailIsUnit = !!tail && UNIT_TAIL.test(tail);
+
+  /* ------------------------------------------------------------------ *
+   * The unit typed twice.
+   *
+   * The rule above used to be "never touch a row that already has a
+   * unit", full stop, and that was right about the danger and one case too
+   * wide. Four of the 474 real rows carry the unit in BOTH cells —
+   * "Binghatti Tulip 305" with 305 in the unit column — so the row keys as
+   * `binghatti tulip 305::305` while the same unit written properly keys
+   * as `binghatti tulip::305`. Three of those four have the correct
+   * spelling elsewhere in the very same paste, so the unit's visit history
+   * splits in two and "how many times have we been here" — the figure the
+   * department wants for charging an owner — is wrong.
+   *
+   * Nothing is inferred here, which is what makes it safe: the unit is
+   * already known from its own column, and an exact duplicate of it is
+   * being removed rather than a building name being guessed at. A tail
+   * that is anything other than that unit is left alone, because
+   * "Sunrise Bay Tower 1 902" with 415 in the unit column is a
+   * contradiction and stripping either would be a guess.
+   *
+   * A building whose name genuinely ends in a number is safe twice over:
+   * "Azizi Riviera 24" fails the three-digit test, AND it would have to
+   * match the unit column exactly.
+   * ------------------------------------------------------------------ */
+  if (given) {
+    if (tailIsUnit && canonUnit(tail) === canonUnit(given)) {
+      return { property: parts.slice(0, -1).join(" "), unit: given, split: true };
+    }
+    return { property: prop, unit: given, split: false };
+  }
+
+  if (!tailIsUnit) return { property: prop, unit: "", split: false };
   return { property: parts.slice(0, -1).join(" "), unit: tail.toUpperCase(), split: true };
 }
 

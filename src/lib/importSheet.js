@@ -132,10 +132,30 @@ export function parseSheetPaste(text, fallbackDate) {
     return { jobs: [], skipped: 0, headerFound: false, columns: {}, warnings: ["Nothing to import — the paste was empty."] };
   }
 
+  /* -------------------------------------------------------------------- *
+   * The header is HUNTED FOR, not assumed to sit first.
+   *
+   * It used to be read off row 0 only, and the workbook has a tab where
+   * that is fatal: "Printable Schedule (PDF)" carries a date selector and
+   * two instruction lines above its header, and no Date column at all.
+   * Selecting the whole tab and pasting it put the header row in as a job
+   * ("technician: Property, building: Unit") and shifted every real row one
+   * column left, which is the same wreckage the sheet sync used to produce.
+   *
+   * A genuine header matches most of its columns by name, so six is the
+   * bar. That is what keeps a task description from being mistaken for one:
+   * "Property manager asked to reschedule the task" satisfies the loose
+   * shape test and matches two columns, nowhere near six.
+   * -------------------------------------------------------------------- */
+  const HEADER_SEARCH_ROWS = 12;
+  const MIN_HEADER_COLUMNS = 6;
+  const headerAt = rows.slice(0, HEADER_SEARCH_ROWS).findIndex(
+    (r) => looksLikeHeader(r) && Object.keys(matchHeaders(r)).length >= MIN_HEADER_COLUMNS);
+
   let colMap, dataRows, headerFound = false;
-  if (looksLikeHeader(rows[0])) {
-    colMap = matchHeaders(rows[0]);
-    dataRows = rows.slice(1);
+  if (headerAt >= 0) {
+    colMap = matchHeaders(rows[headerAt]);
+    dataRows = rows.slice(headerAt + 1);
     headerFound = true;
   } else {
     colMap = {};
@@ -144,6 +164,12 @@ export function parseSheetPaste(text, fallbackDate) {
   }
 
   const warnings = [];
+  /* Said out loud. Anything above the header was a title, a date selector
+     or an instruction — but a paste that silently drops rows is exactly the
+     kind of thing nobody notices until the month is wrong. */
+  if (headerAt > 0) {
+    warnings.push(`Ignored ${headerAt} row(s) above the header — a title or instruction line, not jobs.`);
+  }
   if (headerFound) {
     ["property", "team", "description"].forEach((f) => {
       if (colMap[f] === undefined) warnings.push(`No "${f}" column found in the pasted header row — those values will be blank.`);
