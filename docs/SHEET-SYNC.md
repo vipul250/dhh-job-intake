@@ -1,3 +1,35 @@
+> # SWITCHED OFF — 9 September 2026
+>
+> There is no cron entry for this endpoint any more. `vercel.json` carries no
+> schedule at all, so Vercel never invokes it, and `CRON_SECRET` still guards
+> the URL, so nothing else can either. **The schedule is posted by hand**,
+> with "Paste the day in" on the Live Board.
+>
+> **Why.** The sync ran for ten days handing the parser unquoted cell values.
+> Any row whose task description ran over more than one line was torn in two
+> and every column after it shifted left, so the board grew technicians
+> called "Paint , putty" and "3hrs", buildings called "2 hr", and unit
+> statuses grouped as if they were people. Worse, good rows quietly gave
+> their estimate to the fragment below them and dropped out of every load and
+> cost figure while looking perfectly normal. Nobody watches a 03:00 job, so
+> it ran for ten days before it was obvious.
+>
+> **The bug itself is fixed** — `valuesToTsv` quotes its cells now, and
+> `test/suites/sheettear.mjs` holds it there. The sync was switched off on top
+> of that, deliberately: the manual paste has never had this class of fault
+> (the clipboard quotes multi-line cells, which is why the paste box was
+> always safe), and after ten days of silent corruption the automation had
+> not earned another unattended run.
+>
+> **To turn it back on**, put the entry back in `vercel.json`:
+>
+> ```json
+> "crons": [{ "path": "/api/sync-sheet", "schedule": "0 3 * * *" }]
+> ```
+>
+> Do a `?dryRun=1` run first and read what it says it would add. Everything
+> below still applies — the service account, the env vars, the window.
+
 # Automatic Google Sheet sync
 
 `api/sync-sheet.js` reads the live "Daily Input- Field Tasks" tab and adds

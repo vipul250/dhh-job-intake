@@ -913,8 +913,9 @@ export default function LiveBoard({
                   {misread.some((j) => misreadSigns(j, selectedDate)
                       .some((x) => x.includes("unit status") || x.includes("an estimate")))
                     ? " That is the nightly sheet sync tearing a row whose task description ran" +
-                      " over more than one line. It is fixed as of 9 September, so no new day" +
-                      " will do this — but the days already stored have to be put right by hand."
+                      " over more than one line. The sync is switched off as of 9 September and" +
+                      " the schedule is posted by hand again, so no new day will do this — but" +
+                      " the days already stored have to be put right by hand."
                     : " That is the daily sheet pasted into the quick-add box, which reads one line" +
                       " as one typed job."}
                 </>
