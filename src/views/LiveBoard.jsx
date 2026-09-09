@@ -901,9 +901,22 @@ export default function LiveBoard({
               {misread.length > 0 ? (
                 <>
                   <b>{misread.length} job{misread.length === 1 ? "" : "s"} on this day were read wrong</b>
-                  {" "}— the daily sheet was pasted into the quick-add box, which reads one line as
-                  one typed job. The building was lost and the year out of the date became the unit
-                  number.
+                  {" "}— the row lost its columns, so what you are reading in one field was typed
+                  into another. Each one says below which field gave it away.
+                  {/* Two different causes produce this, and naming the wrong one sends
+                      somebody hunting for a mistake nobody made. The signs themselves
+                      say which: a torn DATE reads as the unit or opens the scope of
+                      work (the sheet pasted into the quick-add box, one line per job);
+                      a shifted row puts a unit status or an estimate where a person or
+                      a building belongs (the nightly sync, before it quoted its cells —
+                      see valuesToTsv in api/sync-sheet.js). */}
+                  {misread.some((j) => misreadSigns(j, selectedDate)
+                      .some((x) => x.includes("unit status") || x.includes("an estimate")))
+                    ? " That is the nightly sheet sync tearing a row whose task description ran" +
+                      " over more than one line. It is fixed as of 9 September, so no new day" +
+                      " will do this — but the days already stored have to be put right by hand."
+                    : " That is the daily sheet pasted into the quick-add box, which reads one line" +
+                      " as one typed job."}
                 </>
               ) : (
                 <>
