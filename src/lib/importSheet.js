@@ -89,9 +89,27 @@ function splitRows(text) {
   return rows;
 }
 
+/* A header row is one where several cells name a field we know.
+ *
+ * This used to insist on the word "property" plus one of shift/task/date,
+ * so a trimmed-down sheet — date, technician, unit, description, status —
+ * was not recognised as a header at all. The paste then fell through to
+ * POSITIONAL, which reads the full 21-column workbook order, and every
+ * column landed in the wrong field: the technician came out as "Unit /
+ * Villa No." and the description came out empty. Silently, which is the
+ * part that mattered.
+ *
+ * Counting matched field names instead means the check does not care how
+ * many columns the sheet has, or which ones were deleted. Three is enough
+ * to tell a header from a data row: data rows carry dates, names and free
+ * text, not three of our own field labels. */
 function looksLikeHeader(cells) {
-  const joined = canonKey(cells.join(" "));
-  return joined.includes("property") && (joined.includes("shift") || joined.includes("task") || joined.includes("date"));
+  const keys = cells.map((c) => canonKey(c));
+  let hits = 0;
+  COLUMN_MATCHERS.forEach(([, needles]) => {
+    if (needles.some((n) => keys.some((k) => k.includes(n)))) hits += 1;
+  });
+  return hits >= 3;
 }
 
 /* Excel sometimes serialises a date cell as a serial number. */
@@ -140,17 +158,16 @@ export function parseSheetPaste(text, fallbackDate) {
    * two instruction lines above its header, and no Date column at all.
    * Selecting the whole tab and pasting it put the header row in as a job
    * ("technician: Property, building: Unit") and shifted every real row one
-   * column left, which is the same wreckage the sheet sync used to produce.
+   * column left — the same wreckage the sheet sync used to produce.
    *
-   * A genuine header matches most of its columns by name, so six is the
-   * bar. That is what keeps a task description from being mistaken for one:
-   * "Property manager asked to reschedule the task" satisfies the loose
-   * shape test and matches two columns, nowhere near six.
+   * looksLikeHeader above already counts how many of our own field names a
+   * row uses, and three is its bar. That is what keeps a task description
+   * from being taken for a header: "Property manager asked to reschedule
+   * the task and check the date" reads as two, because "task and check" is
+   * not "task description".
    * -------------------------------------------------------------------- */
   const HEADER_SEARCH_ROWS = 12;
-  const MIN_HEADER_COLUMNS = 6;
-  const headerAt = rows.slice(0, HEADER_SEARCH_ROWS).findIndex(
-    (r) => looksLikeHeader(r) && Object.keys(matchHeaders(r)).length >= MIN_HEADER_COLUMNS);
+  const headerAt = rows.slice(0, HEADER_SEARCH_ROWS).findIndex(looksLikeHeader);
 
   let colMap, dataRows, headerFound = false;
   if (headerAt >= 0) {

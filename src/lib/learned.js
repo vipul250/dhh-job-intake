@@ -27,7 +27,9 @@
 import { storageGet, storageSet } from "./storage.js";
 import { readDays, migrateDay, listScheduleDates } from "./jobStore.js";
 import { liveJobs } from "./job.js";
-import { computeDurationLibrary, MIN_CONFIDENT } from "./metrics.js";
+import { squash, parseDurationMinutes, splitCrew } from "./normalize.js";
+import { faultFamily, FAMILY_LABEL } from "./faultFamily.js";
+import { actualDuration } from "./job.js";
 import { readGoLive, isLive } from "./goLive.js";
 
 export const LEARNED_KEY = "learned-durations";
@@ -98,4 +100,93 @@ export function learnedFor(learned, catalogueId) {
   return row ? row : null;
 }
 
-export { MIN_CONFIDENT };
+/* ---------------------------------------------------------------------- *
+ * The duration library itself, moved here from metrics.js when that file
+ * was deleted. learned.js was its only consumer, so it now lives with the
+ * code that reads it.
+ *
+ * Grouping: the standard catalogue task where a line snapped to one, and
+ * the trade family otherwise — the finest split the data supports without
+ * producing samples of one.
+ * ---------------------------------------------------------------------- */
+
+function median(arr) {
+  const a = arr.filter((n) => n != null).slice().sort((x, y) => x - y);
+  if (!a.length) return null;
+  const m = Math.floor(a.length / 2);
+  return a.length % 2 ? a[m] : Math.round(((a[m - 1] + a[m]) / 2) * 10) / 10;
+}
+const pct = (n, d) => (d > 0 ? Math.round((n / d) * 1000) / 10 : null);
+const coverage = (answered, total) => ({ answered, total, pct: pct(answered, total) });
+
+export const MIN_CONFIDENT = 5;
+
+export function computeDurationLibrary(jobs, opts = {}) {
+  const min = opts.minConfident || MIN_CONFIDENT;
+  const groups = new Map();
+
+  jobs.forEach((j) => {
+    /* Grouped by the standard task where the line snapped to one, and by
+       trade family otherwise — the finest grouping the data can actually
+       support without splitting into samples of one. */
+    const key = squash(j.catalogueId) || `fam:${faultFamily(j.description, j.faultCode)}`;
+    const label = squash(j.catalogueId)
+      ? squash(j.description)   // a snapped line carries the canonical wording
+      : (FAMILY_LABEL[faultFamily(j.description, j.faultCode)] || "Not classified");
+    if (!groups.has(key)) {
+      groups.set(key, { key, label, measured: [], estimates: [], jobs: 0, crewed: 0 });
+    }
+    const g = groups.get(key);
+    g.jobs++;
+    const est = parseDurationMinutes(j.estimatedTime);
+    if (est != null) g.estimates.push(est);
+    const act = actualDuration(j);
+    if (act.minutes != null) {
+      g.measured.push(act.minutes);
+      if (splitCrew(j.team).length > 1) g.crewed++;
+    }
+  });
+
+  const rows = Array.from(groups.values()).map((g) => {
+    const measuredMedian = g.measured.length ? median(g.measured) : null;
+    const estimateMedian = g.estimates.length ? median(g.estimates) : null;
+    const confident = g.measured.length >= min;
+    const ratio = measuredMedian != null && estimateMedian
+      ? Math.round((measuredMedian / estimateMedian) * 100) : null;
+    return {
+      ...g,
+      n: g.measured.length,
+      measuredMedian,
+      measuredMin: g.measured.length ? Math.min(...g.measured) : null,
+      measuredMax: g.measured.length ? Math.max(...g.measured) : null,
+      estimateMedian,
+      ratio,
+      confident,
+      /* How much the department is out on this kind of work over a month:
+         the per-job error multiplied by how often it comes up. Sorting by
+         this puts the estimate worth fixing first, rather than the most
+         wrong estimate on a task that happens twice. */
+      impact: confident && ratio != null
+        ? Math.abs(measuredMedian - estimateMedian) * g.jobs : 0,
+    };
+  });
+
+  const measuredJobs = rows.reduce((s, r) => s + r.n, 0);
+  return {
+    rows: rows.sort((a, b) => b.impact - a.impact || b.n - a.n),
+    confident: rows.filter((r) => r.confident),
+    measuredJobs,
+    coverage: coverage(measuredJobs, jobs.length),
+    minConfident: min,
+    /* Ready to replace the guess. Until a kind of work reaches this, the
+       app keeps quoting the seeded default and says so. */
+    readyToLearn: rows.filter((r) => r.confident && r.ratio != null && (r.ratio > 125 || r.ratio < 75)).length,
+  };
+}
+
+/** What the library says this kind of work takes, or null if it cannot say yet. */
+export function learnedMinutes(library, key) {
+  if (!library || !key) return null;
+  const row = library.rows.find((r) => r.key === key);
+  return row && row.confident ? row.measuredMedian : null;
+}

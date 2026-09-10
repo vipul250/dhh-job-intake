@@ -27,7 +27,7 @@ export const FAULT_FAMILIES = [
   ["hvac", "AC / HVAC", /\b(a\/?c\b|air\s*con\w*|hvac|fcu|thermostat|chiller|duct|compressor|condenser|coil|not\s+cooling|cooling\s+issue|ac\s+ppm|air\s*flow|filter)\b/],
   ["plumbing", "Plumbing / water", /\b(leak\w*|drip\w*|water|plumb\w*|drain\w*|clog\w*|blocked?|shattaf|flush|toilet|wc\b|sink|tap|faucet|mixer|shower|bath\s*tub|bathtub|geyser|water\s*heater|angle\s*valve|trap|pipe|sewer|smell.*drain|drain.*smell)\b/],
   ["electrical", "Electrical", /\b(light\w*|bulb|downlight|spot\s*light|electric\w*|socket|switch\w*|power|tripp\w*|breaker|db\s*box|wiring|flicker\w*|short\s*circuit|no\s+electricity|circuit)\b/],
-  ["appliance", "Appliance", /\b(fridge|refrigerator|washing\s*machine|dryer|dishwasher|oven|microwave|micro\s*oven|hob|cooker|stove|kettle|tv\b|television|extractor|hood)\b/],
+  ["appliance", "Appliance", /\b(appliance\w*|fridge|refrigerator|washing\s*machine|dryer|dishwasher|oven|microwave|micro\s*oven|hob|cooker|stove|kettle|tv\b|television|extractor|hood)\b/],
   ["door", "Door / lock / hardware", /\b(door|lock\w*|hinge\w*|handle|latch|smart\s*lock|key\b|access\s*card|closer|sliding|track|window|fly\s*net|mesh|mosquito)\b/],
   ["finish", "Paint / finish / carpentry", /\b(paint\w*|touch\s*up|silicon\w*|sealant|gypsum|ceiling|wall|putty|plaster|tile\w*|grout|carpent\w*|wardrobe|cabinet|shelf|skirting|polish\w*)\b/],
   ["pool", "Pool / outdoor", /\b(pool|jacuzzi|garden|landscap\w*|barbecue|bbq|terrace|balcony\s*floor|irrigation)\b/],
@@ -72,4 +72,26 @@ export const OUR_FAULT_REASONS = RETURN_REASONS.filter((r) => r.ours).map((r) =>
 
 export function isOurFault(reasonId) {
   return OUR_FAULT_REASONS.includes(reasonId);
+}
+
+/* ---------------------------------------------------------------------- *
+ * Major or minor.
+ *
+ * Decided by trade, not by how long it took: a duration can be inflated by
+ * whoever is being measured by it, and a trade cannot.
+ *
+ * Calibrated against the 474 real task descriptions in
+ * test/harness/paste.tsv — plumbing, AC and appliance work is where the
+ * heavy jobs are (178 rows, 37%); doors, pool cleans, paint touch-ups,
+ * furniture and inspections are the routine half.
+ *
+ * ponytail: a flat trade map, so "AC PPM" scores the same as "compressor
+ * replacement" and "bulb change" the same as "ELCB tripping". Tune by
+ * moving a family below, or split a family in FAULT_FAMILIES if one trade
+ * genuinely needs two sizes.
+ * ---------------------------------------------------------------------- */
+export const MAJOR_FAMILIES = ["plumbing", "hvac", "appliance"];
+
+export function jobSize(description, faultCode) {
+  return MAJOR_FAMILIES.includes(faultFamily(description, faultCode)) ? "major" : "minor";
 }

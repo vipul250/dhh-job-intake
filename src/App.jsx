@@ -2,14 +2,14 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from "react"
 import {
   Plus, Check, AlertTriangle, X,
   ClipboardList, Database, BarChart3, Loader2,
-  ChevronRight, ChevronLeft, RefreshCw, TrendingUp, Briefcase, Clock, Building2, Radio, Users, Inbox
+  ChevronRight, ChevronLeft, RefreshCw, TrendingUp, Briefcase, Clock, Building2, Radio, Users, Inbox, CalendarDays
 } from "lucide-react";
 import { storageGet, storageSet, storageList } from "./lib/storage.js";
-import Dashboard from "./views/Dashboard.jsx";
 import LiveBoard from "./views/LiveBoard.jsx";
 import Projects from "./views/Projects.jsx";
 import Roster from "./views/Roster.jsx";
 import Backlog from "./views/Backlog.jsx";
+import Monthly from "./views/Monthly.jsx";
 import SignIn from "./views/SignIn.jsx";
 import { isAuthRequired, currentSession, onAuthChange, signOut } from "./lib/auth.js";
 import { mutateDay } from "./lib/jobStore.js";
@@ -507,13 +507,6 @@ export default function App() {
             session={session}
           />
         )}
-        {activeTab === "dashboard" && (
-          <Dashboard
-            selectedDate={selectedDate}
-            knownDates={knownDates}
-            onOpenDate={(d) => { setSelectedDate(d); setActiveTab("board"); }}
-          />
-        )}
         {activeTab === "live" && (
           <LiveBoard
             session={session}
@@ -532,6 +525,7 @@ export default function App() {
             setActiveTab={setActiveTab} showToast={showToast}
           />
         )}
+        {activeTab === "monthly" && <Monthly knownDates={knownDates} />}
         {activeTab === "jobcards" && <Projects knownDates={knownDates} showToast={showToast} />}
       </main>
 
@@ -564,15 +558,23 @@ function Header({ selectedDate, setSelectedDate, knownDates, activeTab, setActiv
      yesterday, then read the numbers. */
   /* The Live Board is the day. Everything else is a lens on it or a
      reference table, so it leads and the rest follow. */
+  /* Five tabs, down from eight.
+   *
+   * Dashboard and its 28-measure engine are gone from the repo, not hidden:
+   * views/Dashboard.jsx, lib/metrics.js and components/charts.jsx were
+   * deleted. The duration library moved to lib/learned.js and the two shift
+   * constants to lib/cost.js, which were their only remaining readers.
+   *
+   * Insights is still routed but unlisted — add { id: "insights" } back here
+   * to reach it. Fault Codes and Properties are the same: unlisted, because
+   * a fault code is no longer required to save a job and a property is typed
+   * rather than picked. */
   const tabs = [
     { id: "live", label: "Live Board", icon: Radio },
+    { id: "monthly", label: "Monthly", icon: CalendarDays },
     { id: "backlog", label: "Queue", icon: Inbox },
-    { id: "roster", label: "Roster", icon: Users },
-    { id: "dashboard", label: "Dashboard", icon: TrendingUp },
     { id: "jobcards", label: "Projects", icon: Briefcase },
-    { id: "insights", label: "Insights (today)", icon: BarChart3 },
-    { id: "faultcodes", label: "Fault Codes", icon: Database },
-    { id: "properties", label: "Properties", icon: Building2 },
+    { id: "roster", label: "Roster", icon: Users },
   ];
   return (
     <div className="bg-slate-900 text-slate-100 sticky top-0 z-20">
@@ -904,7 +906,6 @@ function PropertiesView({ propertyMaster, onAdd }) {
 }
 
 function JobFormModal({ initial, faultMaster, propertyMaster, knownTeams, onCancel, onSave }) {
-  const [emirateFilter, setEmirateFilter] = useState("All");
   const [form, setForm] = useState(
     initial || {
       shift: SHIFT_OPTIONS[0],
@@ -946,9 +947,12 @@ function JobFormModal({ initial, faultMaster, propertyMaster, knownTeams, onCanc
   );
 
   const fault = faultMaster.find((f) => f.code === form.faultCode);
-  const canSave = form.property.trim() && form.faultCode && form.team.trim();
+  /* Was: property AND fault code AND team. The fault code made the
+     coordinator pick from a 60-entry catalogue for every job, and nothing in
+     the monthly report reads it — faultFamily.js gets the trade from the
+     problem text instead. Requiring it only bought unsaveable jobs. */
+  const canSave = form.team.trim() && form.unit.trim() && form.description.trim();
   const isProjectType = form.faultCode === "WORKS-QUOTED" || form.faultCode === "INSPECTION-ONB";
-  const visibleProperties = emirateFilter === "All" ? propertyMaster : propertyMaster.filter((p) => p.emirate === emirateFilter);
 
   function update(k, v) { setForm((f) => ({ ...f, [k]: v })); }
 
@@ -972,41 +976,67 @@ function JobFormModal({ initial, faultMaster, propertyMaster, knownTeams, onCanc
         </div>
         <div className="p-5 pb-24 grid sm:grid-cols-2 gap-3 overflow-y-auto flex-1 min-h-0">
           <label className="block text-xs">
-            <span className="text-slate-500">Shift</span>
-            <select value={form.shift} onChange={(e) => update("shift", e.target.value)} className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm">
-              {SHIFT_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
-          </label>
-          {form.shift === "Custom" && (
-            <Field label="Custom shift (e.g. 07:00-16:00)" value={form.customShift} onChange={(v) => update("customShift", v)} />
-          )}
-          <label className="block text-xs">
             <span className="text-slate-500">Team</span>
             <input list="teams" value={form.team} onChange={(e) => update("team", e.target.value)} placeholder="Select or type a team"
               className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
             <datalist id="teams">{knownTeams.map((t) => <option key={t} value={t} />)}</datalist>
           </label>
+          {/* Typed, not picked. The dropdown could only offer properties
+              somebody had already added on the Properties tab — which is why
+              it needed an Emirate filter to stay usable, and why a job in a
+              new building could not be written down at all. Known names are
+              still offered as suggestions. */}
           <label className="block text-xs">
-            <span className="text-slate-500">Emirate (filters the list below)</span>
-            <select value={emirateFilter} onChange={(e) => setEmirateFilter(e.target.value)} className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm">
-              <option value="All">All</option>
-              {EMIRATE_OPTIONS.map((e) => <option key={e} value={e}>{e}</option>)}
-            </select>
-          </label>
-          <label className="block text-xs">
-            <span className="text-slate-500">Property (building/community — not found? add it in the Properties tab first)</span>
-            <select value={form.property} onChange={(e) => update("property", e.target.value)} className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm">
-              <option value="">Select property…</option>
-              {visibleProperties.map((p) => <option key={p.name} value={p.name}>{p.name} ({p.emirate})</option>)}
-            </select>
+            <span className="text-slate-500">Property (building/community)</span>
+            <input list="properties" value={form.property} onChange={(e) => update("property", e.target.value)}
+                   placeholder="e.g. Bayz Tower"
+                   className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
+            <datalist id="properties">
+              {propertyMaster.map((p) => <option key={p.name} value={p.name} />)}
+            </datalist>
           </label>
           <Field label="Unit / Villa No." value={form.unit} onChange={(v) => update("unit", v)} />
+
+          <label className="block text-xs sm:col-span-2">
+            <span className="text-slate-500">What is the problem?</span>
+            <input value={form.description} onChange={(e) => update("description", e.target.value)}
+                   placeholder="e.g. AC is not cooling — bedroom"
+                   className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
+          </label>
+
           <label className="block text-xs">
-            <span className="text-slate-500">Status</span>
-            <select value={form.status} onChange={(e) => update("status", e.target.value)} className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm">
-              {STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
+            <span className="text-slate-500">Outcome</span>
+            <select value={form.jobStatus} onChange={(e) => update("jobStatus", e.target.value)} className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm">
+              {JOB_STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
           </label>
+
+          {/* ------------------------------------------------------------ *
+            * Everything past this point is optional and starts closed.
+            *
+            * The five fields above are the whole of what the monthly report
+            * needs: who, where, what broke, and how it ended (the date comes
+            * from the day being edited). The trade — and with it major vs
+            * minor — is read out of the problem text by faultFamily.js, so
+            * the fault code below is no longer something anybody has to pick.
+            *
+            * The fields are kept rather than deleted: the Live Board, the
+            * cost view and the project cards all still read them, and a job
+            * saved with them blank behaves exactly as one imported from a
+            * five-column sheet does. Open the section when a job genuinely
+            * needs materials, a quotation or a parking bay.
+            * ------------------------------------------------------------ */}
+          <details className="sm:col-span-2 border border-slate-200 rounded-md">
+            <summary className="cursor-pointer text-xs text-slate-600 px-3 py-2 select-none">
+              More details — materials, timing, cost, fault code (all optional)
+            </summary>
+            <div className="grid sm:grid-cols-2 gap-3 p-3 pt-0">
+              <label className="block text-xs">
+                <span className="text-slate-500">Occupancy status</span>
+                <select value={form.status} onChange={(e) => update("status", e.target.value)} className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm">
+                  {STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </label>
           <label className="block text-xs sm:col-span-2">
             <span className="text-slate-500">Fault code</span>
             <select value={form.faultCode} onChange={(e) => handleFaultCodeChange(e.target.value)} className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm">
@@ -1053,12 +1083,6 @@ function JobFormModal({ initial, faultMaster, propertyMaster, knownTeams, onCanc
               {PRIORITY_OPTIONS.map((p) => <option key={p} value={p}>{PRIORITY_LABEL[p]}</option>)}
             </select>
           </label>
-          <label className="block text-xs">
-            <span className="text-slate-500">Job status</span>
-            <select value={form.jobStatus} onChange={(e) => update("jobStatus", e.target.value)} className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm">
-              {JOB_STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
-          </label>
           {form.jobStatus === "Blocked" && (
             <label className="block text-xs">
               <span className="text-slate-500">Block reason</span>
@@ -1091,7 +1115,6 @@ function JobFormModal({ initial, faultMaster, propertyMaster, knownTeams, onCanc
               <option value="Y">Yes</option>
             </select>
           </label>
-          <Field label="Description (exact quantities/specs here — see best-practice example in Fault Codes tab)" value={form.description} onChange={(v) => update("description", v)} full />
 
           {/* ---- Intake block ----------------------------------------- *
              * Short, and every field here earns its place by feeding a
@@ -1200,6 +1223,8 @@ function JobFormModal({ initial, faultMaster, propertyMaster, knownTeams, onCanc
           <Field label="SKU ref (if known)" value={form.skuRef} onChange={(v) => update("skuRef", v)} />
           <Field label="Vehicle assigned" value={form.vehicle} onChange={(v) => update("vehicle", v)} />
           <Field label="Cost center" value={form.costCenter} onChange={(v) => update("costCenter", v)} />
+            </div>
+          </details>
         </div>
       </div>
       <div className="fixed bottom-0 inset-x-0 z-40 flex justify-center pointer-events-none">

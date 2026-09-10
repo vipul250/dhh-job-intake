@@ -29,7 +29,14 @@ import {
   parseDurationMinutes, splitCrew, canonProperty, parseShiftMinutes,
   workType, assetKey, daysBetween, squash,
 } from "./normalize.js";
-import { DEFAULTS } from "./metrics.js";
+/* Moved here from metrics.js when that file was deleted; cost.js was the
+   only consumer left. Only shiftMinutes and travelMinutesPerHop are read
+   below — the rest are the dashboard thresholds that went with it. */
+const DEFAULTS = {
+  shiftMinutes: 540,        // 09:00-18:00, the dominant shift in the workbook
+  travelMinutesPerHop: 30,  // per additional distinct property in a tech's day
+};
+import { actualDuration } from "./job.js";
 
 /* Defaults are AED and deliberately conservative. Sources of the shape,
    not the values: a fully-loaded technician cost is salary + accommodation
@@ -58,10 +65,27 @@ function techRate(tech, rates) {
     : rates.techCostPerHour;
 }
 
+/* ---------------------------------------------------------------------- *
+ * How long a job took, for costing.
+ *
+ * Measured time wins over the estimate wherever there is any — the clock
+ * between Arrived and Left, the duration the admin typed, or the gap
+ * between Start and Done on the board. That rule already existed on the
+ * daily job (actualDuration) and on a project (projectCost), and cost.js
+ * was the one place still pricing every job at whatever was guessed before
+ * anybody went. A close-out that measured three hours against a one-hour
+ * estimate left the cost saying one hour for ever.
+ * ---------------------------------------------------------------------- */
+export function jobMinutes(job) {
+  const act = actualDuration(job);
+  if (act.minutes != null) return act.minutes;
+  return parseDurationMinutes(job.estimatedTime);
+}
+
 /* Per-job cost of the labour committed to it. A crew job costs every
    member's time — that is the whole point of splitting crews. */
 export function jobLabourCost(job, rates) {
-  const mins = parseDurationMinutes(job.estimatedTime);
+  const mins = jobMinutes(job);
   if (mins == null) return null;
   const crew = splitCrew(job.team);
   const members = crew.length ? crew : ["Unassigned"];
@@ -117,7 +141,7 @@ export function computeCost(jobs, rates, capacity, repeats, opts = {}) {
     (crew.length ? crew : ["Unassigned"]).forEach((t) => {
       if (!byTech.has(t)) byTech.set(t, { tech: t, cost: 0, jobs: 0, minutes: 0 });
       const e = byTech.get(t);
-      const mins = parseDurationMinutes(j.estimatedTime) || 0;
+      const mins = jobMinutes(j) || 0;
       e.cost += (mins / 60) * techRate(t, r);
       e.minutes += mins;
       e.jobs++;

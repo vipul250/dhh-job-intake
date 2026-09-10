@@ -24,6 +24,7 @@
  * ---------------------------------------------------------------------- */
 
 import { squash, canonKey } from "./normalize.js";
+import { faultFamily } from "./faultFamily.js";
 
 /* minutes / people / trade are the defaults applied when a line snaps to
    the entry. `aliases` are the other ways people actually write it. */
@@ -175,6 +176,26 @@ export function matchCatalogue(text, catalogue) {
   // Two thirds of the standard wording has to be present. Below that it is
   // a guess, and a guess here rewrites somebody's job description.
   if (!best || bestScore < 0.6) return null;
+
+  /* The score counts shared words and cannot see which word mattered.
+     "Fridge door not closing" against the alias "shower door not closing"
+     shares two of three tokens and scored 0.67 — over the bar — so a fridge
+     was silently rewritten as "Shower door hinge replacement and
+     alignment". The one word that distinguished them, fridge against
+     shower, is the one the score ignores.
+ 
+     That is not a cosmetic mislabel: applyCatalogue replaces the typed
+     description outright, and the monthly report reads the trade back out
+     of that text, so the job also moved from major (appliance) to minor
+     (door hardware).
+ 
+     So a match may refine wording but never contradict the trade. Both
+     sides have to classify for this to mean anything — an unclassified
+     "other" carries no information and is left alone. */
+  const typedFamily = faultFamily(text);
+  const entryFamily = faultFamily(best.label);
+  if (typedFamily !== "other" && entryFamily !== "other" && typedFamily !== entryFamily) return null;
+
   return { entry: best, score: Math.round(bestScore * 100) };
 }
 
