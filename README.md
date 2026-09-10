@@ -169,6 +169,22 @@ you think you'll need it.
   The Import tab is the only feature that calls it. Rough order of magnitude:
   a few cents per schedule paste, not more.
 
+## Devices and browsers
+
+The build ships twice: a modern module build, and an ES2015 build with
+polyfills for anything older. The floor is **iOS 10.3, Chrome 49, Firefox
+52, Edge 17, Safari 10.1** — an iPhone 5 or an Android 5 phone will run the
+board. Before this it was Chrome 87 / Safari 14, i.e. late 2020, and
+anything below that got a white page with no message.
+
+When it still fails, the page says why instead of staying blank: a panel
+naming the browser, what its engine supports, and any error or failed
+download, with a button that copies the lot as text. Ask for a screenshot
+of it — that is the whole diagnosis.
+
+**`docs/DEVICES.md`** has the detail: what each panel means, what to tell
+the person holding the device, and how to run `test/suites/device.mjs`.
+
 ## Known limitation carried over from the original
 
 > Note: this limitation still applies to the duplicate/carryover badges on

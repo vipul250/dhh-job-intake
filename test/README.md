@@ -78,6 +78,19 @@ printf 'VITE_SUPABASE_URL=https://stubproject00000.supabase.co\nVITE_SUPABASE_AN
 production, so the deployed JavaScript can be driven without touching the
 real database. See "Verifying the live app" in HANDOVER.md.
 
+## `device.mjs` — the odd one out
+
+It reads `dist/` as well as driving the browser, so **it must run against
+the build sitting on disk**, not a stale one. It also blocks the modern
+bundle on purpose and injects the ES2015 one by hand, to prove that copy
+runs rather than merely compiles. Two things to know:
+
+- It waits 13 seconds in one place. That is the boot guard's own timing,
+  not slack — the panel is deliberately slow to accuse.
+- Chromium is doing the running, so a pass says the old bundle is not
+  broken in itself. It says nothing about how iOS 10 handles it. Nothing
+  here can.
+
 ## Fixtures
 
 | File | What it is |

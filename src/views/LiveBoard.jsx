@@ -25,6 +25,7 @@ import { parseSheetPaste } from "../lib/importSheet.js";
 import { checkAgainstSchedule } from "../lib/roster.js";
 import { projectCrewOn } from "../lib/project.js";
 import { storageGet } from "../lib/storage.js";
+import { copyWithToast } from "../lib/clipboard.js";
 import { staffIndex, seedStaff, TRADE_LABEL } from "../lib/staff.js";
 import {
   seedCatalogue, matchCatalogue, applyCatalogue, newCatalogueEntry,
@@ -1636,8 +1637,7 @@ function TeamGroup({ group, me, allJobs, selectedDate, onAdvance, onEdit, onOpen
 
   function copyAllForPms() {
     const text = g.list.filter((j) => j.state !== "cancelled").map(pmsText).join("\n\n---\n\n");
-    navigator.clipboard?.writeText(text);
-    showToast(`Copied ${g.list.length} job(s) — paste into PMS.`, "ok");
+    copyWithToast(text, showToast, `Copied ${g.list.length} job(s) — paste into PMS.`);
   }
 
   /* What the technician gets instead of the printed sheet. In that sheet an
@@ -1655,8 +1655,11 @@ function TeamGroup({ group, me, allJobs, selectedDate, onAdvance, onEdit, onOpen
       ? [...plan.items, ...(plan.overflow || [])].map((o) => o.job).filter(Boolean)
       : g.list;
     const live = ordered.filter((j) => j.state !== "cancelled");
-    navigator.clipboard?.writeText(techSheetForDay(live, g.team, selectedDate));
-    showToast(`Copied ${live.length} job(s) for ${g.team || "the technician"} — every field named.`, "ok");
+    copyWithToast(
+      techSheetForDay(live, g.team, selectedDate),
+      showToast,
+      `Copied ${live.length} job(s) for ${g.team || "the technician"} — every field named.`
+    );
   }
 
   return (
@@ -2129,8 +2132,7 @@ function JobRow({ job, me, onAdvance, onEdit, onOpenNote, onMove, onOutcome, onT
   const isAdmin = me.role === "admin";
 
   function copyPms() {
-    navigator.clipboard?.writeText(pmsText(job));
-    showToast("Copied — paste into PMS.", "ok");
+    copyWithToast(pmsText(job), showToast, "Copied — paste into PMS.");
   }
 
   return (

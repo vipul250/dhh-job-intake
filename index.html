@@ -7,6 +7,222 @@
   </head>
   <body>
     <div id="root"></div>
+
+    <noscript>
+      <div style="max-width:34rem;margin:3rem auto;padding:1.25rem;border:1px solid #cbd5e1;border-radius:8px;font:15px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#0f172a">
+        <strong>JavaScript is switched off in this browser.</strong>
+        <p style="margin:.6rem 0 0">The job board cannot run without it. Turn JavaScript on in the browser settings, then reload this page.</p>
+      </div>
+    </noscript>
+
+    <!-- ------------------------------------------------------------------
+      The boot guard.
+
+      Written in ES5, on purpose, and inline, on purpose. Everything else
+      on this page is a module bundle, and the failure this exists to
+      report is the bundle never running at all — an engine too old to
+      parse it, a chunk that 404s behind a captive-portal wifi, a throw on
+      the first line. In all three cases the page stays white and the
+      person holding the device has no console, no error, and nothing to
+      tell anyone except "it doesn't work on mine".
+
+      So: catch what escapes, give the page a generous half a minute to
+      arrive, and if the screen is still empty after that, say so in plain
+      words with the details attached. A wrong device diagnosed in one
+      screenshot beats a week of "have you tried reloading".
+
+      It must never throw itself, and it must never assume a feature newer
+      than the browser it is there to describe: no const, no arrows, no
+      template strings, no fetch, no Promise.
+    ------------------------------------------------------------------- -->
+    <script>
+      (function () {
+        var BOOT_TIMEOUT_MS = 10000;   /* first look */
+        var RETRY_MS = 5000;           /* how long each further wait is */
+        var MAX_WAITS = 6;             /* ~35s in total before the verdict */
+        var problems = [];
+        var booted = false;
+        var shown = false;
+        var waits = 0;
+
+        /* main.jsx calls this once React has actually put something on the
+           screen. Anything short of that counts as not started. */
+        window.__dhhBooted = function () {
+          booted = true;
+          /* Left on the window so a test — or a person on a phone with a
+             remote inspector — can tell "rendered" from "still white". */
+          window.__dhhBootedAt = new Date().getTime();
+        };
+        window.__dhhProblems = problems;
+
+        function note(kind, message, where) {
+          problems.push({ kind: kind, message: String(message || "unknown"), where: where || "" });
+          if (booted) return;
+          /* An error before the first render usually means React never
+             mounts, so look sooner than the full wait — but not at once.
+             A browser on the legacy path throws a parse error on the
+             modern bundle BY DESIGN, before the older copy has finished
+             downloading, and calling that a failure would put this panel
+             in front of the very people it is meant to rescue. */
+          schedule(3000);
+        }
+
+        window.addEventListener("error", function (e) {
+          if (e && e.target && e.target !== window && e.target.src) {
+            /* A script or stylesheet that failed to load, rather than a
+               throw. Common on hotel and site wifi that intercepts. */
+            note("load", "Could not download " + e.target.src, "network");
+            return;
+          }
+          note(
+            "error",
+            (e && e.message) || "Script error",
+            e && e.filename ? e.filename + ":" + (e.lineno || 0) + ":" + (e.colno || 0) : ""
+          );
+        }, true);
+
+        window.addEventListener("unhandledrejection", function (e) {
+          var r = e && e.reason;
+          note("promise", (r && (r.message || r)) || "Unhandled rejection", "");
+        });
+
+        function features() {
+          var out = [];
+          function has(name, ok) { out.push(name + "=" + (ok ? "yes" : "NO")); }
+          has("modules", "noModule" in document.createElement("script"));
+          has("promise", typeof Promise !== "undefined");
+          has("fetch", typeof fetch !== "undefined");
+          has("symbol", typeof Symbol !== "undefined");
+          has("assign", typeof Object.assign === "function");
+          has("fromEntries", typeof Object.fromEntries === "function");
+          try { has("localStorage", !!window.localStorage); } catch (err) { has("localStorage", false); }
+          has("clipboard", !!(navigator.clipboard && navigator.clipboard.writeText));
+          try { new Function("var a=null;a?.b ?? 1"); has("modernSyntax", true); }
+          catch (err) { has("modernSyntax", false); }
+          return out.join(" ");
+        }
+
+        function details() {
+          var lines = [];
+          lines.push("DHH Job Intake — startup report");
+          lines.push("when: " + new Date().toString());
+          lines.push("url: " + location.href);
+          lines.push("browser: " + navigator.userAgent);
+          lines.push("screen: " + (window.innerWidth || 0) + "x" + (window.innerHeight || 0));
+          lines.push("online: " + (typeof navigator.onLine === "boolean" ? navigator.onLine : "unknown"));
+          lines.push("features: " + features());
+          if (!problems.length) {
+            lines.push("errors: none reported — the page loaded but nothing rendered");
+          } else {
+            for (var i = 0; i < problems.length; i++) {
+              lines.push("error " + (i + 1) + " [" + problems[i].kind + "]: " + problems[i].message +
+                (problems[i].where ? "  @ " + problems[i].where : ""));
+            }
+          }
+          return lines.join("\n");
+        }
+
+        function esc(s) {
+          return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        }
+
+        function tooOld() {
+          /* The floor, tested rather than sniffed from the user-agent. A
+             browser without modules is fine — the build ships an older copy
+             for exactly that — but both copies need Promise, and nothing
+             polyfills the engine underneath them. */
+          return typeof Promise === "undefined";
+        }
+
+        /* Is the browser part-way through loading the older copy? The
+           detection snippet Vite injects sets __vite_is_modern_browser on
+           everything that took the module path; anything else with a
+           legacy entry on the page is still fetching half a megabyte of
+           polyfills and bundle, which on a site connection is not
+           quick. */
+        function legacyPending() {
+          if (!document.getElementById("vite-legacy-entry")) return false;
+          return !window.__vite_is_modern_browser;
+        }
+
+        function schedule(ms) { window.setTimeout(check, ms); }
+
+        function check() {
+          if (booted || shown) return;
+          var root = document.getElementById("root");
+          if (root && root.childNodes.length > 0) return;
+          /* `npm run dev` already puts a far better error on the screen,
+             with the file and the line in it. Two panels saying the same
+             thing is worse than one. */
+          if (document.querySelector && document.querySelector("vite-error-overlay")) return;
+
+          /* Patience before verdict. Nothing has rendered, but the page
+             may simply still be arriving: a slow connection, or the older
+             path, which finishes well after the document does. Wait it
+             out for about half a minute before saying anything. */
+          waits++;
+          if (waits < MAX_WAITS && (document.readyState !== "complete" || legacyPending())) {
+            schedule(RETRY_MS);
+            return;
+          }
+          shown = true;
+
+          var old = tooOld();
+          var headline = old
+            ? "This browser is too old to run the job board"
+            : "The job board did not start on this device";
+          var advice = old
+            ? "The page loaded, but this browser cannot run the code it needs. Update the browser if the device allows it, or open the board on a newer phone, tablet or laptop."
+            : "The page loaded but nothing rendered. This is usually a connection that blocked part of the app, or a fault worth reporting. Send the details below and it can be fixed rather than guessed at.";
+
+          var box = document.createElement("div");
+          box.setAttribute("style", "max-width:38rem;margin:2.5rem auto;padding:1.25rem;border:1px solid #cbd5e1;border-radius:8px;background:#fff;font:15px/1.55 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#0f172a");
+          box.innerHTML =
+            '<div style="font-weight:600;font-size:17px;margin-bottom:.35rem">' + esc(headline) + "</div>" +
+            '<p style="margin:0 0 .9rem;color:#475569">' + esc(advice) + "</p>" +
+            '<div style="margin-bottom:.9rem">' +
+            '<button id="dhh-reload" style="font:inherit;padding:.45rem .9rem;margin-right:.5rem;border:1px solid #94a3b8;border-radius:6px;background:#f8fafc;color:#0f172a">Reload</button>' +
+            '<button id="dhh-copy" style="font:inherit;padding:.45rem .9rem;border:1px solid #94a3b8;border-radius:6px;background:#f8fafc;color:#0f172a">Copy details</button>' +
+            "</div>" +
+            '<pre id="dhh-details" style="white-space:pre-wrap;word-break:break-word;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:#f1f5f9;color:#0f172a;padding:.7rem;border-radius:6px;margin:0">' +
+            esc(details()) + "</pre>";
+
+          var host = document.getElementById("root") || document.body;
+          host.appendChild(box);
+
+          var reload = document.getElementById("dhh-reload");
+          if (reload) reload.onclick = function () { location.reload(); };
+
+          var copy = document.getElementById("dhh-copy");
+          if (copy) copy.onclick = function () {
+            var text = details();
+            var done = function () { copy.innerHTML = "Copied"; };
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              navigator.clipboard.writeText(text).then(done, select);
+            } else {
+              select();
+            }
+            function select() {
+              /* No Clipboard API, or it refused. Select the text so it can
+                 be copied by hand, which is all an old browser can do. */
+              try {
+                var pre = document.getElementById("dhh-details");
+                var range = document.createRange();
+                range.selectNodeContents(pre);
+                var sel = window.getSelection();
+                sel.removeAllRanges();
+                sel.addRange(range);
+                if (document.execCommand && document.execCommand("copy")) done();
+                else copy.innerHTML = "Select and copy";
+              } catch (err) { copy.innerHTML = "Select and copy"; }
+            }
+          };
+        }
+
+        schedule(BOOT_TIMEOUT_MS);
+      })();
+    </script>
+
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

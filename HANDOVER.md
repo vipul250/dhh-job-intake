@@ -66,6 +66,42 @@ was denied. The corrected policy gives `anon` SELECT on exactly
 anybody. **Do not apply it while sign-in is off** — with no session, every
 write would fail.
 
+### A2. "It doesn't work on my device" — answered blind, and still open
+
+He reported the app failing on **one device**, working on the others, and
+gave nothing further: no device, no browser, no symptom. He was asked
+directly (device? blank screen, stuck, error, or broken layout?) and
+answered neither question. So this was fixed on the balance of
+probabilities rather than on evidence, and **the original report has never
+been confirmed fixed.**
+
+What was actually wrong, and is now not:
+
+- **The build supported nothing older than late 2020.** Vite's default
+  target is Chrome 87 / Safari 14 / Firefox 78 / Edge 88, and the bundle
+  used `??` in 22 places, so every browser below that line parsed nothing,
+  rendered nothing, and reported nothing — a white page with the tab title
+  on it. The build now also emits an ES2015 copy with polyfills, taking the
+  floor down to **iOS 10.3 / Chrome 49 / Safari 10.1 / Firefox 52 / Edge
+  17**. Old browsers take that copy; current ones never download it.
+- **A failure was invisible from the outside.** There is now a boot guard
+  in `index.html` — inline, ES5, so it survives the engine it describes —
+  that puts a panel on the screen naming the browser, what its engine
+  supports, and any error or failed download, with a Copy details button.
+  An error boundary in `main.jsx` does the same for a crash after the first
+  render. **A screenshot is now a diagnosis.**
+- **The copy buttons lied.** `navigator.clipboard?.writeText(text)` followed
+  by an unconditional "Copied" toast: on any device without the Clipboard
+  API — iOS before 13.4, in-app browsers, plain http — the copy silently
+  evaporated and the toast still claimed success. That is the technician's
+  job list. `src/lib/clipboard.js` now falls back to `execCommand` and says
+  so when even that fails.
+
+**What to do when he next mentions it:** ask for a screenshot of the whole
+screen, and read `docs/DEVICES.md` — it maps each panel to what to tell
+him. If the screenshot shows the board rendering but wrong, this work is
+not the answer and it is an ordinary bug.
+
 ### B. Job cards paste in, and the idle list is fixed
 
 **Projects → Paste the job cards in.** The workbook's *Job Cards (Projects)*
@@ -694,8 +730,16 @@ src/lib/
   dayLock.js            112  open / posted / started / past, and clearPost
   faultFamily.js         75  trade families and return reasons
   supabase.js            62  client, or a failure-safe stub if unconfigured
+  clipboard.js          119  copy that works without the Clipboard API, and
+                             admits it when it cannot copy at all
 docs/  WORKFLOW.md 895 · METRICS.md 345 · ACCESS.md 170 · SHEET-PASTE.md 125
-test/  README.md, harness/, suites/  (39 browser suites)
+       DEVICES.md 99  browser floors, the boot guard, what each failure
+                      panel means and what to tell the person holding it
+index.html                   the boot guard: inline ES5, reports a page that
+                             never started. Do not modernise it — see §0.A2
+vite.config.js               two builds, modern and ES2015. The floors live
+                             here
+test/  README.md, harness/, suites/  (40 browser suites)
        suites/projcards.mjs is the exception: plain `node`, no browser,
        because what it checks is arithmetic and refusal, not rendering.
        `node test/suites/projcards.mjs` — 10 checks, ~1s.
