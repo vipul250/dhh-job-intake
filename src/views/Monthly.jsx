@@ -89,6 +89,10 @@ export default function Monthly({ knownDates }) {
     return (
       <div className="text-slate-400 text-sm py-12 text-center">
         No completed jobs on record{active ? ` for ${MONTH_LABEL(active)}` : ""}.
+        <div className="text-xs mt-1">
+          This report counts work that was closed out on the board. A job that was
+          scheduled and never given an outcome does not appear here.
+        </div>
       </div>
     );
   }

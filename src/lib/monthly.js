@@ -34,8 +34,26 @@ export function jobMonth(job) {
   return String(job.scheduledDate || job._date || "").slice(0, 7);
 }
 
+/* ---------------------------------------------------------------------- *
+ * Which months this report can actually show.
+ *
+ * Only months with COMPLETED work, because that is the only thing
+ * monthlyReport counts. Listing every month that merely has jobs on it put
+ * the view in a dead end on its first real day: 11 September, two jobs
+ * scheduled ahead into October, so the newest month present was October,
+ * the default landed there, and the page read "No completed jobs on record
+ * for October 2026" — with the month picker inside the empty branch and
+ * therefore not rendered at all. Nothing to click, no way back.
+ *
+ * The picker and the report now agree on what a month is.
+ * ---------------------------------------------------------------------- */
 export function monthsPresent(jobs) {
-  return [...new Set(jobs.map(jobMonth).filter(Boolean))].sort().reverse();
+  return [...new Set(
+    (jobs || [])
+      .filter((j) => RESOLVED_STATES.includes(j.state))
+      .map(jobMonth)
+      .filter(Boolean)
+  )].sort().reverse();
 }
 
 /* ---------------------------------------------------------------------- *

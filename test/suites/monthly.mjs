@@ -75,6 +75,15 @@ const job = (over) => ({
 {
   const jobs = [job({ scheduledDate: "2026-08-31" }), job({ scheduledDate: "2026-09-01" })];
   assert.deepEqual(monthsPresent(jobs), ["2026-09", "2026-08"]);
+  /* A month holding only work that was never closed out is NOT offered.
+     It used to be, and on 11 September that put the view in a dead end:
+     two jobs scheduled ahead into October made October the newest month
+     present, the default landed there, and the empty branch does not render
+     the month picker — so there was nothing to click. */
+  assert.deepEqual(
+    monthsPresent([...jobs, { state: "scheduled", scheduledDate: "2026-10-02" }]),
+    ["2026-09", "2026-08"],
+    "a month with nothing closed out must not be offered");
   assert.equal(monthlyReport(jobs, "2026-09").jobs, 1);
   assert.equal(monthlyReport(jobs, null).jobs, 2, "no month means every month");
 }
