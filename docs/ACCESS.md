@@ -206,17 +206,60 @@ sign-in screen at all** while every other request is denied. Open and
 broken at the same time. The version below gives the anonymous role read
 access to that one key and nothing else.
 
-Run this once the department has been signing in normally for a day:
+**And the version above was ALSO wrong, in a quieter way.** It added
+policies without removing the ones already there.
+
+`supabase/schema.sql` created "Allow public read", "Allow public insert" and
+"Allow public update" with **no `to` clause**, which in Postgres means
+`to public` — and `public` includes `anon`. Postgres combines permissive
+policies with **OR**, not AND. So adding a policy scoped `to authenticated`
+GRANTS access to signed-in users; it does not TAKE anything away from
+anonymous ones. Running it would have left `anon` with full read and write
+exactly as before — and the check query below would have listed the shiny
+new policies, so it would have looked done.
+
+That is the worse failure of the two. The first version broke the app
+loudly. This one would have left it wide open quietly, with a document
+saying it was closed.
+
+**First, see what is actually there.** The live database is 55 days old and
+may not match `schema.sql`:
 
 ```sql
-alter table kv_store enable row level security;
+select policyname, roles, cmd from pg_policies where tablename = 'kv_store';
+```
 
--- Exactly one key, read-only, to the anonymous role. This is what lets the
--- app know a login is required before there is anybody to authenticate.
+Anything with `roles = {public}` is what has to go. Then run this — one
+transaction, so a failure half way leaves nothing half-applied:
+
+```sql
+begin;
+
+-- 1. The gate goes up FIRST. If row level security lands while the flag
+--    still says false, the app reads the flag (anon is allowed that one
+--    key), decides no login is needed, renders the board, and every other
+--    read is denied: an empty app with no way to sign in.
+insert into kv_store (key, value, updated_at)
+values ('auth-required', 'true', now())
+on conflict (key) do update set value = 'true', updated_at = now();
+
+-- 2. THE STEP THAT WAS MISSING. Permissive policies are OR'd, so while
+--    these exist the ones below grant extra access and remove none.
+drop policy if exists "Allow public read"   on kv_store;
+drop policy if exists "Allow public insert" on kv_store;
+drop policy if exists "Allow public update" on kv_store;
+
+-- 3. Anon keeps exactly one key, read-only: the flag that tells the app to
+--    show the sign-in screen. Nothing else.
+drop policy if exists "anon reads the login flag" on kv_store;
 create policy "anon reads the login flag" on kv_store
   for select to anon using (key = 'auth-required');
 
--- Everything else needs a session.
+-- 4. Everything else needs a session.
+drop policy if exists "signed-in reads"   on kv_store;
+drop policy if exists "signed-in inserts" on kv_store;
+drop policy if exists "signed-in updates" on kv_store;
+
 create policy "signed-in reads" on kv_store
   for select to authenticated using (true);
 
@@ -225,14 +268,63 @@ create policy "signed-in inserts" on kv_store
 
 create policy "signed-in updates" on kv_store
   for update to authenticated using (true) with check (true);
+
+-- No delete policy, deliberately. With row level security on and no policy
+-- for it, deletes are refused outright — which is the rule the whole app is
+-- built on. Do not "fix" this later by adding one.
+
+alter table kv_store enable row level security;
+
+commit;
 ```
 
-Check it landed:
+Check it landed — and check the right thing:
 
 ```sql
-select policyname, roles, cmd, qual
-from pg_policies where tablename = 'kv_store';
+select policyname, roles, cmd, qual, with_check
+from pg_policies where tablename = 'kv_store' order by policyname;
 ```
+
+**Four rows, and not one of them with `roles = {public}`.** If `{public}`
+appears anywhere, the drops did not take and the database is still open
+whatever else the list says.
+
+### The escape hatch, before you start
+
+You will be locking yourself out along with everybody else if sign-in email
+does not arrive — see the SMTP warning above. The way back is the SQL editor,
+which needs no app and no email:
+
+```sql
+update kv_store set value = 'false' where key = 'auth-required';
+drop policy if exists "anon reads the login flag" on kv_store;
+create policy "anon reads everything" on kv_store for select to anon using (true);
+create policy "anon writes everything" on kv_store for insert to anon with check (true);
+create policy "anon updates everything" on kv_store for update to anon using (true) with check (true);
+```
+
+Know where that is before you run the migration, not after.
+
+### One more thing the policies do not cover
+
+`authenticated` means **any** account on the Supabase project, not any
+account you approved. If sign-ups are open, somebody can register
+themselves and land in the `authenticated` role with full read and write.
+Turn sign-ups off in Supabase (Authentication → Sign In / Providers →
+disable new sign-ups) and create the handful of accounts yourself, or the
+gate has a side door.
+
+### What this does and does not fix
+
+It **does** neutralise the anon key that is sitting in every browser that
+has ever loaded the app. After this, that key reaches exactly one row —
+`auth-required` — so there is no need to rotate the JWT secret.
+
+It does **not** touch `api/sync-sheet.js`, which authenticates with the same
+anon key server-side and will stop working. That sync is switched off (see
+`docs/SHEET-SYNC.md`), so nothing breaks today; if it is ever turned back
+on it needs `SUPABASE_SERVICE_ROLE_KEY`, which bypasses row level security
+and must never reach the browser bundle.
 
 Three things to know before you run it:
 

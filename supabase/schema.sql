@@ -8,6 +8,14 @@ create table if not exists kv_store (
 
 alter table kv_store enable row level security;
 
+-- WARNING, and read this before copying these three policies anywhere.
+--
+-- They are written with no `to` clause, which in Postgres means `to public`
+-- — and `public` includes `anon`. Postgres also combines permissive
+-- policies with OR. So these cannot be neutralised by ADDING a stricter
+-- policy later: they have to be DROPPED. docs/ACCESS.md has the migration
+-- that does it, and the drop statements are the part that matters.
+--
 -- These three policies make kv_store fully readable AND writable by
 -- anyone holding your Supabase anon key. That key ships inside your
 -- deployed app's JS bundle, so in practice this means: anyone with the
