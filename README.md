@@ -121,8 +121,14 @@ access to build from it. He just needs the final Vercel URL.)
      (this is a separate, billed-per-use API key — not your claude.ai login,
      and not free. Skip this one if you don't need the AI-import tab; the
      rest of the app works fine without it, that tab just won't parse.)
-4. Deploy. You get a URL like `dhh-job-intake.vercel.app` — send that to
-   anyone, including your new admin. That's it, no account needed on their end.
+4. Deploy. You get a URL like `your-project-name.vercel.app`.
+
+   **That URL is the only access control there is.** The app ships with no
+   sign-in, so whoever holds the link has full read and write over the whole
+   schedule — and because the Supabase anon key travels in the browser
+   bundle, anyone who has loaded the page once keeps database access even
+   after the link changes. Give it out accordingly, keep it out of this
+   repository, and read `docs/ACCESS.md` before the list of people grows.
 
 ### Local development (optional)
 

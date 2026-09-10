@@ -183,8 +183,26 @@ seriously, it has been right every time.
 The department: ~16 field technicians and 4 office staff, servicing ~181
 buildings of short-let apartments and villas across Dubai and Fujairah.
 
-**Live app:** https://dhh-job-intake.vercel.app
-**Repo:** `vipul250/dhh-job-intake` · work on `claude/dhh-intake-metrics-dashboard-dgyrrs`, merge to `main` to deploy
+**Live app:** not written down here, deliberately — see below.
+**Repo:** `vipul250/dhh-job-intake` (PUBLIC) · work on `main`, push to deploy
+
+> ### Do not commit the app's URL
+>
+> This repository is public, and the app has no sign-in: `authRequired` is
+> false, so anyone who loads the URL is straight in with full read and write.
+> **The URL is the only thing standing between the schedule and the
+> internet.** It was published in this file until 10 September, which is
+> why the project was renamed.
+>
+> Ask Vipul for the address. Do not paste it into this file, the README, an
+> issue, or a commit message — git history is public too and cannot be
+> unpublished.
+>
+> The real fix is not secrecy. It is one of:
+> deploy the row-level security in `docs/ACCESS.md` so the browser's anon
+> key stops granting the whole database; turn on the sign-in gate that is
+> already built; or set Vercel Authentication to `all` so every URL needs
+> an account. Until one of those is done, treat the address as a password.
 **Stack:** React 18 + Vite + Tailwind → Vercel · Supabase Postgres, one table `kv_store(key, value, updated_at)`
 
 ---
