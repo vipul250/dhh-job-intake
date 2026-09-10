@@ -93,6 +93,40 @@ const clock = (ts) => new Date(ts).toLocaleTimeString([], { hour: "2-digit", min
  * belongs to the person who actually made it. */
 const ME_TTL_MS = 9 * 60 * 60 * 1000;
 
+/* ---------------------------------------------------------------------- *
+ * Hiding the rollover prompt, and why it has to stick.
+ *
+ * "Not now" only ever called setRollover(null), which lasts until the next
+ * reload or date change — so the prompt came back every time, with a wall
+ * of text and a "Bring all 47" button at the top of the board. That is not
+ * a warning any more, it is noise, and noise is what gets ignored.
+ *
+ * It is per DAY rather than global on purpose. The count is the honest
+ * measure of how much work never got closed out, and it is the one number
+ * worth watching while outcomes are being caught up. Hiding it for good
+ * would hide the problem; hiding today's, once, is just tidying.
+ * ---------------------------------------------------------------------- */
+const ROLLOVER_HIDDEN_KEY = "dhh-rollover-hidden";
+
+function rolloverHidden(date) {
+  try {
+    return JSON.parse(localStorage.getItem(ROLLOVER_HIDDEN_KEY) || "{}")[date] === true;
+  } catch {
+    return false;
+  }
+}
+
+function hideRollover(date) {
+  try {
+    const m = JSON.parse(localStorage.getItem(ROLLOVER_HIDDEN_KEY) || "{}");
+    m[date] = true;
+    localStorage.setItem(ROLLOVER_HIDDEN_KEY, JSON.stringify(m));
+  } catch {
+    /* A private window or blocked site data. The prompt simply comes back,
+       which is the right way for this to fail. */
+  }
+}
+
 function useMe() {
   const [me, setMe] = useState(() => {
     try {
@@ -246,6 +280,7 @@ export default function LiveBoard({
         const open = liveJobs(migrateDay(results[i].rows, d)).filter(isOpen);
         if (open.length) { stranded.push(...open); oldest = d; }
       });
+      if (rolloverHidden(date)) { setRollover(null); return; }
       setRollover(stranded.length ? { date: oldest, jobs: stranded, days } : null);
     } catch {
       setRollover(null);
@@ -1286,6 +1321,32 @@ function TopBar({ me, onChangeMe, selectedDate, setSelectedDate, counts, busy, l
 
 function RolloverBanner({ rollover, today, onMoveAll, onDismiss, onOpenDay }) {
   const [reason, setReason] = useState("out-of-time");
+  const [open, setOpen] = useState(false);
+  const n = rollover.jobs.length;
+
+  /* One line until asked. The number is the point; the wall of text and the
+     bulk move behind it are only wanted by somebody who has decided to act
+     on it right now. */
+  if (!open) {
+    return (
+      <div className="rounded-lg border border-slate-200 bg-white px-3 py-2
+                      flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+        <span className="text-slate-700">
+          <b className="text-slate-900">{n}</b> job{n === 1 ? "" : "s"} from before {today}{" "}
+          {n === 1 ? "was" : "were"} never closed out
+        </span>
+        <button onClick={() => setOpen(true)} className="text-blue-700 underline">
+          what to do about them
+        </button>
+        <button onClick={() => { hideRollover(today); onDismiss(); }}
+                title="Hides it for this day only. The count is how much work never got closed out, so it comes back on other days."
+                className="ml-auto text-slate-400 hover:text-slate-700">
+          hide
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="rounded-lg border border-amber-300 bg-amber-50 p-3">
       <div className="flex items-start gap-2">
@@ -1323,8 +1384,12 @@ function RolloverBanner({ rollover, today, onMoveAll, onDismiss, onOpenDay }) {
                     className="text-xs border border-amber-400 rounded-md px-3 py-1.5 bg-white">
               Open {rollover.date} instead
             </button>
-            <button onClick={onDismiss} className="text-xs text-amber-700 underline">
+            <button onClick={() => setOpen(false)} className="text-xs text-amber-700 underline">
               Not now
+            </button>
+            <button onClick={() => { hideRollover(today); onDismiss(); }}
+                    className="text-xs text-amber-700 underline">
+              Hide for {today}
             </button>
           </div>
         </div>
