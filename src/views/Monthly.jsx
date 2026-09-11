@@ -173,7 +173,13 @@ export default function Monthly({ knownDates, propertyMaster }) {
         <div className="flex flex-wrap items-center gap-3">
           {picker}
           <span className="text-sm text-slate-600">
-            {r.jobs} jobs · {r.major} major · {r.minor} minor · {r.technicians} technicians
+            {r.distinctJobs} job{r.distinctJobs === 1 ? "" : "s"}
+            {r.jobs !== r.distinctJobs && (
+              <span title="A job with two technicians on it counts once for each of them. The first number is pieces of work; this one is how many times somebody was sent.">
+                {" · "}{r.jobs} assignments
+              </span>
+            )}
+            {" · "}{r.major} major · {r.minor} minor · {r.technicians} technicians
           </span>
         </div>
         <button

@@ -38,6 +38,21 @@ const job = (over) => ({
   const r = monthlyReport([job({ team: "Rajesh + Naresh" })], "2026-09");
   assert.equal(r.technicians, 2, "a two-man job must count for both men");
   assert.deepEqual(r.byTech.map((t) => t.jobs), [1, 1]);
+  /* But it is ONE piece of work, and the header must not call it two. */
+  assert.equal(r.jobs, 2, "two assignments");
+  assert.equal(r.distinctJobs, 1, "one job");
+}
+
+/* The two counts agree when nobody is paired, and diverge when they are. */
+{
+  const solo = monthlyReport([job({ id: "a" }), job({ id: "b" })], "2026-09");
+  assert.equal(solo.jobs, solo.distinctJobs, "no pairing, no divergence");
+
+  const mixed = monthlyReport([
+    job({ id: "a" }), job({ id: "b", team: "Rajesh + Naresh" }),
+  ], "2026-09");
+  assert.equal(mixed.distinctJobs, 2, "two pieces of work");
+  assert.equal(mixed.jobs, 3, "three assignments — Rajesh twice, Naresh once");
 }
 
 /* Trade decides size, not duration: a 10-minute leak is still major and a

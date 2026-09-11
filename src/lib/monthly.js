@@ -206,8 +206,22 @@ export function monthlyReport(jobs, period) {
 
   const byTrade = tradesOf(rows);
 
+  /* ------------------------------------------------------------------ *
+   * Two counts, because they answer different questions.
+   *
+   * `jobs` is ASSIGNMENTS: a two-man job counts once for each man, which is
+   * right for "how many did he do" — he went, and he spent the hour.
+   *
+   * `distinctJobs` is pieces of work. 53 of the 474 real rows carry two or
+   * more technicians, so the assignment count runs 16% above the work
+   * count, and a header saying "552 jobs" of a 474-job month is wrong in
+   * the direction that flatters. Both are reported; the view shows the
+   * difference whenever there is one.
+   * ------------------------------------------------------------------ */
+  const distinctJobs = new Set(done.map((j) => j.id || j)).size;
+
   return {
     period, month: typeof period === "string" ? period : null,
-    ...summarise(rows), technicians: byTech.length, byTech, byTrade,
+    ...summarise(rows), distinctJobs, technicians: byTech.length, byTech, byTrade,
   };
 }

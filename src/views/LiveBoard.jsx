@@ -40,7 +40,7 @@ import {
 } from "../lib/jobStore.js";
 import {
   splitCrew, parseShiftMinutes, formatMinutes, canonPriority, squash,
-  canonProperty, displayProperty, canonKey, parseDurationMinutes,
+  canonProperty, displayProperty, canonKey, parseDurationMinutes, canonTech,
 } from "../lib/normalize.js";
 import { planDay, fmtClock, suggestTechnician } from "../lib/schedule.js";
 
@@ -857,16 +857,43 @@ export default function LiveBoard({
 
   /* ---------------------------- grouping ------------------------------ */
 
+  /* -------------------------------------------------------------------- *
+   * One group per PERSON, not per team string.
+   *
+   * It used to key on the exact `team` text, so a pairing became its own
+   * group — a phantom technician. On 26 August the board showed eleven
+   * groups for seven men:
+   *
+   *     Bright 5 · Resty 5 · Abdul Riyaz 5 · Anthony 4 · Yousoufu 4
+   *     Vitalis 3 · Jabbar 3
+   *     "Vitalis and Yousoufu" 1 · "Jabbar and anthony" 1
+   *     "Bright and riyaz" 1 · "Yousoufu and Vitalis" 1
+   *
+   * Three faults in that. A man's day was SPLIT across his own group and
+   * every pairing he was in, so Vitalis showed 3 jobs when he had 5 and his
+   * load bar was computed on the 3. Word order made "Vitalis and Yousoufu"
+   * and "Yousoufu and Vitalis" two different groups for the same pair. And
+   * the raw string ignored TECH_ALIASES, so "riyaz" was a fourth person the
+   * metrics already knew was Abdul Riyaz.
+   *
+   * Now every job is filed under each of its crew, canonicalised. A paired
+   * job appears in both men's groups, which is correct: both are there and
+   * both spend the hour, and the job card says "2/2 people" so nobody
+   * mistakes it for two pieces of work.
+   * -------------------------------------------------------------------- */
   const groups = useMemo(() => {
     const m = new Map();
     jobs.forEach((j) => {
-      const k = squash(j.team) || "Unassigned";
-      if (!m.has(k)) m.set(k, []);
-      m.get(k).push(j);
+      const crew = splitCrew(j.team).map(canonTech).filter(Boolean);
+      const keys = crew.length ? [...new Set(crew)] : ["Unassigned"];
+      keys.forEach((k) => {
+        if (!m.has(k)) m.set(k, []);
+        m.get(k).push(j);
+      });
     });
     return Array.from(m.entries())
       .map(([team, list]) => {
-        const members = splitCrew(team);
+        const members = team === "Unassigned" ? [] : [team];
         const shiftMin = parseShiftMinutes(list.find((j) => j.shift)?.shift) || 540;
         const mins = list.reduce((s, j) => s + (jobMinutes(j) || 0), 0);
         const buildings = new Set(list.map((j) => canonProperty(j.property)).filter(Boolean));
@@ -875,6 +902,8 @@ export default function LiveBoard({
         const noEstimate = list.filter((j) => jobMinutes(j) == null).length;
         return {
           team, list, members, shiftMin, committed, travel,
+          /* Jobs on this man's list that somebody else is also on. */
+          sharedJobs: list.filter((j) => splitCrew(j.team).length > 1).length,
           loadPct: Math.round((committed / shiftMin) * 100),
           buildings: buildings.size, noEstimate,
           open: list.filter(isOpen).length,
@@ -1666,10 +1695,10 @@ function TeamGroup({ group, me, allJobs, selectedDate, onAdvance, onEdit, onOpen
           {open ? <ChevronDown className="w-4 h-4 text-slate-400" /> : <ChevronRight className="w-4 h-4 text-slate-400" />}
           <Users className="w-3.5 h-3.5 text-slate-400" />
           <span className="text-sm font-medium text-slate-900 truncate">{g.team}</span>
-          {g.members.length > 1 && (
-            <span title={`${g.members.length} people who work together: ${g.members.join(", ")}. The load bar is elapsed time on site — they are all there for it.`}
-                  className="text-[10px] rounded px-1.5 py-0.5 bg-violet-50 text-violet-700 border border-violet-200 shrink-0">
-              {g.members.length} people
+          {g.sharedJobs > 0 && (
+            <span title={`${g.sharedJobs} of these are crew jobs he shares with somebody else. They appear in that person's list too, because both of them are there for the hour.`}
+                  className="text-[10px] rounded px-1.5 py-0.5 bg-violet-100 text-violet-800">
+              {g.sharedJobs} shared
             </span>
           )}
           <span className="text-xs text-slate-400">{g.list.length} jobs</span>
