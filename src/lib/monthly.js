@@ -1,5 +1,5 @@
 /* ---------------------------------------------------------------------- *
- * monthly.js — the one report: who did how much work last month.
+ * monthly.js — the one report: who did how much work, over a chosen span.
  *
  * Three numbers per technician, and nothing else:
  *
@@ -30,8 +30,70 @@ function median(nums) {
    `_date` is what the day-loaders stamp on a job as they read it out of
    storage; `scheduledDate` is what lives on the record itself. Read both,
    so the report works on either. */
+export function jobDate(job) {
+  return String(job.scheduledDate || job._date || "");
+}
+
 export function jobMonth(job) {
-  return String(job.scheduledDate || job._date || "").slice(0, 7);
+  return jobDate(job).slice(0, 7);
+}
+
+const shiftDays = (iso, n) => {
+  const d = new Date(`${iso}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return iso;
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+};
+
+/* Monday. The department's week starts with the Monday shift plan, not with
+   Sunday, and a week that splits the working week in half answers nothing. */
+export function weekStart(iso) {
+  const d = new Date(`${String(iso).slice(0, 10)}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return "";
+  return shiftDays(d.toISOString().slice(0, 10), -((d.getUTCDay() + 6) % 7));
+}
+
+/* ---------------------------------------------------------------------- *
+ * A period is either a date PREFIX or an explicit range.
+ *
+ * "2026-09" is a month and "2026-09-11" is a day, and both are just
+ * prefixes of the job's date — no arithmetic, and the old month-only calls
+ * keep working untouched. A week is the one grain that is nobody's prefix,
+ * so it passes { from, to }. Null means every month on record.
+ * ---------------------------------------------------------------------- */
+function inPeriod(job, period) {
+  if (!period) return true;
+  const d = jobDate(job);
+  if (!d) return false;
+  if (typeof period === "string") return d.startsWith(period);
+  return (!period.from || d >= period.from) && (!period.to || d <= period.to);
+}
+
+/** The period argument for a grain and the value a picker holds. */
+export function periodFor(grain, value) {
+  if (!value) return null;
+  if (grain === "week") return { from: value, to: shiftDays(value, 6) };
+  return value;
+}
+
+const MONTH_NAMES = ["", "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December"];
+const SHORT = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+const dayLabel = (iso) => {
+  const [y, m, d] = String(iso).split("-");
+  return `${Number(d)} ${SHORT[Number(m)]} ${y}`;
+};
+
+export function periodLabel(grain, value) {
+  if (!value) return "";
+  if (grain === "month") {
+    const [y, m] = value.split("-");
+    return `${MONTH_NAMES[Number(m)]} ${y}`;
+  }
+  if (grain === "day") return dayLabel(value);
+  return `${dayLabel(value)} – ${dayLabel(shiftDays(value, 6))}`;
 }
 
 /* ---------------------------------------------------------------------- *
@@ -47,13 +109,22 @@ export function jobMonth(job) {
  *
  * The picker and the report now agree on what a month is.
  * ---------------------------------------------------------------------- */
-export function monthsPresent(jobs) {
+export function periodsPresent(jobs, grain = "month") {
+  const key = grain === "month" ? (d) => d.slice(0, 7)
+    : grain === "week" ? weekStart
+    : (d) => d;
   return [...new Set(
     (jobs || [])
       .filter((j) => RESOLVED_STATES.includes(j.state))
-      .map(jobMonth)
+      .map(jobDate)
+      .filter(Boolean)
+      .map(key)
       .filter(Boolean)
   )].sort().reverse();
+}
+
+export function monthsPresent(jobs) {
+  return periodsPresent(jobs, "month");
 }
 
 /* ---------------------------------------------------------------------- *
@@ -71,9 +142,9 @@ export function monthsPresent(jobs) {
  * technicians are not entering arrive/leave at close-out — that is an
  * operational fix, not a reporting one.
  * -------------------------------------------------------------------- */
-export function monthlyReport(jobs, month) {
-  const done = jobs.filter(
-    (j) => RESOLVED_STATES.includes(j.state) && (!month || jobMonth(j) === month),
+export function monthlyReport(jobs, period) {
+  const done = (jobs || []).filter(
+    (j) => RESOLVED_STATES.includes(j.state) && inPeriod(j, period),
   );
 
   /* A two-man job counts for both men: splitCrew turns "Rajesh + Naresh"
@@ -106,9 +177,9 @@ export function monthlyReport(jobs, month) {
     };
   };
 
-  const groupBy = (keyFn) => {
+  const groupBy = (list, keyFn) => {
     const m = new Map();
-    rows.forEach((r) => {
+    list.forEach((r) => {
       const k = keyFn(r);
       if (!m.has(k)) m.set(k, []);
       m.get(k).push(r);
@@ -116,18 +187,27 @@ export function monthlyReport(jobs, month) {
     return m;
   };
 
-  const byTech = [...groupBy((r) => r.tech)]
-    .map(([tech, list]) => ({ tech, ...summarise(list) }))
-    .sort((a, b) => b.jobs - a.jobs);
-
-  const byTrade = [...groupBy((r) => r.family)]
-    .map(([family, list]) => ({
+  const tradesOf = (list) => [...groupBy(list, (r) => r.family)]
+    .map(([family, own]) => ({
       family,
       label: FAMILY_LABEL[family] || family,
-      size: list[0].size,
-      ...summarise(list),
+      size: own[0].size,
+      ...summarise(own),
     }))
     .sort((a, b) => b.jobs - a.jobs);
 
-  return { month, ...summarise(rows), technicians: byTech.length, byTech, byTrade };
+  /* Each technician carries their own trade split. "Jabbar did 28 jobs, 12
+     major and 16 minor — and 20 of them were plumbing" is one question, and
+     answering it from two separate tables means the reader does the join by
+     eye. The rows already know their family, so the cross-tab is free. */
+  const byTech = [...groupBy(rows, (r) => r.tech)]
+    .map(([tech, list]) => ({ tech, ...summarise(list), trades: tradesOf(list) }))
+    .sort((a, b) => b.jobs - a.jobs);
+
+  const byTrade = tradesOf(rows);
+
+  return {
+    period, month: typeof period === "string" ? period : null,
+    ...summarise(rows), technicians: byTech.length, byTech, byTrade,
+  };
 }

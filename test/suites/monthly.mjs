@@ -17,7 +17,9 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { monthlyReport, monthsPresent } from "../../src/lib/monthly.js";
+import {
+  monthlyReport, monthsPresent, periodsPresent, periodFor, periodLabel, weekStart,
+} from "../../src/lib/monthly.js";
 import { parseSheetPaste } from "../../src/lib/importSheet.js";
 import { matchCatalogue, seedCatalogue, applyCatalogue } from "../../src/lib/catalogue.js";
 import { faultFamily, jobSize } from "../../src/lib/faultFamily.js";
@@ -86,6 +88,82 @@ const job = (over) => ({
     "a month with nothing closed out must not be offered");
   assert.equal(monthlyReport(jobs, "2026-09").jobs, 1);
   assert.equal(monthlyReport(jobs, null).jobs, 2, "no month means every month");
+}
+
+/* -------------------- day, week and month -----------------------------
+ * He asked to read the same table per day and per week, not only per month.
+ * A day and a month are prefixes of the job's date so they cost nothing; a
+ * week is nobody's prefix and passes an explicit range.
+ * -------------------------------------------------------------------- */
+{
+  const week = [
+    job({ scheduledDate: "2026-09-07", team: "Rajesh" }),   // Monday
+    job({ scheduledDate: "2026-09-09", team: "Rajesh" }),   // Wednesday
+    job({ scheduledDate: "2026-09-13", team: "Rajesh" }),   // Sunday, same week
+    job({ scheduledDate: "2026-09-14", team: "Rajesh" }),   // Monday, NEXT week
+    job({ scheduledDate: "2026-08-31", team: "Rajesh" }),   // the week before
+  ];
+
+  assert.equal(weekStart("2026-09-09"), "2026-09-07", "the week starts on Monday");
+  assert.equal(weekStart("2026-09-13"), "2026-09-07", "Sunday belongs to the week it ends");
+  assert.equal(weekStart("2026-09-14"), "2026-09-14", "Monday starts its own week");
+
+  assert.equal(monthlyReport(week, periodFor("day", "2026-09-09")).jobs, 1, "one day");
+  assert.equal(monthlyReport(week, periodFor("week", "2026-09-07")).jobs, 3,
+    "Mon to Sun inclusive, and nothing from the Monday after");
+  assert.equal(monthlyReport(week, periodFor("month", "2026-09")).jobs, 4);
+  assert.equal(monthlyReport(week, null).jobs, 5, "no period means everything");
+
+  /* The pickers only ever offer spans that have completed work in them —
+     the same rule that stopped the month picker landing on an empty
+     October and rendering a dead end. */
+  assert.deepEqual(periodsPresent(week, "day"),
+    ["2026-09-14", "2026-09-13", "2026-09-09", "2026-09-07", "2026-08-31"]);
+  assert.deepEqual(periodsPresent(week, "week"),
+    ["2026-09-14", "2026-09-07", "2026-08-31"]);
+  assert.deepEqual(periodsPresent(week, "month"), ["2026-09", "2026-08"]);
+  assert.deepEqual(monthsPresent(week), periodsPresent(week, "month"),
+    "monthsPresent must stay the month case of the same rule");
+
+  assert.equal(periodLabel("month", "2026-09"), "September 2026");
+  assert.equal(periodLabel("day", "2026-09-07"), "7 Sep 2026");
+  assert.equal(periodLabel("week", "2026-09-07"), "7 Sep 2026 – 13 Sep 2026");
+}
+
+/* -------------------- who did what trade ------------------------------
+ * "Jabbar did 28 jobs, 12 major and 16 minor — and 20 of them were
+ * plumbing" was two tables and a join done by eye. Each technician now
+ * carries their own trade split.
+ * -------------------------------------------------------------------- */
+{
+  const r = monthlyReport([
+    job({ team: "Jabbar", description: "Leakage in the bathroom" }),
+    job({ team: "Jabbar", description: "Water heater replacement" }),
+    job({ team: "Jabbar", description: "AC is not cooling" }),
+    job({ team: "Jabbar", description: "Pool Cleaning" }),
+    job({ team: "Resty",  description: "Pool Cleaning" }),
+  ], "2026-09");
+
+  const jabbar = r.byTech.find((t) => t.tech === "Jabbar");
+  assert.equal(jabbar.jobs, 4);
+  /* The split must account for every one of his jobs and no more. */
+  assert.equal(jabbar.trades.reduce((n, x) => n + x.jobs, 0), jabbar.jobs,
+    "a technician's trade split must sum to their job count");
+  assert.equal(jabbar.trades[0].jobs, 2, "biggest trade first — two plumbing jobs");
+  assert.ok(/plumb/i.test(jabbar.trades[0].label));
+
+  const resty = r.byTech.find((t) => t.tech === "Resty");
+  assert.equal(resty.trades.length, 1, "one trade, not everybody's trades");
+  assert.equal(resty.trades[0].jobs, 1);
+
+  /* And the whole-report trade table still agrees with the sum of the
+     per-technician ones. */
+  const fromTech = {};
+  r.byTech.forEach((t) => t.trades.forEach((x) => {
+    fromTech[x.family] = (fromTech[x.family] || 0) + x.jobs;
+  }));
+  r.byTrade.forEach((x) => assert.equal(fromTech[x.family], x.jobs,
+    `byTrade and the per-technician split disagree on ${x.family}`));
 }
 
 /* ---------------------- 2. the real workbook -------------------------- *
