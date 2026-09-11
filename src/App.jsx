@@ -10,6 +10,7 @@ import Projects from "./views/Projects.jsx";
 import Roster from "./views/Roster.jsx";
 import Backlog from "./views/Backlog.jsx";
 import Monthly from "./views/Monthly.jsx";
+import Dashboard from "./views/Dashboard.jsx";
 import SignIn from "./views/SignIn.jsx";
 import { isAuthRequired, currentSession, onAuthChange, signOut } from "./lib/auth.js";
 import { mutateDay } from "./lib/jobStore.js";
@@ -526,6 +527,13 @@ export default function App() {
           />
         )}
         {activeTab === "monthly" && <Monthly knownDates={knownDates} />}
+        {activeTab === "dashboard" && (
+          <Dashboard
+            selectedDate={selectedDate}
+            knownDates={knownDates}
+            onOpenDate={(d) => { setSelectedDate(d); setActiveTab("live"); }}
+          />
+        )}
         {activeTab === "jobcards" && <Projects knownDates={knownDates} showToast={showToast} />}
       </main>
 
@@ -558,20 +566,23 @@ function Header({ selectedDate, setSelectedDate, knownDates, activeTab, setActiv
      yesterday, then read the numbers. */
   /* The Live Board is the day. Everything else is a lens on it or a
      reference table, so it leads and the rest follow. */
-  /* Five tabs, down from eight.
+  /* Six tabs, down from eight, and the Dashboard is back among them.
    *
-   * Dashboard and its 28-measure engine are gone from the repo, not hidden:
-   * views/Dashboard.jsx, lib/metrics.js and components/charts.jsx were
-   * deleted. The duration library moved to lib/learned.js and the two shift
-   * constants to lib/cost.js, which were their only remaining readers.
+   * It was deleted outright on 10 September — views/Dashboard.jsx,
+   * lib/metrics.js and components/charts.jsx, about 3,800 lines — on the
+   * grounds that it reported far more than anybody acted on. That was half
+   * right: too detailed, but some of it was the only place a real question
+   * got answered. It came back the same day, restored from git, so the
+   * pruning can happen a measure at a time with the thing in front of us
+   * rather than from memory.
    *
-   * Insights is still routed but unlisted — add { id: "insights" } back here
-   * to reach it. Fault Codes and Properties are the same: unlisted, because
-   * a fault code is no longer required to save a job and a property is typed
-   * rather than picked. */
-  const tabs = [
+   * Insights, Fault Codes and Properties are still routed but unlisted —
+   * add { id: "insights" }, { id: "faultcodes" } or { id: "properties" }
+   * back to this list to reach them.
+   */
     { id: "live", label: "Live Board", icon: Radio },
     { id: "monthly", label: "Monthly", icon: CalendarDays },
+    { id: "dashboard", label: "Dashboard", icon: TrendingUp },
     { id: "backlog", label: "Queue", icon: Inbox },
     { id: "jobcards", label: "Projects", icon: Briefcase },
     { id: "roster", label: "Roster", icon: Users },
