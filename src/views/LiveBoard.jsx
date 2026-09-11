@@ -6,7 +6,7 @@ import {
   Lock, Unlock, ClipboardPaste, ListChecks,
 } from "lucide-react";
 import {
-  newJob, moveJob, setState as setJobState, applyEdit, withEvent,
+  newJob, moveJob, setState as setJobState, applyEdit, withEvent, uid, makeEvent,
   isTombstone, liveJobs, tombstones, jobMinutes, isOpen, pushSeverity,
   needsGuestConfirm, pmsText, techSheetForDay, parseQuickAdd, splitQuickAddLines, findReturn,
   actualDuration, clockMinutes, nowClock, fmtMins, makeFollowUp, needsFollowUp, isResolved,
@@ -786,21 +786,53 @@ export default function LiveBoard({
     if (arrivedAt !== undefined) patch.arrivedAt = arrivedAt;
     if (leftAt !== undefined) patch.leftAt = leftAt;
 
-    let child = null;
+    /* A follow-up with no date is not an unbooked job, it is a queued one.
+       Nobody in this department can say on the evening of the tenth when a
+       contractor will come, and demanding a date produced invented ones —
+       or, more often, the job filed as Not done and forgotten. It goes to
+       the same queue the schedule is built from, carrying what it waits on
+       so it can be chased. */
+    let child = null, queued = null;
     if (followUp && needsFollowUp(outcome)) {
-      child = makeFollowUp(job, followUp.date, who, {
-        scope: followUp.scope,
-        materials: followUp.materials,
-        team: followUp.team,
-        estimatedTime: followUp.estimatedTime,
-      });
+      if (squash(followUp.waitingOn)) {
+        queued = {
+          id: uid(),
+          description: squash(followUp.scope) || squash(stillNeeded),
+          property: job.property,
+          unit: job.unit,
+          priority: job.priority,          // a contained P1 stays a P1
+          pmsStatus: "",
+          dueDate: "",
+          department: "",
+          occupancy: job.status || "",
+          reportedBy: who,
+          reportedOn: selectedDate,
+          reportedOnRaw: selectedDate,
+          pmsRef: job.pmsRef || "",
+          addedAt: Date.now(),
+          scheduledFor: "",
+          scheduledJobId: "",
+          waitingOn: squash(followUp.waitingOn),
+          followUpOf: { jobId: job.id, date: selectedDate, outcome },
+          events: [makeEvent("queued", who, { reason: squash(followUp.waitingOn) })],
+        };
+      } else {
+        child = makeFollowUp(job, followUp.date, who, {
+          scope: followUp.scope,
+          materials: followUp.materials,
+          team: followUp.team,
+          estimatedTime: followUp.estimatedTime,
+        });
+      }
     }
 
     const closed = setJobState(
       { ...job, actualMinutes: actualMinutes != null ? actualMinutes : job.actualMinutes,
         arrivedAt: arrivedAt !== undefined ? arrivedAt : job.arrivedAt,
         leftAt: leftAt !== undefined ? leftAt : job.leftAt,
-        followUpJobId: child ? child.id : job.followUpJobId },
+        followUpJobId: child ? child.id : job.followUpJobId,
+        waitingOn: queued ? queued.waitingOn : job.waitingOn,
+        queuedItemId: queued ? queued.id : job.queuedItemId },
       outcome, who, patch
     );
 
@@ -812,13 +844,30 @@ export default function LiveBoard({
     if (child && followUp.date !== selectedDate) {
       await mutateDay(followUp.date, (cur) => [...cur, child]);
     }
+    if (queued) await addToQueue(queued);
     setCloseOutFor(null);
     showToast(
-      child
-        ? `Closed as ${outcome.replace("_", " ")} — follow-up booked for ${followUp.date}.`
+      child ? `Closed as ${outcome.replace("_", " ")} — follow-up booked for ${followUp.date}.`
+        : queued ? `Closed. The rest is in the queue, waiting on ${queued.waitingOn.toLowerCase()}.`
         : `Closed as ${outcome.replace("_", " ")}.`,
       "ok"
     );
+  }
+
+  /* Read-modify-write on one small key that only this path and the Backlog
+     screen touch. Two people closing out at the same second is possible
+     and would lose one item; the queue is not the live board and this is
+     not worth a version check for it.
+     ponytail: plain RMW, use the optimistic path if two desks ever queue
+     at once. */
+  async function addToQueue(item) {
+    try {
+      const raw = await storageGet("backlog");
+      const cur = raw ? JSON.parse(raw) : [];
+      await storageSet("backlog", JSON.stringify([...(Array.isArray(cur) ? cur : []), item]));
+    } catch (e) {
+      showToast(`Closed, but the queue could not be written: ${e.message || e}`, "warn");
+    }
   }
 
   /* Anything that came in after the schedule was posted. Logged against
@@ -3006,6 +3055,13 @@ function CloseOutDialog({ job, selectedDate, onCancel, onConfirm }) {
   const [fuDate, setFuDate] = useState(addDays(selectedDate, 1));
   const [fuTeam, setFuTeam] = useState(job.team || "");
   const [fuScope, setFuScope] = useState("");
+  /* "book" is a date the coordinator can actually commit to. "waiting" is
+     the honest answer when he cannot: a contractor who has not confirmed,
+     a quote nobody has approved, a part with no delivery date. Before this
+     the dialog demanded a date he did not have, and the department's only
+     way out was to invent one or to file the job as Not done. */
+  const [fuMode, setFuMode] = useState("book");
+  const [waitingOn, setWaitingOn] = useState("");
 
   /* One row, several jobs. The coordinator writes what the guest reported
      and guests report in lists, so the parts are read out of the text they
@@ -3064,7 +3120,9 @@ function CloseOutDialog({ job, selectedDate, onCancel, onConfirm }) {
   }
 
   const requiresFollowUp = needsFollowUp(outcome);
-  const canConfirm = outcome && (!requiresFollowUp || (squash(stillNeeded) && fuDate));
+  const waiting = requiresFollowUp && fuMode === "waiting";
+  const canConfirm = outcome && (!requiresFollowUp ||
+    (squash(stillNeeded) && (waiting ? !!squash(waitingOn) : !!fuDate)));
 
   return (
     <Modal title={`Close out — ${job.property} ${job.unit}`} onCancel={onCancel} wide>
@@ -3183,44 +3241,82 @@ function CloseOutDialog({ job, selectedDate, onCancel, onConfirm }) {
       {requiresFollowUp && (
         <div className="mt-3 rounded-md border border-amber-300 bg-amber-50 p-2.5">
           <h4 className="text-xs font-medium text-amber-900">
-            This is not finished — book the visit that finishes it
+            This is not finished — say what happens to the rest of it
           </h4>
           <p className="text-[11px] text-amber-800 mt-0.5 mb-2">
-            A closed valve is a stopped leak, not a repaired one. The follow-up is created now and
-            linked to this job, so it cannot be lost in a comment thread.
+            A closed valve is a stopped leak, not a repaired one. Either way the remaining work is
+            created now and linked to this job, so it cannot be lost in a comment thread.
             {isP1 && " This is a P1, so it stays a P1 until the work is actually done."}
           </p>
+
+          <div className="flex flex-wrap gap-1.5 mb-2">
+            {[["book", "Book the return visit"], ["waiting", "Waiting on somebody else — no date yet"]].map(([id, label]) => (
+              <button key={id} onClick={() => setFuMode(id)}
+                      className={`text-[11px] rounded-md px-2 py-1 border ${
+                        fuMode === id
+                          ? "bg-amber-900 text-white border-amber-900"
+                          : "bg-white border-amber-300 hover:bg-amber-100"}`}>
+                {label}
+              </button>
+            ))}
+          </div>
           <label className="block text-[11px] text-amber-900">
             What is still needed
             <input value={stillNeeded} onChange={(e) => setStillNeeded(e.target.value)}
                    placeholder="e.g. new water heater, paint for the ceiling"
                    className="mt-0.5 w-full border border-amber-300 rounded-md px-2 py-1.5 text-sm bg-white" />
           </label>
-          <div className="grid sm:grid-cols-3 gap-2 mt-2">
-            <label className="block text-[11px] text-amber-900">
-              Come back on
-              <input type="date" value={fuDate} onChange={(e) => setFuDate(e.target.value)}
-                     className="mt-0.5 w-full border border-amber-300 rounded-md px-2 py-1.5 text-sm bg-white" />
-            </label>
-            <label className="block text-[11px] text-amber-900">
-              Technician
-              <input value={fuTeam} onChange={(e) => setFuTeam(e.target.value)}
-                     placeholder="leave blank to decide later"
-                     className="mt-0.5 w-full border border-amber-300 rounded-md px-2 py-1.5 text-sm bg-white" />
-            </label>
-            <label className="block text-[11px] text-amber-900">
-              Scope of the return visit
-              <input value={fuScope} onChange={(e) => setFuScope(e.target.value)}
-                     placeholder="defaults to what is still needed"
-                     className="mt-0.5 w-full border border-amber-300 rounded-md px-2 py-1.5 text-sm bg-white" />
-            </label>
-          </div>
-          <div className="flex gap-1.5 mt-1.5">
-            {[["Today", selectedDate], ["Tomorrow", addDays(selectedDate, 1)], ["+3 days", addDays(selectedDate, 3)]].map(([l, d]) => (
-              <button key={l} onClick={() => setFuDate(d)}
-                      className="text-[11px] border border-amber-300 rounded px-2 py-0.5 bg-white hover:bg-amber-100">{l}</button>
-            ))}
-          </div>
+          {waiting ? (
+            <div className="mt-2">
+              <div className="text-[11px] text-amber-900">What is it waiting on?</div>
+              <div className="flex flex-wrap gap-1.5 mt-1">
+                {["A contractor", "A quotation", "A part on order", "Building permission", "The owner's approval"].map((x) => (
+                  <button key={x} onClick={() => setWaitingOn(x)}
+                          className={`text-[11px] rounded-md px-2 py-1 border ${
+                            waitingOn === x
+                              ? "bg-amber-900 text-white border-amber-900"
+                              : "bg-white border-amber-300 hover:bg-amber-100"}`}>
+                    {x}
+                  </button>
+                ))}
+              </div>
+              <input value={waitingOn} onChange={(e) => setWaitingOn(e.target.value)}
+                     placeholder="or say it in your own words"
+                     className="mt-1.5 w-full border border-amber-300 rounded-md px-2 py-1.5 text-sm bg-white" />
+              <p className="text-[11px] text-amber-800 mt-1.5">
+                It goes to the queue with no date, not onto a day you would have had to invent.
+                It is chased from there, and it still counts as open on this unit.
+              </p>
+            </div>
+          ) : (
+            <>
+              <div className="grid sm:grid-cols-3 gap-2 mt-2">
+                <label className="block text-[11px] text-amber-900">
+                  Come back on
+                  <input type="date" value={fuDate} onChange={(e) => setFuDate(e.target.value)}
+                         className="mt-0.5 w-full border border-amber-300 rounded-md px-2 py-1.5 text-sm bg-white" />
+                </label>
+                <label className="block text-[11px] text-amber-900">
+                  Technician
+                  <input value={fuTeam} onChange={(e) => setFuTeam(e.target.value)}
+                         placeholder="leave blank to decide later"
+                         className="mt-0.5 w-full border border-amber-300 rounded-md px-2 py-1.5 text-sm bg-white" />
+                </label>
+                <label className="block text-[11px] text-amber-900">
+                  Scope of the return visit
+                  <input value={fuScope} onChange={(e) => setFuScope(e.target.value)}
+                         placeholder="defaults to what is still needed"
+                         className="mt-0.5 w-full border border-amber-300 rounded-md px-2 py-1.5 text-sm bg-white" />
+                </label>
+              </div>
+              <div className="flex gap-1.5 mt-1.5">
+                {[["Today", selectedDate], ["Tomorrow", addDays(selectedDate, 1)], ["+3 days", addDays(selectedDate, 3)]].map(([l, d]) => (
+                  <button key={l} onClick={() => setFuDate(d)}
+                          className="text-[11px] border border-amber-300 rounded px-2 py-0.5 bg-white hover:bg-amber-100">{l}</button>
+                ))}
+              </div>
+            </>
+          )}
         </div>
       )}
 
@@ -3283,16 +3379,25 @@ function CloseOutDialog({ job, selectedDate, onCancel, onConfirm }) {
                   arrivedAt, leftAt,
                   actualMinutes: minutes === "" ? null : Number(minutes),
                   followUp: requiresFollowUp
-                    ? { date: fuDate, team: fuTeam, scope: fuScope || stillNeeded, materials: stillNeeded }
+                    ? waiting
+                      ? { date: "", waitingOn: squash(waitingOn), scope: fuScope || stillNeeded, materials: stillNeeded }
+                      : { date: fuDate, team: fuTeam, scope: fuScope || stillNeeded, materials: stillNeeded }
                     : null,
                 })}
                 className="text-sm bg-slate-900 text-white px-3 py-1.5 rounded-md disabled:opacity-40">
-          {requiresFollowUp ? `Close and book ${fuDate}` : "Close out"}
+          {!requiresFollowUp ? "Close out"
+            : waiting ? "Close it — the rest goes to the queue"
+            : `Close and book ${fuDate}`}
         </button>
       </div>
       {requiresFollowUp && !squash(stillNeeded) && (
         <p className="text-[11px] text-amber-700 mt-1.5 text-right">
           Say what is still needed before closing — that text becomes the return visit.
+        </p>
+      )}
+      {waiting && squash(stillNeeded) && !squash(waitingOn) && (
+        <p className="text-[11px] text-amber-700 mt-1.5 text-right">
+          Say what it is waiting on. Without it the queue cannot tell you who to chase.
         </p>
       )}
     </Modal>

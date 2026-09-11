@@ -33,7 +33,12 @@
 
 import { squash } from "./normalize.js";
 
-const TIME = "(\\d{1,2})(?:[:.](\\d{2}))?\\s*(am|pm)?";
+/* A time needs minutes or a meridiem to be a time. A bare digit is a list
+   number far more often than an hour, and reading one as an hour is not a
+   harmless guess: "Work Completed : 1--Fcu no chilled water supply" was
+   read as a 1pm departure, which turned a fifty-minute visit into fifteen
+   minutes on a real job on 10 September. */
+const TIME = "(\\d{1,2})(?:[:.](\\d{2})|\\s*(?=am|pm))\\s*(am|pm)?";
 
 function toMinutes(h, m, ap) {
   let hh = Number(h);
@@ -49,8 +54,11 @@ function toMinutes(h, m, ap) {
   return hh * 60 + mm;
 }
 
+/* `depa\\w*` rather than `depart\\w*`: the department writes "Depature"
+   often enough that the correct spelling alone loses the departure time,
+   and then a numbered list further down the line supplies one instead. */
 const ARRIVE_RE = new RegExp(`\\b(?:arriv\\w*|reach\\w*|start\\w*|in)\\b[^\\d\\n]{0,20}${TIME}`, "i");
-const DEPART_RE = new RegExp(`\\b(?:depart\\w*|finish\\w*|complet\\w*|left|leave|out|end\\w*)\\b[^\\d\\n]{0,20}${TIME}`, "i");
+const DEPART_RE = new RegExp(`\\b(?:depa\\w*|finish\\w*|complet\\w*|left|leave|out|end\\w*)\\b[^\\d\\n]{0,20}${TIME}`, "i");
 
 /* A "material required" block, in any of the spellings seen in the wild. */
 const MATERIAL_HEAD = /^\s*(?:material|materials)\s*(?:required|needed|list)?\s*[:\-]?\s*$/i;

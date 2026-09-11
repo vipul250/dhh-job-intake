@@ -345,8 +345,21 @@ function QueueRow({ item, rec, open, onToggle, onSchedule, onDismiss, onOpenDay,
               <span className="text-[11px] text-slate-400">reported {age}d ago{item.reportedBy ? ` by ${item.reportedBy}` : ""}</span>
             )}
             {item.pmsStatus && <span className="text-[11px] text-slate-400">· {item.pmsStatus}</span>}
+            {/* Closed out on the board with no date, because nobody could
+                give one. This is the thing to chase, and naming it is the
+                whole reason the job was allowed to leave the day. */}
+            {item.waitingOn && (
+              <span className="text-[11px] rounded px-1.5 py-0.5 bg-amber-100 text-amber-900 border border-amber-200">
+                waiting on {item.waitingOn.toLowerCase()}
+              </span>
+            )}
           </div>
           <div className="text-xs text-slate-700 mt-1">{item.description}</div>
+          {item.followUpOf && (
+            <div className="text-[11px] text-slate-500 mt-0.5">
+              Follows {item.followUpOf.date} — closed as {String(item.followUpOf.outcome).replace("_", " ")}
+            </div>
+          )}
 
           <div className="mt-2 flex flex-wrap items-center gap-2">
             {rec.date ? (
