@@ -25,6 +25,7 @@ import { parseSheetPaste } from "../lib/importSheet.js";
 import { checkAgainstSchedule } from "../lib/roster.js";
 import { projectCrewOn } from "../lib/project.js";
 import { averageTravelMinutes } from "../lib/quality.js";
+import { groupLoad } from "../lib/load.js";
 import { storageGet } from "../lib/storage.js";
 import { staffIndex, seedStaff, TRADE_LABEL } from "../lib/staff.js";
 import {
@@ -959,37 +960,19 @@ export default function LiveBoard({
       });
     });
     return Array.from(m.entries())
-      .map(([team, list]) => {
-        const members = team === "Unassigned" ? [] : [team];
-        const shiftMin = parseShiftMinutes(list.find((j) => j.shift)?.shift) || 540;
-        const mins = list.reduce((s, j) => s + (jobMinutes(j) || 0), 0);
-        const buildings = new Set(list.map((j) => canonProperty(j.property)).filter(Boolean));
-        const travel = Math.max(0, buildings.size - 1) * travelAvg.minutes;
-        const committed = mins + travel;
-        const noEstimate = list.filter((j) => jobMinutes(j) == null).length;
-
-        /* What actually happened, from arrival and departure only. A typed
-           total is a recollection and does not belong in a figure whose
-           whole point is that it was observed. Travel is added on the same
-           averaged basis as the plan, so the two bars compare like with
-           like. */
-        const onClock = list.filter((j) => actualDuration(j).source === "clock");
-        const workedMin = onClock.reduce((s, j) => s + (actualDuration(j).minutes || 0), 0);
-        const actualMin = workedMin
-          ? workedMin + Math.max(0, buildings.size - 1) * travelAvg.minutes
-          : 0;
-
-        return {
-          team, list, members, shiftMin, committed, travel,
-          actualMin, timed: onClock.length,
-          actualPct: workedMin ? Math.round((actualMin / shiftMin) * 100) : null,
-          /* Jobs on this man's list that somebody else is also on. */
-          sharedJobs: list.filter((j) => splitCrew(j.team).length > 1).length,
-          loadPct: Math.round((committed / shiftMin) * 100),
-          buildings: buildings.size, noEstimate,
-          open: list.filter(isOpen).length,
-        };
-      })
+      .map(([team, list]) => ({
+        team,
+        list,
+        /* What he SEES is `list`; what he is CHARGED with is in groupLoad.
+           See load.js — an accounted-for row stays on the card and out of
+           every figure. */
+        work: list.filter((j) => !isOffBoard(j)),
+        members: team === "Unassigned" ? [] : [team],
+        ...groupLoad(list, travelAvg.minutes,
+          parseShiftMinutes(list.find((j) => j.shift)?.shift) || 540),
+        shiftMin: parseShiftMinutes(list.find((j) => j.shift)?.shift) || 540,
+        open: list.filter((j) => !isOffBoard(j) && isOpen(j)).length,
+      }))
       .sort((a, b) => (a.team === "Unassigned" ? 1 : b.team === "Unassigned" ? -1 : b.loadPct - a.loadPct));
   }, [jobs, travelAvg]);
 
@@ -1764,17 +1747,19 @@ function TeamGroup({ group, me, allJobs, selectedDate, onAdvance, onEdit, onOpen
   const [open, setOpen] = useState(true);
   const [showPlan, setShowPlan] = useState(false);
   const g = group;
+  /* The order of work is the order of the jobs he actually has. A row
+     accounted for is not a stop on his round. */
   const plan = useMemo(
-    () => (g.team === "Unassigned" ? null : planDay(g.list)),
-    [g.list, g.team]
+    () => (g.team === "Unassigned" ? null : planDay(g.work)),
+    [g.work, g.team]
   );
   const tone = g.loadPct > 100 ? "bad" : g.loadPct > 85 ? "warn" : "ok";
   const barCls = { ok: "bg-blue-500", warn: "bg-amber-500", bad: "bg-red-500" }[tone];
 
   function copyAllForPms() {
-    const text = g.list.filter((j) => j.state !== "cancelled").map(pmsText).join("\n\n---\n\n");
+    const text = g.work.map(pmsText).join("\n\n---\n\n");
     navigator.clipboard?.writeText(text);
-    showToast(`Copied ${g.list.length} job(s) — paste into PMS.`, "ok");
+    showToast(`Copied ${g.work.length} job(s) — paste into PMS.`, "ok");
   }
 
   /* What the technician gets instead of the printed sheet. In that sheet an
@@ -1809,7 +1794,13 @@ function TeamGroup({ group, me, allJobs, selectedDate, onAdvance, onEdit, onOpen
               {g.sharedJobs} shared
             </span>
           )}
-          <span className="text-xs text-slate-400">{g.list.length} jobs</span>
+          <span className="text-xs text-slate-400">{g.work.length} jobs</span>
+          {g.offBoard > 0 && (
+            <span title="Rows on his card that are not jobs he did — a duplicate, or work that went to another team. They stay visible and count against nobody."
+                  className="text-[10px] rounded px-1.5 py-0.5 bg-slate-100 text-slate-500">
+              +{g.offBoard} accounted for
+            </span>
+          )}
         </button>
 
         {/* Two figures, never merged. The pale bar is what was planned off
@@ -1821,7 +1812,9 @@ function TeamGroup({ group, me, allJobs, selectedDate, onAdvance, onEdit, onOpen
           <div className="flex items-center gap-2 min-w-[190px]">
             <div className="flex-1 h-2 rounded-full bg-slate-100 overflow-hidden relative"
                  title={`Planned ${formatMinutes(g.committed)} of ${formatMinutes(g.shiftMin)}${
-                   g.actualPct != null ? ` · actual ${formatMinutes(g.actualMin)} from ${g.timed} of ${g.list.length} timed` : ""}`}>
+                   g.actualPct != null
+                     ? ` · actual ${formatMinutes(g.actualMin)} from ${g.attended} of ${g.work.length} jobs, ${g.actualBasis}`
+                     : ""}`}>
               <div className={`h-full rounded-full ${barCls} opacity-30`}
                    style={{ width: `${Math.min(100, g.loadPct)}%` }} />
               {g.actualPct != null && (
@@ -1840,12 +1833,19 @@ function TeamGroup({ group, me, allJobs, selectedDate, onAdvance, onEdit, onOpen
           {g.actualPct != null ? (
             <>
               <span className="text-slate-600">{formatMinutes(g.actualMin)} actual</span>
-              {` from ${g.timed} of ${g.list.length} timed · ${formatMinutes(g.committed)} planned`}
+              {` from ${g.attended} of ${g.work.length} · `}
+              <span className={g.actualBasis === "measured" ? "text-emerald-700" : "text-amber-600"}
+                    title={g.actualBasis === "measured"
+                      ? "Every one of these came from an arrival and a departure time."
+                      : `His own totals, not clock times. ${g.measured} of ${g.attended} were actually timed.`}>
+                {g.actualBasis}
+              </span>
+              {` · ${formatMinutes(g.committed)} planned`}
             </>
           ) : (
             <>
               {formatMinutes(g.committed)} planned of {formatMinutes(g.shiftMin)}
-              <span className="text-amber-600"> · nothing timed yet</span>
+              <span className="text-amber-600"> · nothing recorded yet</span>
             </>
           )}
           {g.travel > 0 && ` · ${g.buildings} buildings`}
