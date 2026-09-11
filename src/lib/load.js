@@ -34,9 +34,73 @@
  * came to 4h 15m against 8h 48m planned.
  * ---------------------------------------------------------------------- */
 import { jobMinutes, actualDuration, isOffBoard } from "./job.js";
-import { canonProperty, splitCrew } from "./normalize.js";
+import { canonProperty, canonKey, splitCrew } from "./normalize.js";
 
 export const DEFAULT_SHIFT_MIN = 540;
+
+/* ---------------------------------------------------------------------- *
+ * Where a "building" is not a building.
+ *
+ * Travel was counted per distinct property, which is right for a tower:
+ * three units in Mesk 1 Midtown is one trip and three lifts. It is wrong
+ * for a villa community. Palm Villa L14 and Palm Villa O56 are different
+ * fronds of the Palm; Resty drives between them. Counting his five pool
+ * cleans as one building gave him a travel estimate of zero.
+ *
+ * Named, not guessed. The unit format cannot carry this: "B 419" and
+ * "B419" are one Belgravia Square apartment, "C2315" is a tower unit with
+ * its tower letter, and "P407" is on a podium. A heuristic on unit shape
+ * would have moved a dozen towers into this category to catch two real
+ * communities.
+ *
+ * Rule and exceptions, the same pattern propertyName.js uses: a short list
+ * that somebody can read and correct, rather than a clever test that is
+ * wrong in ways nobody can see.
+ * ---------------------------------------------------------------------- */
+const SPREAD_PROPERTIES = [
+  "palm villa",
+  "jumeirah golf estates",
+];
+
+/* Frond to frond is not Dubai Marina to Mudon. Half the between-community
+   assumption, and measured the same way once arrival times exist. */
+export const INTRA_COMMUNITY_MIN = 15;
+
+export const isSpread = (property) =>
+  SPREAD_PROPERTIES.includes(canonKey(property));
+
+/* One entry per place somebody actually has to drive to, and how far the
+   hop to it is. Within a villa community the hop is short; between
+   properties it is the full estimate. */
+export function travelStops(jobs) {
+  const stops = new Map();
+  (jobs || []).forEach((j) => {
+    const p = canonProperty(j.property);
+    if (!p) return;
+    const spread = isSpread(j.property);
+    const key = spread ? `${canonKey(p)}|${canonKey(j.unit)}` : canonKey(p);
+    if (!stops.has(key)) stops.set(key, { community: canonKey(p), spread });
+  });
+  return [...stops.values()];
+}
+
+/* Moves, split by how far they are. Ordering is unknown — the board is not
+   a route — so the cheap assumption is that every hop inside a community
+   is an intra-community hop and each new community costs a full one. */
+export function travelEstimate(jobs, betweenMin, intraMin = INTRA_COMMUNITY_MIN) {
+  const stops = travelStops(jobs);
+  if (stops.length < 2) return { minutes: 0, moves: 0, stops: stops.length, intra: 0, between: 0 };
+  const communities = new Set(stops.map((s) => s.community));
+  const between = communities.size - 1;
+  const intra = stops.length - communities.size;
+  return {
+    minutes: between * betweenMin + intra * intraMin,
+    moves: between + intra,
+    stops: stops.length,
+    intra,
+    between,
+  };
+}
 
 /**
  * @param {object[]} list      every row on this technician's card
@@ -48,9 +112,10 @@ export function groupLoad(list, travelMin, shiftMin = DEFAULT_SHIFT_MIN) {
   const work = rows.filter((j) => !isOffBoard(j));
 
   const planMin = work.reduce((s, j) => s + (jobMinutes(j) || 0), 0);
+  const est = travelEstimate(work, travelMin);
   const buildings = new Set(work.map((j) => canonProperty(j.property)).filter(Boolean));
-  const moves = Math.max(0, buildings.size - 1);
-  const travel = moves * travelMin;
+  const travel = est.minutes;
+  const moves = est.moves;
   const committed = planMin + travel;
 
   const withTime = work.filter((j) => actualDuration(j).minutes != null);
@@ -61,7 +126,12 @@ export function groupLoad(list, travelMin, shiftMin = DEFAULT_SHIFT_MIN) {
     jobs: work.length,
     offBoard: rows.length - work.length,
     buildings: buildings.size,
+    /* Places he has to drive to. In a villa community that is more than
+       the number of properties — see travelStops. */
+    stops: est.stops,
     moves,
+    intraMoves: est.intra,
+    betweenMoves: est.between,
     travel,
     committed,
     loadPct: Math.round((committed / shiftMin) * 100),

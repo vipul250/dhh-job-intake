@@ -13,7 +13,7 @@
  * ---------------------------------------------------------------------- */
 
 import assert from "node:assert/strict";
-import { groupLoad } from "../../src/lib/load.js";
+import { groupLoad, travelEstimate, travelStops, isSpread, INTRA_COMMUNITY_MIN } from "../../src/lib/load.js";
 import { setState } from "../../src/lib/job.js";
 
 const ok = [];
@@ -154,6 +154,61 @@ t("a card of nothing but accounted-for rows charges him nothing", () => {
   assert.equal(g.buildings, 0);
   assert.equal(g.loadPct, 0);
   assert.equal(g.offBoard, 2);
+});
+
+/* --------------- a villa community is not one building ---------------- *
+ * Raised 11 September: "resty is not in just one building, each palm villa
+ * is different as you see the number of each villa is different, like L14,
+ * O56 etc." He was right — five pool cleans at Palm Villa were coming out
+ * as one building and therefore zero travel.
+ * --------------------------------------------------------------------- */
+
+const villa = (u) => job({ property: "Palm Villa", unit: u, team: "Resty",
+  estimatedTime: "1h", description: "Pool Cleaning", actualMinutes: 60 });
+
+t("Resty's five villas are five stops, not one building", () => {
+  const g = groupLoad(["L14", "O56", "E41", "F30", "O103"].map(villa), 30);
+  assert.equal(g.buildings, 1, "one property name");
+  assert.equal(g.stops, 5, "five addresses");
+  assert.equal(g.moves, 4);
+  assert.equal(g.travel, 4 * INTRA_COMMUNITY_MIN, "an hour of driving, not zero");
+});
+
+t("three units in one tower are still one stop", () => {
+  const g = groupLoad([
+    job({ property: "Mesk 1 Midtown", unit: "1608", estimatedTime: "1h" }),
+    job({ property: "Mesk 1 Midtown", unit: "1502", estimatedTime: "1h" }),
+    job({ property: "Mesk 1 Midtown", unit: "1101", estimatedTime: "1h" }),
+  ], 30);
+  assert.equal(g.stops, 1, "one trip and three lifts");
+  assert.equal(g.travel, 0);
+});
+
+t("frond to frond is cheaper than crossing Dubai", () => {
+  const mixed = [
+    ...["L14", "O56"].map(villa),
+    job({ property: "Mesk 1 Midtown", unit: "1608", estimatedTime: "1h" }),
+  ];
+  const e = travelEstimate(mixed, 30);
+  assert.equal(e.intra, 1, "L14 to O56");
+  assert.equal(e.between, 1, "the Palm to Midtown");
+  assert.equal(e.minutes, 30 + INTRA_COMMUNITY_MIN);
+});
+
+t("only the named communities are spread — nothing is guessed from the unit", () => {
+  assert.equal(isSpread("Palm Villa"), true);
+  assert.equal(isSpread("palm villa"), true);
+  assert.equal(isSpread("Jumeirah Golf Estates"), true);
+  /* These have plot-shaped units and are towers. A heuristic on unit
+     format would have wrongly moved all of them. */
+  ["Belgravia Square", "Celestia B", "Collective 2.0 Tower A",
+   "Sobha Hartland - The Crest Tower C", "Beach Mansion Tower 2"].forEach((p) =>
+    assert.equal(isSpread(p), false, p));
+});
+
+t("one stop is no travel, whatever kind of property it is", () => {
+  assert.equal(travelEstimate([villa("L14")], 30).minutes, 0);
+  assert.equal(travelStops([villa("L14")]).length, 1);
 });
 
 console.log(ok.map((n) => `  ok  ${n}`).join("\n"));

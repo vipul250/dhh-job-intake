@@ -1894,7 +1894,7 @@ function TeamGroup({ group, me, allJobs, selectedDate, onAdvance, onEdit, onOpen
                 {g.actualBasis}
               </span>
               {g.travel > 0 && (
-                <span title={`${g.buildings} buildings, ${g.moves} move(s) at ${Math.round(g.travel / g.moves)}m each. Estimated — there is no route data. Not counted in the figure on the left.`}>
+                <span title={`${g.moves} move(s): ${g.betweenMoves} between properties, ${g.intraMoves} inside a villa community. Estimated — there is no route data. Not counted in the figure on the left.`}>
                   {` · + ${formatMinutes(g.travel)} travel (est)`}
                 </span>
               )}
@@ -1907,7 +1907,10 @@ function TeamGroup({ group, me, allJobs, selectedDate, onAdvance, onEdit, onOpen
               {g.travel > 0 && ` · incl. ${formatMinutes(g.travel)} travel (est)`}
             </>
           )}
-          {g.travel > 0 && ` · ${g.buildings} buildings`}
+          {/* Stops, not buildings. Five pool cleans at Palm Villa are one
+              property and five addresses; "1 building" was the reason
+              Resty's travel estimate came out at zero. */}
+          {g.stops > 1 && ` · ${g.stops} stops`}
           {g.noEstimate > 0 && ` · ${g.noEstimate} with no estimate`}
         </span>
 

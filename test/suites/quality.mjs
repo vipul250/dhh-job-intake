@@ -115,16 +115,40 @@ t("a figure below half coverage is marked provisional", () => {
 
 /* ------------- unaccounted time between jobs ------------- */
 
-t("the gap between two jobs is measured, and split by building", () => {
+t("the gap between two jobs is measured, and split by address", () => {
   const day = [
-    job({ property: "Palm Villa", unit: "E41", arrivedAt: "09:00", leftAt: "10:00" }),
-    job({ property: "Palm Villa", unit: "O56", arrivedAt: "12:00", leftAt: "13:00" }),
+    job({ property: "Mesk 1 Midtown", unit: "1608", arrivedAt: "09:00", leftAt: "10:00" }),
+    job({ property: "Mesk 1 Midtown", unit: "1502", arrivedAt: "12:00", leftAt: "13:00" }),
     job({ property: "Gemz by Danube", unit: "801", arrivedAt: "14:00", leftAt: "15:00" }),
   ];
   const g = gapsBetweenJobs(day);
-  assert.equal(g.withinBuilding, 120, "10:00 to 12:00 in the same building is not travel");
+  assert.equal(g.withinBuilding, 120, "10:00 to 12:00 in the same tower is not travel");
   assert.equal(g.betweenBuildings, 60, "13:00 to 14:00 crossing buildings plausibly is");
   assert.equal(g.pairs, 2, "three jobs give two gaps");
+});
+
+/* Corrected 11 September. This test used to assert that Palm Villa E41 to
+   Palm Villa O56 was time in the same building. They are different fronds
+   of the Palm and Resty drives between them — the property name is shared,
+   the address is not. Counting those as no-travel gave him a travel
+   estimate of zero across five pool cleans. */
+t("two villas in one community are a drive, not time in a building", () => {
+  const g = gapsBetweenJobs([
+    job({ property: "Palm Villa", unit: "E41", arrivedAt: "09:00", leftAt: "10:00" }),
+    job({ property: "Palm Villa", unit: "O56", arrivedAt: "10:20", leftAt: "11:00" }),
+  ]);
+  assert.equal(g.withinBuilding, 0);
+  assert.equal(g.betweenBuildings, 20, "E41 to O56 is a real move");
+  assert.equal(g.betweenPairs, 1);
+});
+
+t("two units in one tower are still not a drive", () => {
+  const g = gapsBetweenJobs([
+    job({ property: "Mesk 1 Midtown", unit: "1608", arrivedAt: "09:00", leftAt: "10:00" }),
+    job({ property: "Mesk 1 Midtown", unit: "1101", arrivedAt: "10:20", leftAt: "11:00" }),
+  ]);
+  assert.equal(g.betweenBuildings, 0, "one lift, not one drive");
+  assert.equal(g.withinBuilding, 20);
 });
 
 t("the first job of the day contributes no gap — that is the commute", () => {

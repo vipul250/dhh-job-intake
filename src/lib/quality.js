@@ -28,6 +28,7 @@
  * ---------------------------------------------------------------------- */
 
 import { actualDuration, RESOLVED_STATES, readClock, isOffBoard } from "./job.js";
+import { isSpread } from "./load.js";
 import { isOurFault } from "./faultFamily.js";
 import {
   assetKey, canonProperty, canonUnit, squash, workType, daysBetween,
@@ -200,9 +201,15 @@ export function gapsBetweenJobs(jobs) {
     if (gap > GAP_CEILING_MIN) { overLong++; continue; }
 
     pairs++;
-    const same = canonProperty(prev.property) &&
+    /* Same property is only "no travel" in a tower. Two villas on the Palm
+       share a property name and are different addresses, so that gap is a
+       drive and belongs in the measured travel average — see isSpread in
+       load.js. */
+    const sameProperty = canonProperty(prev.property) &&
       canonProperty(prev.property) === canonProperty(cur.property);
-    if (same) { withinBuilding += gap; withinPairs++; }
+    const sameAddress = sameProperty &&
+      (!isSpread(cur.property) || canonProperty(prev.unit) === canonProperty(cur.unit));
+    if (sameAddress) { withinBuilding += gap; withinPairs++; }
     else { betweenBuildings += gap; betweenPairs++; }
   }
 
