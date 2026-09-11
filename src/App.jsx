@@ -580,6 +580,7 @@ function Header({ selectedDate, setSelectedDate, knownDates, activeTab, setActiv
    * add { id: "insights" }, { id: "faultcodes" } or { id: "properties" }
    * back to this list to reach them.
    */
+  const tabs = [
     { id: "live", label: "Live Board", icon: Radio },
     { id: "monthly", label: "Monthly", icon: CalendarDays },
     { id: "dashboard", label: "Dashboard", icon: TrendingUp },
