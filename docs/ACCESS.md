@@ -276,15 +276,16 @@ everybody either way. Nothing is at stake.
 half that takes the anon key's access away, and it is the half that cannot
 be undone by a single UPDATE.
 
-**First, see what is actually there.** The live database is 55 days old and
-may not match `schema.sql`:
+**You do not need to inspect anything first.** An earlier draft of this
+asked you to list the existing policies and check the drops named them
+correctly — which is a step that can be got wrong, and a drop that silently
+misses leaves row level security enabled with the permissive policies still
+in force. Believing it is closed when it is open is the worst outcome
+available here.
 
-```sql
-select policyname, roles, cmd from pg_policies where tablename = 'kv_store';
-```
-
-Anything with `roles = {public}` is what has to go. Then run this — one
-transaction, so a failure half way leaves nothing half-applied:
+So the migration drops whatever is there by *enumerating* it rather than by
+naming it. Paste and run; one transaction, so a failure half way leaves
+nothing half-applied:
 
 ```sql
 begin;
@@ -297,23 +298,27 @@ insert into kv_store (key, value, updated_at)
 values ('auth-required', 'true', now())
 on conflict (key) do update set value = 'true', updated_at = now();
 
--- 2. THE STEP THAT WAS MISSING. Permissive policies are OR'd, so while
---    these exist the ones below grant extra access and remove none.
-drop policy if exists "Allow public read"   on kv_store;
-drop policy if exists "Allow public insert" on kv_store;
-drop policy if exists "Allow public update" on kv_store;
+-- 2. THE STEP THAT WAS MISSING, and it drops by enumeration rather than by
+--    name. Permissive policies are OR'd together, so any surviving
+--    "allow everyone" policy makes the four below grant extra access and
+--    remove none. Naming them means a policy called something unexpected
+--    survives and the table stays open while looking closed.
+do $$
+declare p record;
+begin
+  for p in select policyname from pg_policies
+           where schemaname = 'public' and tablename = 'kv_store'
+  loop
+    execute format('drop policy %I on kv_store', p.policyname);
+  end loop;
+end $$;
 
 -- 3. Anon keeps exactly one key, read-only: the flag that tells the app to
 --    show the sign-in screen. Nothing else.
-drop policy if exists "anon reads the login flag" on kv_store;
 create policy "anon reads the login flag" on kv_store
   for select to anon using (key = 'auth-required');
 
 -- 4. Everything else needs a session.
-drop policy if exists "signed-in reads"   on kv_store;
-drop policy if exists "signed-in inserts" on kv_store;
-drop policy if exists "signed-in updates" on kv_store;
-
 create policy "signed-in reads" on kv_store
   for select to authenticated using (true);
 
@@ -342,6 +347,17 @@ from pg_policies where tablename = 'kv_store' order by policyname;
 **Four rows, and not one of them with `roles = {public}`.** If `{public}`
 appears anywhere, the drops did not take and the database is still open
 whatever else the list says.
+
+Or let the database check itself, which is harder to misread:
+
+```sql
+select
+  count(*) filter (where 'public' = any(roles))          as must_be_zero,
+  count(*)                                              as must_be_four,
+  (select relrowsecurity from pg_class
+    where oid = 'public.kv_store'::regclass)            as rls_must_be_true
+from pg_policies where schemaname = 'public' and tablename = 'kv_store';
+```
 
 ### The escape hatch, before you start
 
