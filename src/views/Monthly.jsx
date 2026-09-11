@@ -10,6 +10,7 @@ import { buildPropertyIndex } from "../lib/propertyName.js";
 import { returnsByUnit, rolesByTech } from "../lib/quality.js";
 import { poolAdherence, SEEDED_POOL_CONTRACTS } from "../lib/pools.js";
 import { timeByTech } from "../lib/quality.js";
+import { feedQuality, againstBenchmark, BENCHMARK_DATE } from "../lib/feed.js";
 
 /* ---------------------------------------------------------------------- *
  * Monthly.jsx — one span, one table, no interpretation.
@@ -38,6 +39,9 @@ const mins = (v) => (v == null ? "—" : v >= 60
 
 export default function Monthly({ knownDates, propertyMaster }) {
   const [jobs, setJobs] = useState(null);
+  /* The days as stored, tombstones and all. feedQuality needs the moves,
+     which liveJobs drops. */
+  const [byDay, setByDay] = useState({});
   const [grain, setGrain] = useState("month");
   /* Per grain, so switching Month -> Week -> Month returns you to the month
      you were reading rather than resetting to the newest one. */
@@ -49,23 +53,26 @@ export default function Monthly({ knownDates, propertyMaster }) {
 
   async function load() {
     const dates = [...(knownDates || [])].sort();
-    if (!dates.length) { setJobs([]); return; }
+    if (!dates.length) { setJobs([]); setByDay({}); return; }
     setJobs(null);
     const collected = [];
+    const raw = {};
     /* One round trip per day is slow over a year, so read them in batches. */
     const BATCH = 8;
     for (let i = 0; i < dates.length; i += BATCH) {
       const slice = dates.slice(i, i + BATCH);
       const results = await Promise.all(slice.map((d) => storageGet(`schedule:${d}`)));
       results.forEach((v, k) => {
+        const day = migrateDay(parseDay(v), slice[k]);
+        raw[slice[k]] = day;
         /* liveJobs drops tombstones: a job that left a day is not a job
            done on it, and counting both would double every total. */
-        liveJobs(migrateDay(parseDay(v), slice[k]))
-          .forEach((j) => collected.push({ ...j, _date: slice[k] }));
+        liveJobs(day).forEach((j) => collected.push({ ...j, _date: slice[k] }));
       });
       setProgress(Math.min(dates.length, i + BATCH));
     }
     setJobs(collected);
+    setByDay(raw);
   }
 
   /* One property, one name — before anything is grouped by property.
@@ -113,6 +120,18 @@ export default function Monthly({ knownDates, propertyMaster }) {
     () => (resolved ? timeByTech(resolved, periodFor(grain, active)) : []),
     [resolved, grain, active]
   );
+
+  /* How well the days themselves were written down. Every figure above is
+     downstream of this, so it is reported rather than assumed. */
+  const feed = useMemo(
+    () => feedQuality(byDay, periodFor(grain, active)),
+    [byDay, grain, active]
+  );
+  const benchRow = useMemo(
+    () => feedQuality(byDay, BENCHMARK_DATE)[0] || null,
+    [byDay]
+  );
+  const vsBench = useMemo(() => againstBenchmark(feed, benchRow), [feed, benchRow]);
 
   const label = periodLabel(grain, active);
 
@@ -378,6 +397,81 @@ export default function Monthly({ knownDates, propertyMaster }) {
           </div>
         )}
       </div>
+
+      {feed.length > 0 && (
+        <div>
+          <h3 className="text-sm font-medium text-slate-700 mb-2">
+            How the days were fed — against {BENCHMARK_DATE}
+          </h3>
+          <p className="text-xs text-slate-500 mb-2">
+            Every figure on this page is downstream of whether the day was written down
+            properly. {BENCHMARK_DATE} is the standard because it was filled by hand and
+            vouched for: every row answered, and almost every move saying what took the
+            slot. It is also honest about the gap — even that day timed one visit in
+            thirty-eight.
+          </p>
+
+          {vsBench && (
+            <div className="mb-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs flex flex-wrap gap-x-5 gap-y-1">
+              <span className="text-slate-700">
+                <span className="font-semibold tabular-nums">{vsBench.meets}</span> of{" "}
+                <span className="tabular-nums">{vsBench.days}</span> days meet it
+              </span>
+              <span className="text-slate-500">
+                <span className="tabular-nums">{vsBench.fullyAnswered}</span> fully answered
+              </span>
+              <span className={vsBench.daysWithAnyTiming ? "text-slate-500" : "text-amber-700"}>
+                <span className="tabular-nums">{vsBench.daysWithAnyTiming}</span> with any timing at all
+              </span>
+            </div>
+          )}
+
+          <div className="overflow-x-auto border border-slate-200 rounded-lg bg-white">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-slate-600 text-xs">
+                <tr>
+                  {["Day", "Rows", "Answered", "Moves explained", "Visits timed"].map((c, i) => (
+                    <th key={c} className={`px-3 py-2 font-medium ${i ? "text-right" : "text-left"}`}>{c}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {feed.map((d) => {
+                  const tone = (v, floor) =>
+                    v == null ? "text-slate-400"
+                      : v >= floor ? "text-emerald-700"
+                      : v >= floor - 25 ? "text-amber-700" : "text-red-700";
+                  return (
+                    <tr key={d.date} className={`border-t border-slate-200 ${
+                      d.date === BENCHMARK_DATE ? "bg-blue-50/60" : ""}`}>
+                      <td className="px-3 py-2 text-slate-900">
+                        {d.date}
+                        {d.date === BENCHMARK_DATE && (
+                          <span className="ml-2 text-[10px] rounded px-1.5 py-0.5 bg-blue-100 text-blue-700">
+                            benchmark
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums text-slate-700">{d.jobs}</td>
+                      <td className={`px-3 py-2 text-right tabular-nums ${tone(d.answeredPct, 100)}`}>
+                        {d.answeredPct == null ? "—" : `${d.answeredPct}%`}
+                      </td>
+                      <td className={`px-3 py-2 text-right tabular-nums ${tone(d.explainedPct, 90)}`}>
+                        {d.explainedPct == null
+                          ? <span className="text-slate-400">no moves</span>
+                          : `${d.explainedPct}% of ${d.moves}`}
+                      </td>
+                      <td className={`px-3 py-2 text-right tabular-nums ${tone(d.timedPct, 90)}`}>
+                        {d.timedPct == null ? "—" : `${d.timedPct}%`}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       <div>
         <h3 className="text-sm font-medium text-slate-700 mb-2">Productive time</h3>

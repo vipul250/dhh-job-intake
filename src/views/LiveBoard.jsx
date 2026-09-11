@@ -24,6 +24,7 @@ import { readLearned, refreshLearned, isStale, learnedFor } from "../lib/learned
 import { parseSheetPaste } from "../lib/importSheet.js";
 import { checkAgainstSchedule } from "../lib/roster.js";
 import { projectCrewOn } from "../lib/project.js";
+import { averageTravelMinutes } from "../lib/quality.js";
 import { storageGet } from "../lib/storage.js";
 import { staffIndex, seedStaff, TRADE_LABEL } from "../lib/staff.js";
 import {
@@ -694,25 +695,58 @@ export default function LiveBoard({
      take it off the board. Both are one write and neither deletes
      anything — see OFF_BOARD_REASONS in job.js for why this exists. */
   async function accountForRow(job, payload) {
+    if (payload.kind === "handover") {
+      /* Handed to somebody outside the department: it has left the board.
+         Handed to one of ours: it is still our job, it just belongs to a
+         different man — and to a different day if he takes it on one. */
+      if (payload.outside) {
+        await change(selectedDate, (cur) => {
+          const target = cur.find((r) => !isTombstone(r) && r.id === job.id) || job;
+          return upsert(cur, setJobState(target, "cancelled", who, {
+            reason: `${OFF_BOARD_LABEL["other-team"]} — ${payload.tech}`,
+            offBoard: "other-team",
+            handedTo: payload.tech,
+            ...(lock.locked ? { lock: lock.kind } : {}),
+          }));
+        });
+        showToast(`${payload.tech} has it. Off the board, and still on record.`, "ok");
+        return;
+      }
+
+      const sameDay = payload.date === selectedDate;
+      let moved = null;
+      await change(selectedDate, (cur) => {
+        const target = cur.find((r) => !isTombstone(r) && r.id === job.id) || job;
+        const handed = reassign(target, payload.tech, who, payload.why);
+        if (sameDay) return upsert(cur, handed);
+        /* A later day is a move as well as a handover, so it leaves the
+           tombstone every other move leaves — the day must never look as
+           though the job simply vanished. */
+        const r = moveJob(handed, payload.date, who, "tech-unavailable",
+          { jobId: "", label: payload.why || `Handed to ${payload.tech}` }, lock.kind);
+        moved = r.moved;
+        return [...removeJob(cur, job.id), r.tomb];
+      });
+      if (moved) await mutateDay(payload.date, (cur) => [...cur, moved]);
+      showToast(
+        sameDay
+          ? `${payload.tech} has it. It still needs his answer today.`
+          : `Moved to ${payload.date} under ${payload.tech}. The trail stays on ${selectedDate}.`,
+        "ok"
+      );
+      return;
+    }
+
     await change(selectedDate, (cur) => {
       const target = cur.find((r) => !isTombstone(r) && r.id === job.id) || job;
-      if (payload.kind === "reassign") {
-        return upsert(cur, reassign(target, payload.tech, who, payload.why));
-      }
       return upsert(cur, setJobState(target, "cancelled", who, {
         reason: OFF_BOARD_LABEL[payload.offBoard] || payload.offBoard,
         offBoard: payload.offBoard,
         duplicateOf: payload.duplicateOf,
-        handedTo: payload.handedTo,
         ...(lock.locked ? { lock: lock.kind } : {}),
       }));
     });
-    showToast(
-      payload.kind === "reassign"
-        ? `Handed to ${payload.tech}. It still needs his answer today.`
-        : "Off the board. It counts against nobody, and it is still on record.",
-      "ok"
-    );
+    showToast("Off the board. It counts against nobody, and it is still on record.", "ok");
   }
 
   async function markNotDone(job, reason, rebook) {
@@ -907,6 +941,13 @@ export default function LiveBoard({
    * both spend the hour, and the job card says "2/2 people" so nobody
    * mistakes it for two pieces of work.
    * -------------------------------------------------------------------- */
+  /* Half an hour between buildings was the department's standing guess.
+     Once technicians write arrival and departure it becomes the mean of
+     the actual moves, measured across this day. Which of the two is in
+     use is shown, because a committed-hours figure built on a guess is a
+     different claim from one built on observed moves. */
+  const travelAvg = useMemo(() => averageTravelMinutes(jobs), [jobs]);
+
   const groups = useMemo(() => {
     const m = new Map();
     jobs.forEach((j) => {
@@ -923,11 +964,25 @@ export default function LiveBoard({
         const shiftMin = parseShiftMinutes(list.find((j) => j.shift)?.shift) || 540;
         const mins = list.reduce((s, j) => s + (jobMinutes(j) || 0), 0);
         const buildings = new Set(list.map((j) => canonProperty(j.property)).filter(Boolean));
-        const travel = Math.max(0, buildings.size - 1) * 30;
+        const travel = Math.max(0, buildings.size - 1) * travelAvg.minutes;
         const committed = mins + travel;
         const noEstimate = list.filter((j) => jobMinutes(j) == null).length;
+
+        /* What actually happened, from arrival and departure only. A typed
+           total is a recollection and does not belong in a figure whose
+           whole point is that it was observed. Travel is added on the same
+           averaged basis as the plan, so the two bars compare like with
+           like. */
+        const onClock = list.filter((j) => actualDuration(j).source === "clock");
+        const workedMin = onClock.reduce((s, j) => s + (actualDuration(j).minutes || 0), 0);
+        const actualMin = workedMin
+          ? workedMin + Math.max(0, buildings.size - 1) * travelAvg.minutes
+          : 0;
+
         return {
           team, list, members, shiftMin, committed, travel,
+          actualMin, timed: onClock.length,
+          actualPct: workedMin ? Math.round((actualMin / shiftMin) * 100) : null,
           /* Jobs on this man's list that somebody else is also on. */
           sharedJobs: list.filter((j) => splitCrew(j.team).length > 1).length,
           loadPct: Math.round((committed / shiftMin) * 100),
@@ -936,7 +991,7 @@ export default function LiveBoard({
         };
       })
       .sort((a, b) => (a.team === "Unassigned" ? 1 : b.team === "Unassigned" ? -1 : b.loadPct - a.loadPct));
-  }, [jobs]);
+  }, [jobs, travelAvg]);
 
   /* `total` counts jobs, not rows. A row taken off the board — a duplicate,
      work handed to housekeeping — was never a job, and counting it here
@@ -971,7 +1026,7 @@ export default function LiveBoard({
       <TopBar
         me={me} onChangeMe={() => setMe(null)}
         selectedDate={selectedDate} setSelectedDate={setSelectedDate}
-        counts={counts} busy={busy} liveNote={liveNote}
+        counts={counts} travelAvg={travelAvg} busy={busy} liveNote={liveNote}
         onRefresh={() => load(selectedDate)}
       />
 
@@ -1222,7 +1277,7 @@ export default function LiveBoard({
       )}
       {accountFor && (
         <AccountForDialog
-          job={accountFor} dayJobs={jobs} candidates={candidates}
+          job={accountFor} dayJobs={jobs} candidates={candidates} selectedDate={selectedDate}
           onCancel={() => setAccountFor(null)}
           onConfirm={(payload) => { accountForRow(accountFor, payload); setAccountFor(null); }}
         />
@@ -1341,7 +1396,7 @@ function WhoAreYou({ onPick }) {
 
 /* ========================= top bar ========================= */
 
-function TopBar({ me, onChangeMe, selectedDate, setSelectedDate, counts, busy, liveNote, onRefresh }) {
+function TopBar({ me, onChangeMe, selectedDate, setSelectedDate, counts, travelAvg, busy, liveNote, onRefresh }) {
   return (
     <div className="rounded-lg border border-slate-200 bg-white p-3">
       <div className="flex flex-wrap items-center gap-3">
@@ -1365,6 +1420,13 @@ function TopBar({ me, onChangeMe, selectedDate, setSelectedDate, counts, busy, l
           {counts.cancelled > 0 && (
             <span className="text-slate-400">{counts.cancelled} off the board</span>
           )}
+          {travelAvg && <span className={travelAvg.measured ? "text-slate-500" : "text-slate-400"}
+                title={travelAvg.measured
+                  ? `The mean of ${travelAvg.moves} actual moves between buildings on this day.`
+                  : "No arrival and departure times to measure from, so the department's standing half-hour is used."}>
+            {travelAvg.minutes}m between buildings
+            {travelAvg.measured ? ` · measured over ${travelAvg.moves}` : " · assumed"}
+          </span>}
           {counts.scheduled > 0 && <span>{counts.scheduled} scheduled</span>}
           {counts.in_progress > 0 && <span className="text-blue-700">{counts.in_progress} started</span>}
           {counts.done > 0 && <span className="text-emerald-700">{counts.done} done</span>}
@@ -1750,19 +1812,42 @@ function TeamGroup({ group, me, allJobs, selectedDate, onAdvance, onEdit, onOpen
           <span className="text-xs text-slate-400">{g.list.length} jobs</span>
         </button>
 
+        {/* Two figures, never merged. The pale bar is what was planned off
+            the coordinator's estimates; the solid one inside it is what the
+            clock actually recorded. A day with no arrival and departure
+            times shows the plan alone and says so, rather than dressing an
+            estimate up as a measurement. */}
         {g.team !== "Unassigned" && (
           <div className="flex items-center gap-2 min-w-[190px]">
-            <div className="flex-1 h-1.5 rounded-full bg-slate-100 overflow-hidden">
-              <div className={`h-full rounded-full ${barCls}`} style={{ width: `${Math.min(100, g.loadPct)}%` }} />
+            <div className="flex-1 h-2 rounded-full bg-slate-100 overflow-hidden relative"
+                 title={`Planned ${formatMinutes(g.committed)} of ${formatMinutes(g.shiftMin)}${
+                   g.actualPct != null ? ` · actual ${formatMinutes(g.actualMin)} from ${g.timed} of ${g.list.length} timed` : ""}`}>
+              <div className={`h-full rounded-full ${barCls} opacity-30`}
+                   style={{ width: `${Math.min(100, g.loadPct)}%` }} />
+              {g.actualPct != null && (
+                <div className={`h-full rounded-full ${barCls} absolute inset-y-0 left-0`}
+                     style={{ width: `${Math.min(100, g.actualPct)}%` }} />
+              )}
             </div>
             <span className={`text-xs tabular-nums ${tone === "bad" ? "text-red-700 font-medium" : tone === "warn" ? "text-amber-700" : "text-slate-500"}`}>
-              {g.loadPct}%
+              {g.actualPct != null ? `${g.actualPct}%` : `${g.loadPct}%`}
+              {g.actualPct == null && <span className="text-slate-400 font-normal"> planned</span>}
             </span>
           </div>
         )}
 
         <span className="text-[11px] text-slate-400">
-          {formatMinutes(g.committed)} of {formatMinutes(g.shiftMin)}
+          {g.actualPct != null ? (
+            <>
+              <span className="text-slate-600">{formatMinutes(g.actualMin)} actual</span>
+              {` from ${g.timed} of ${g.list.length} timed · ${formatMinutes(g.committed)} planned`}
+            </>
+          ) : (
+            <>
+              {formatMinutes(g.committed)} planned of {formatMinutes(g.shiftMin)}
+              <span className="text-amber-600"> · nothing timed yet</span>
+            </>
+          )}
           {g.travel > 0 && ` · ${g.buildings} buildings`}
           {g.noEstimate > 0 && ` · ${g.noEstimate} with no estimate`}
         </span>
@@ -2759,23 +2844,39 @@ function OutcomeDialog({ job, selectedDate, onCancel, onConfirm }) {
  * job handed to another technician is still owed an answer, by its new
  * owner, and saying so is the whole point.
  * ====================================================================== */
-function AccountForDialog({ job, dayJobs, candidates, onCancel, onConfirm }) {
-  const [choice, setChoice] = useState("reassign");
+function AccountForDialog({ job, dayJobs, candidates, selectedDate, onCancel, onConfirm }) {
+  const [choice, setChoice] = useState("handover");
   const [tech, setTech] = useState("");
+  const [when, setWhen] = useState(selectedDate);
   const [why, setWhy] = useState("");
   const [dupOf, setDupOf] = useState("");
-  const [handedTo, setHandedTo] = useState("Housekeeping");
 
   const picked = OFF_BOARD_REASONS.find((r) => r.id === choice);
   const others = (dayJobs || []).filter(
     (j) => !isTombstone(j) && j.id !== job.id && !isOffBoard(j)
   );
 
+  /* The people who can take it. A name on the technician list means the
+     job moves to him and stays a maintenance job; anything else means it
+     has left the department, and that is a different answer. */
+  const techs = (candidates || []).filter((c) => squash(c) !== squash(job.team));
+  const OUTSIDE = ["Housekeeping", "Contractor", "Building management"];
+  const isOutside = OUTSIDE.some((x) => squash(x) === squash(tech));
+  const sameDay = when === selectedDate;
+
   const ready =
-    choice === "reassign" ? !!squash(tech) && squash(tech) !== squash(job.team) :
+    choice === "handover" ? !!squash(tech) && !!when :
     picked && picked.picksRow ? !!dupOf :
-    picked && picked.picksTeam ? !!squash(handedTo) :
     !!picked;
+
+  /* What will happen, said before it happens. Three different outcomes hang
+     off two dropdowns and the coordinator should not have to work out which
+     one he is about to get. */
+  const consequence =
+    !squash(tech) ? null :
+    isOutside ? `It leaves the board. ${squash(tech)} has it, and it counts against nobody here.` :
+    sameDay ? `It stays on ${selectedDate} under ${squash(tech)}, and he still owes the answer.` :
+    `It moves to ${when} under ${squash(tech)}. ${selectedDate} keeps the trail.`;
 
   return (
     <Modal title={`Account for — ${job.property} ${job.unit}`} onCancel={onCancel} wide>
@@ -2787,15 +2888,15 @@ function AccountForDialog({ job, dayJobs, candidates, onCancel, onConfirm }) {
       <div className="mt-3 space-y-1.5">
         <label className="flex items-start gap-2 text-xs text-slate-800 cursor-pointer">
           <input type="radio" name="acct" className="mt-0.5"
-                 checked={choice === "reassign"} onChange={() => setChoice("reassign")} />
+                 checked={choice === "handover"} onChange={() => setChoice("handover")} />
           <span>
-            <span className="font-medium">Somebody else did it — today</span>
+            <span className="font-medium">Somebody else has it</span>
             <span className="block text-[11px] text-slate-500">
-              The job stays on this day under its new owner and still needs his answer.
+              Another technician, or another team. Today, or on a later day.
             </span>
           </span>
         </label>
-        {OFF_BOARD_REASONS.map((r) => (
+        {OFF_BOARD_REASONS.filter((r) => r.id !== "other-team").map((r) => (
           <label key={r.id} className="flex items-start gap-2 text-xs text-slate-800 cursor-pointer">
             <input type="radio" name="acct" className="mt-0.5"
                    checked={choice === r.id} onChange={() => setChoice(r.id)} />
@@ -2804,26 +2905,44 @@ function AccountForDialog({ job, dayJobs, candidates, onCancel, onConfirm }) {
         ))}
       </div>
 
-      {choice === "reassign" && (
-        <div className="mt-3 border-t border-slate-200 pt-3">
-          <div className="text-xs font-medium text-slate-800">Who has it now?</div>
-          <div className="mt-1.5 flex flex-wrap gap-1.5">
-            {(candidates || []).filter((c) => squash(c) !== squash(job.team)).map((c) => (
-              <button key={c} onClick={() => setTech(c)}
-                      className={`text-xs px-2 py-1 rounded-md border ${
-                        squash(tech) === squash(c)
-                          ? "bg-slate-900 text-white border-slate-900"
-                          : "bg-white border-slate-300 hover:bg-slate-50"}`}>
-                {c}
-              </button>
-            ))}
+      {choice === "handover" && (
+        <div className="mt-3 border-t border-slate-200 pt-3 space-y-3">
+          <div className="flex flex-wrap gap-3">
+            <div className="min-w-[13rem] flex-1">
+              <label className="text-xs font-medium text-slate-800">Assigned to</label>
+              <select value={tech} onChange={(e) => setTech(e.target.value)}
+                      className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm">
+                <option value="">Pick who has it…</option>
+                {techs.length > 0 && (
+                  <optgroup label="Technicians">
+                    {techs.map((c) => <option key={c} value={c}>{c}</option>)}
+                  </optgroup>
+                )}
+                <optgroup label="Outside the department">
+                  {OUTSIDE.map((c) => <option key={c} value={c}>{c}</option>)}
+                </optgroup>
+              </select>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-800">On</label>
+              <input type="date" value={when} min={selectedDate}
+                     onChange={(e) => setWhen(e.target.value)}
+                     className="mt-1 block border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
+            </div>
           </div>
-          <input value={tech} onChange={(e) => setTech(e.target.value)}
-                 placeholder="or type a name"
-                 className="mt-2 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
+
+          {consequence && (
+            <p className={`text-[11px] rounded-md px-2 py-1.5 border ${
+              isOutside
+                ? "text-slate-600 bg-slate-50 border-slate-200"
+                : "text-blue-800 bg-blue-50 border-blue-200"}`}>
+              {consequence}
+            </p>
+          )}
+
           <input value={why} onChange={(e) => setWhy(e.target.value)}
                  placeholder="Why it moved — optional, e.g. Vitalis went to a guest complaint"
-                 className="mt-1.5 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
+                 className="w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
         </div>
       )}
 
@@ -2845,36 +2964,19 @@ function AccountForDialog({ job, dayJobs, candidates, onCancel, onConfirm }) {
         </div>
       )}
 
-      {picked && picked.picksTeam && (
-        <div className="mt-3 border-t border-slate-200 pt-3">
-          <div className="text-xs font-medium text-slate-800">Who has it now?</div>
-          <div className="mt-1.5 flex flex-wrap gap-1.5">
-            {["Housekeeping", "Contractor", "Building management"].map((x) => (
-              <button key={x} onClick={() => setHandedTo(x)}
-                      className={`text-xs px-2 py-1 rounded-md border ${
-                        handedTo === x
-                          ? "bg-slate-900 text-white border-slate-900"
-                          : "bg-white border-slate-300 hover:bg-slate-50"}`}>
-                {x}
-              </button>
-            ))}
-          </div>
-          <input value={handedTo} onChange={(e) => setHandedTo(e.target.value)}
-                 className="mt-2 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
-        </div>
-      )}
-
       <div className="flex justify-end gap-2 mt-4">
         <button onClick={onCancel} className="text-sm border border-slate-300 px-3 py-1.5 rounded-md">Back</button>
         <button
           onClick={() => onConfirm(
-            choice === "reassign"
-              ? { kind: "reassign", tech: squash(tech), why: squash(why) }
-              : { kind: "offboard", offBoard: choice, duplicateOf: dupOf, handedTo: squash(handedTo) }
+            choice === "handover"
+              ? { kind: "handover", tech: squash(tech), date: when, outside: isOutside, why: squash(why) }
+              : { kind: "offboard", offBoard: choice, duplicateOf: dupOf }
           )}
           disabled={!ready}
           className="text-sm text-white px-3 py-1.5 rounded-md disabled:opacity-40 bg-slate-900">
-          {choice === "reassign" ? "Hand it over" : "Take it off the board"}
+          {choice === "handover"
+            ? (isOutside ? "Hand it over" : sameDay ? "Move it to him" : `Move it to ${when}`)
+            : "Take it off the board"}
         </button>
       </div>
     </Modal>

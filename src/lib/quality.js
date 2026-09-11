@@ -185,6 +185,7 @@ export function gapsBetweenJobs(jobs) {
     .sort((a, b) => readClock(a.arrivedAt) - readClock(b.arrivedAt));
 
   let withinBuilding = 0, betweenBuildings = 0;
+  let withinPairs = 0, betweenPairs = 0;
   let pairs = 0, pairsPossible = 0, overlaps = 0, overLong = 0;
 
   for (let i = 1; i < timed.length; i++) {
@@ -201,13 +202,44 @@ export function gapsBetweenJobs(jobs) {
     pairs++;
     const same = canonProperty(prev.property) &&
       canonProperty(prev.property) === canonProperty(cur.property);
-    if (same) withinBuilding += gap; else betweenBuildings += gap;
+    if (same) { withinBuilding += gap; withinPairs++; }
+    else { betweenBuildings += gap; betweenPairs++; }
   }
 
   return {
-    withinBuilding, betweenBuildings,
+    withinBuilding, betweenBuildings, withinPairs, betweenPairs,
     total: withinBuilding + betweenBuildings,
     pairs, pairsPossible, overlaps, overLong,
+  };
+}
+
+/* ---------------------------------------------------------------------- *
+ * How long it takes to get from one building to the next.
+ *
+ * There is no route data and there is not going to be. What there is, once
+ * technicians write arrival and departure times, is every gap between
+ * leaving one building and arriving at the next — which is the same
+ * quantity, measured rather than assumed.
+ *
+ * Until enough of those exist it returns the department's standing
+ * assumption of half an hour, and says so. The caller must show which one
+ * it got: a committed-hours figure built on a guess and one built on
+ * ninety observed moves are not the same claim.
+ * ---------------------------------------------------------------------- */
+export const ASSUMED_TRAVEL_MIN = 30;
+
+/* Below this the mean is one bad afternoon, not a travel time. */
+const MIN_MOVES_FOR_TRAVEL = 8;
+
+export function averageTravelMinutes(jobs) {
+  const g = gapsBetweenJobs(jobs);
+  if (g.betweenPairs < MIN_MOVES_FOR_TRAVEL) {
+    return { minutes: ASSUMED_TRAVEL_MIN, measured: false, moves: g.betweenPairs };
+  }
+  return {
+    minutes: Math.round(g.betweenBuildings / g.betweenPairs),
+    measured: true,
+    moves: g.betweenPairs,
   };
 }
 
@@ -215,7 +247,11 @@ export function gapsBetweenJobs(jobs) {
  * The report.
  * ---------------------------------------------------------------------- */
 export function qualityReport(jobs, period, opts = {}) {
-  const all = (jobs || []).filter((j) => j && !j._tomb && inPeriod(j, period));
+  /* Off the board is off every denominator here. `all` is the base of the
+     coverage figures, so leaving duplicates in would make coverage read
+     lower than it is and the department look worse at closing out than it
+     actually is. */
+  const all = (jobs || []).filter((j) => j && !j._tomb && !isOffBoard(j) && inPeriod(j, period));
   const today = opts.today;
 
   const withAsset = all.filter((j) => assetKey(j.property, j.unit));
@@ -373,6 +409,10 @@ export function rolesByTech(jobs, period) {
   const byTech = new Map();
   (jobs || []).forEach((j) => {
     if (!j || j._tomb) return;
+    /* A duplicate is not a job this man did, and counting it shifts both
+       his work mix and the five-job floor that decides whether he gets a
+       role at all. */
+    if (isOffBoard(j)) return;
     if (!inPeriod(j, period)) return;
     const crew = splitCrew(j.team);
     (crew.length ? crew : ["Unassigned"]).forEach((raw) => {

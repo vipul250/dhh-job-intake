@@ -29,7 +29,7 @@
  * clean a week is margin leaving the building, not diligence.
  * ---------------------------------------------------------------------- */
 
-import { RESOLVED_STATES } from "./job.js";
+import { RESOLVED_STATES, isOffBoard } from "./job.js";
 import {
   assetKey, canonUnit, canonProperty, squash, displayProperty, daysBetween,
 } from "./normalize.js";
@@ -154,6 +154,9 @@ export function poolAdherence(jobs, contracts, period) {
   const byPool = new Map();
   (jobs || []).forEach((j) => {
     if (!j || j._tomb) return;
+    /* A cancelled clean was not a clean. Counting it would show Resty
+       meeting a contract he did not meet. */
+    if (isOffBoard(j)) return;
     if (!POOL_RE.test(squash(j.description))) return;      // pool work only
     const d = jobDate(j);
     if (!d) return;

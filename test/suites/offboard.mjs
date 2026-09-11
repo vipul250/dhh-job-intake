@@ -17,7 +17,9 @@ import {
   setState, reassign, applyEdit, isOffBoard, isResolved,
   NOT_DONE_REASONS, OFF_BOARD_REASONS, OFF_BOARD_LABEL, actualDuration,
 } from "../../src/lib/job.js";
-import { returnsByUnit, timeByTech } from "../../src/lib/quality.js";
+import { returnsByUnit, timeByTech, averageTravelMinutes, ASSUMED_TRAVEL_MIN } from "../../src/lib/quality.js";
+import { moveJob } from "../../src/lib/job.js";
+import { feedQuality, againstBenchmark } from "../../src/lib/feed.js";
 
 const ok = [];
 const t = (name, fn) => { fn(); ok.push(name); };
@@ -226,6 +228,102 @@ t("the 2111 tangle is one visit once the duplicates are off the board", () => {
     setState(job({ id: "8" }), "cancelled", "Vipul", { offBoard: "duplicate", duplicateOf: "5" }),
   ], "2026-09");
   assert.equal(rows[0].visits, 1);
+});
+
+/* ------------------- handed over, today or another day ---------------- */
+
+t("handed to another technician on a later day leaves the usual trail", () => {
+  const handed = reassign(job({ team: "Vitalis" }), "Yousoufu", "Vipul", "Vitalis on a complaint");
+  const { moved, tomb } = moveJob(handed, "2026-09-11", "Vipul", "tech-unavailable",
+    { jobId: "", label: "Handed to Yousoufu" });
+  assert.equal(moved.team, "Yousoufu", "the new owner survives the move");
+  assert.equal(moved.scheduledDate, "2026-09-11");
+  assert.equal(moved.state, "scheduled");
+  assert.equal(moved.pushCount, 1);
+  assert.equal(tomb.snapshot.team, "Yousoufu", "the day it left records who had it");
+  assert.equal(tomb.toDate, "2026-09-11");
+});
+
+t("the origin day is never rewritten by a handover", () => {
+  const j = job({ team: "Vitalis" });
+  const handed = reassign(j, "Yousoufu", "Vipul");
+  const { moved } = moveJob(handed, "2026-09-12", "Vipul", "tech-unavailable");
+  assert.equal(moved.originDate, "2026-09-10", "where it first landed does not move");
+});
+
+/* --------------------------- travel between --------------------------- */
+
+t("with nothing timed, travel falls back to the standing half hour and says so", () => {
+  const r = averageTravelMinutes([job({ id: "a" }), job({ id: "b" })]);
+  assert.equal(r.minutes, ASSUMED_TRAVEL_MIN);
+  assert.equal(r.measured, false);
+});
+
+t("a handful of moves is not a travel time", () => {
+  const two = [
+    job({ id: "a", property: "Palm Villa", arrivedAt: "09:00", leftAt: "10:00" }),
+    job({ id: "b", property: "Bahar 2", arrivedAt: "10:40", leftAt: "11:30" }),
+  ];
+  assert.equal(averageTravelMinutes(two).measured, false, "two moves is one bad afternoon");
+});
+
+t("enough real moves and travel becomes the measured mean", () => {
+  const rows = [];
+  for (let i = 0; i < 10; i++) {
+    const h = 7 + i;
+    rows.push(job({ id: `a${i}`, property: `Tower ${i}`, unit: String(i),
+      arrivedAt: `${String(h).padStart(2, "0")}:00`, leftAt: `${String(h).padStart(2, "0")}:40` }));
+  }
+  const r = averageTravelMinutes(rows);
+  assert.equal(r.measured, true);
+  assert.equal(r.moves, 9);
+  assert.equal(r.minutes, 20, "40 past to the next hour is a twenty-minute move");
+});
+
+/* ------------------------ how the day was fed ------------------------- */
+
+const day10 = [
+  ...Array.from({ length: 5 }, (_, i) => job({ id: `f${i}`, state: "fixed" })),
+  setState(job({ id: "n" }), "not_done", "V", { reason: "No access / guest refused" }),
+  setState(job({ id: "c" }), "cancelled", "V", { offBoard: "duplicate", duplicateOf: "f0" }),
+  { _tomb: true, jobId: "x", toDate: "2026-09-12", displacedBy: { label: "a complaint took the slot" }, snapshot: {} },
+  { _tomb: true, jobId: "y", toDate: "2026-09-12", displacedBy: null, snapshot: {} },
+];
+
+t("a day is scored on answers, explained moves and timing — separately", () => {
+  const [d] = feedQuality({ "2026-09-10": day10 });
+  assert.equal(d.jobs, 7);
+  assert.equal(d.moves, 2);
+  assert.equal(d.answeredPct, 100, "every row ended in something");
+  assert.equal(d.explainedPct, 50, "one move of two says what took the slot");
+  assert.equal(d.timedPct, 0, "the best-fed day still times nothing");
+});
+
+t("off-board rows count as answered but are out of the timing denominator", () => {
+  const [d] = feedQuality({ "2026-09-10": day10 });
+  assert.equal(d.visits, 6, "the duplicate was never a visit");
+  assert.equal(d.jobs, 7);
+});
+
+t("a half-filled day scores below the benchmark", () => {
+  const rows = feedQuality({
+    "2026-09-10": day10,
+    "2026-09-07": [job({ id: "p" }), job({ id: "q" }), setState(job({ id: "r" }), "fixed", "V")],
+  });
+  const bench = rows.find((r) => r.date === "2026-09-10");
+  const poor = rows.find((r) => r.date === "2026-09-07");
+  assert.ok(poor.answeredPct < bench.answeredPct);
+  const vs = againstBenchmark(rows, bench);
+  assert.equal(vs.days, 2);
+  assert.equal(vs.meets, 1, "only the benchmark day meets itself");
+  assert.equal(vs.fullyAnswered, 1);
+});
+
+t("a day with no moves is not punished for explaining none", () => {
+  const [d] = feedQuality({ "2026-09-11": [setState(job({ id: "a" }), "fixed", "V")] });
+  assert.equal(d.explainedPct, null, "null, not zero — there was nothing to explain");
+  const vs = againstBenchmark([d], { answeredPct: 100, explainedPct: 92.3 });
+  assert.equal(vs.meets, 1);
 });
 
 console.log(ok.map((n) => `  ok  ${n}`).join("\n"));
