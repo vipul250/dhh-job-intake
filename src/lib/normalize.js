@@ -110,6 +110,11 @@ export const TECH_ALIASES = {
   yousoufu: "Yousoufu",
   yousofu: "Yousoufu",
   yousaf: "Yousoufu",
+  /* Added 11 September. The Monthly report was showing Yousoufu with 15
+     jobs and Yousoufou with 6 — one man's work split across two rows,
+     which is exactly what this table exists to prevent. He confirmed it is
+     a typo for the same person. */
+  yousoufou: "Yousoufu",
   shafiq: "Shafeeq",
   shafique: "Shafeeq",
   shafeeq: "Shafeeq",
@@ -137,6 +142,9 @@ export const TECH_ALIASES = {
   adi: "Adi",
   albert: "Albert",
   monish: "Monish",
+  /* Appears in the live September data and was in no spelling here, so any
+     variant of it would have become a second technician. */
+  rizwan: "Rizwan",
 };
 
 function titleCase(s) {

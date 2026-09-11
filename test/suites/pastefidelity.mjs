@@ -151,6 +151,19 @@ t("every technician resolves to a known person", () => {
   assert.deepEqual([...unknown], []);
 });
 
+t("the live September roster all resolves to one name each", () => {
+  /* The twelve names the Monthly report showed on 11 September. Yousoufou
+     and Rizwan were missing from TECH_ALIASES, so Yousoufu's 15 jobs and
+     Yousoufou's 6 were being reported as two different men. */
+  const roster = ["Jabbar", "Daljith", "Vitalis", "Bright", "Anthony", "Abdul Riyaz",
+                  "Yousoufu", "Resty", "Yousoufou", "Bijaya", "Rizwan", "Shafeeq"];
+  const known = new Set(Object.values(TECH_ALIASES).map(canonKey));
+  roster.forEach((n) => assert.ok(known.has(canonKey(canonTech(n))),
+    `${n} resolves to ${canonTech(n)}, which is not a known technician`));
+  assert.equal(canonTech("Yousoufou"), canonTech("Yousoufu"),
+    "confirmed by Vipul as the same person");
+});
+
 t("every row lands on a date", () => {
   assert.deepEqual(jobs.filter((j) => !j._date).map((j) => j.property), []);
 });
