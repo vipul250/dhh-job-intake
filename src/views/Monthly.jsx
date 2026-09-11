@@ -315,14 +315,20 @@ export default function Monthly({ knownDates, propertyMaster }) {
         <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
           <h3 className="text-sm font-medium text-slate-700 flex items-center gap-1.5">
             <Merge className="w-3.5 h-3.5 text-slate-400" />
-            {index.merges.length} property name{index.merges.length === 1 ? "" : "s"} read as
-            another spelling
+            {index.merges.length} property name{index.merges.length === 1 ? "" : "s"} grouped
+            with another spelling
           </h3>
           <p className="text-xs text-slate-500 mt-1 max-w-3xl">
             Numbers and single letters have to match exactly, so Azizi Riviera 1 and 10 stay
             apart and so do Celestia A and B. Only the spelling of the name itself is
-            forgiven. If any of these are genuinely different buildings, say so on the
-            Properties tab and it will stop.
+            forgiven.
+          </p>
+          <p className="text-xs text-slate-500 mt-1 max-w-3xl">
+            <b>The spelling on the right is whichever is used most</b>, which is not always
+            the correct one — a typo used sixteen times beats the right name used twice. Add
+            the building on the <b>Properties</b> tab and that spelling wins instead. If two
+            of these are genuinely different buildings, say so there too and the grouping
+            stops.
           </p>
           <ul className="mt-2 space-y-0.5">
             {index.merges.map((m) => (
