@@ -211,4 +211,6 @@ Node only, no browser, against the real workbook in `test/harness/`.
 - **C**, role-aware technician metrics: Resty's planned-work adherence is
   per pool.
 - **D**, the Tier 1 / Tier 2 quality set specced in `94dbb73`, whose
-  headline measure is returns **per unit**.
+  headline measure is returns **per unit**, and whose unaccounted-time
+  measure counts gaps between **buildings** — four of Resty's eleven pool
+  days carry a name variant, so those days currently read an extra hop.

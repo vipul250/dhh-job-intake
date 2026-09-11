@@ -66,6 +66,7 @@ justify charging an owner for excessive visits.
 | Chargeable recovery | `guest-damage` returns × their cost | returns carrying a reason |
 | Contractor durability | contractor-flagged visit that returned | low, and regex-detected |
 | Estimate accuracy | measured against estimated | 18% (158 jobs) |
+| Unaccounted time between jobs | `arrivedAt[n]` − `leftAt[n-1]` across a technician's own day | needs **both** times on **consecutive** jobs |
 
 Each shows its denominator beside the figure. **Below 50% coverage the
 figure is rendered as provisional** and the caveat names the sample size —
@@ -73,6 +74,89 @@ figure is rendered as provisional** and the caveat names the sample size —
 timed-minutes warning (`r.timedPct < 50`), so this introduces no new
 convention. It is the treatment `projectCost` gives a margin that rests on
 estimates rather than measurements.
+
+## Unaccounted time between jobs
+
+Added 11 September at his request, after measuring Resty's pool round and
+finding that the same five cleans cost 5.0 hours on a batched day and 7.0 on
+a spread one — a two-hour difference produced entirely by which buildings
+the round visited.
+
+Today that difference is an **assumption**: `travelMinutesPerHop: 30` in
+`cost.js`, flagged in that file as a placeholder. Jumeirah Golf Estates to
+Binghatti Tulip is not thirty minutes in Dubai traffic. The figure can be
+measured instead, from data already being collected.
+
+### How
+
+Order a technician's jobs for one day by `arrivedAt`. For each job after the
+first, the gap is `arrivedAt` minus the previous job's `leftAt`. Sum the
+gaps for the day.
+
+Ordered by **arrival**, not by the schedule, because the schedule is a plan
+and the arrival times are what happened.
+
+### It is NOT called travel, and that is the point
+
+The gap contains travel. It also contains lunch, a warehouse collection,
+waiting for a guest to answer the door, writing up the last job, and
+refuelling — the 1.5-hour gap after Base Tower that Kaja raised in the
+coordinator meeting on 8 September. The data cannot tell these apart.
+
+So the measure is **unaccounted time between jobs**. Naming it travel would
+repeat the mistake `computeRepeatVisits` makes by naming its returns
+"rework": claiming a cause the data does not carry.
+
+### One split the data DOES support
+
+A gap between two jobs **in the same building** cannot be travel. A gap
+between two jobs in **different buildings** plausibly is. Reporting the two
+separately costs nothing and is the only causal distinction available
+without asking anybody anything:
+
+- `betweenBuildings` — plausibly travel, and the figure to compare against
+  the 30-minute assumption
+- `withinBuilding` — definitely not travel
+
+Resty's round is the clearest case: his Palm Villa days are one building and
+should show near-zero of both.
+
+### Edge cases, each with a wrong default
+
+- **The first job of the day has no predecessor.** Its gap is the commute,
+  which is not a job cost. `cost.js` already draws that line — the first
+  building of the day is excluded from trip charges — and this follows it.
+- **A negative gap means two jobs overlap**, recorded as concurrent. That is
+  either a crew job or a recording error. It is **surfaced, not clamped to
+  zero**: silently treating it as zero hides the recording error, and this
+  app's whole argument is that nothing disappears quietly.
+- **Coverage is the product of two close-outs**, so it is scarcer than
+  outcome coverage: a gap needs `leftAt` on one job and `arrivedAt` on the
+  next. Reported as pairs available out of pairs possible, not as a
+  percentage of jobs.
+- **A gap spanning a shift break** is not work. Gaps beyond a ceiling
+  (start with 3 hours) are reported separately rather than summed in, for
+  the same reason `actualDuration` discards a twelve-hour job as a missed
+  Done click.
+
+### What it does not do yet
+
+It does **not** replace `travelMinutesPerHop`. That default stays until
+there is enough measured data to recalibrate it, and recalibration is a
+later stage: a learned travel matrix per building pair, in the shape
+`learned.js` already uses for durations and `buildPriceBook` for material
+costs. Explicitly out of scope here.
+
+The immediate deliverable is the comparison — measured gap against the
+assumed 30 minutes — so the assumption stops being invisible.
+
+### Depends on A
+
+Per-building gap counting requires one building to be one building.
+`Bingatti royale` and `Binghatti Royale` counted separately read as an extra
+hop, which inflates `betweenBuildings` on exactly the spread days this
+measure is meant to judge. Four of Resty's eleven days carry such variants.
+See the property-canonicalisation spec.
 
 ## Two corrections to measures that already exist
 
@@ -179,6 +263,14 @@ wrong:
 5. A unit whose property name ends in its own unit number keys as **one**
    asset.
 6. A same-day second visit is not a return; a visit 3 days later is.
+7. **Unaccounted time between jobs**, on a constructed day:
+   - two jobs in the same building with a two-hour gap report that gap
+     under `withinBuilding` and **zero** under `betweenBuildings`
+   - the first job of the day contributes no gap at all
+   - an overlapping pair produces a **surfaced** negative, not a zero
+   - a gap over the ceiling is reported apart from the total, not summed in
+   - a pair missing `leftAt` on the earlier job contributes no gap and
+     reduces the reported pairs-available count
 
 ## The limit, to be stated on the page
 
