@@ -1,6 +1,6 @@
 # What "not done" is being asked to mean, and how the day should close
 
-Design, 11 September 2026. Not yet built.
+Design, 11 September 2026. Built and deployed the same day — commit 4eb3192.
 
 ## The question that was asked
 
@@ -26,7 +26,7 @@ over 63 days, 96 of them marked `not_done`:
 |---|---:|---:|
 | **The work did not happen** — no access, guest unreachable, ran out of time | **26** | **27%** |
 | The row should not exist — duplicate, wrong entry, added by mistake | 22 | 23% |
-| Wrong unit / wrong information on the job | 24 | 25% |
+| Wrong unit / wrong information on the job — confirmed by the coordinators to mean "delete this row" | 24 | 25% |
 | **Somebody else did it** — another technician, same day or next | 11 | 11% |
 | Already done on an earlier day, or technician off | 6 | 6% |
 | Waiting on material, needs rescheduling | 4 | 4% |
@@ -129,7 +129,10 @@ offBoard: "duplicate" | "other-team" | ""
 | Answer | Sets | Also captures |
 |---|---|---|
 | **Duplicate of another row** | `cancelled`, `offBoard: "duplicate"` | `duplicateOf: <job id>`, picked from the same day |
+| **Raised in error** | `cancelled`, `offBoard: "wrong-entry"` | the old "wrong unit or wrong information", now where it belongs |
 | **Another team's now** | `cancelled`, `offBoard: "other-team"` | which team (housekeeping / contractor), free text |
+| **Resolved without a visit** | `cancelled`, `offBoard: "no-visit"` | — |
+| **Called off** | `cancelled`, `offBoard: "called-off"` | by the owner, PM or guest |
 
 Neither counts as work done, neither counts as work failed, and neither
 appears against a technician. The row stays on record — nothing is deleted,
@@ -248,10 +251,6 @@ Two consequences follow, and both belong in the build:
 
 ## Not in this change
 
-- **The 24 rows reading "wrong unit or wrong information".** This is a real
-  canned reason being used correctly *and* as a synonym for "wrong entry".
-  Splitting it needs the coordinator to say which he meant; it is a
-  question, not a design decision.
 - **Spurious follow-ups.** 17 of 38 auto-created follow-ups (45%) ended
   `not_done`, mostly killed with the nearest reason to hand. Once
   "duplicate" exists they can be killed honestly, and the rate becomes
