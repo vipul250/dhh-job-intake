@@ -343,6 +343,19 @@ export function qualityReport(jobs, period, opts = {}) {
    small to mean anything, which is the same argument the tier split makes. */
 const ROLE_FLOOR_PCT = 20;
 
+/* And enough work to have a role at all.
+ *
+ * Live on 11 September this read "Shafeeq — project" off a single job: one
+ * project job is 100% project work, so the role was technically correct and
+ * practically misleading. In August the same man was 41 jobs and genuinely
+ * mixed.
+ *
+ * Five, because one job in five IS twenty per cent — the floor is the
+ * smallest sample the threshold above can divide, rather than a second
+ * number chosen by feel. Below it the honest answer is that we cannot say.
+ */
+const MIN_JOBS_FOR_ROLE = Math.ceil(100 / ROLE_FLOOR_PCT);
+
 const median = (nums) => {
   if (!nums.length) return null;
   const s = [...nums].sort((a, b) => a - b);
@@ -379,7 +392,8 @@ export function rolesByTech(jobs, period) {
     /* Project first: a job card runs for days and is measured against its
        quoted amount on the Projects tab, not by returns or by consistency. */
     let role;
-    if (project > planned && project > reactive) role = "project";
+    if (n < MIN_JOBS_FOR_ROLE) role = "unrated";
+    else if (project > planned && project > reactive) role = "project";
     else if (plannedPct >= ROLE_FLOOR_PCT && reactivePct >= ROLE_FLOOR_PCT) role = "mixed";
     else if (plannedPct > reactivePct) role = "planned";
     else if (reactivePct >= ROLE_FLOOR_PCT) role = "reactive";

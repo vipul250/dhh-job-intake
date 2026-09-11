@@ -227,11 +227,16 @@ export default function Monthly({ knownDates, propertyMaster }) {
                           />
                           {t.tech}
                           {roleOf[t.tech] && roleOf[t.tech].role !== "reactive" && (
-                            <span className={`text-[10px] rounded px-1.5 py-0.5 font-normal ${
-                              roleOf[t.tech].role === "planned" ? "bg-sky-100 text-sky-800"
-                              : roleOf[t.tech].role === "mixed" ? "bg-violet-100 text-violet-800"
-                              : "bg-slate-100 text-slate-600"}`}>
-                              {roleOf[t.tech].role}
+                            <span
+                              title={roleOf[t.tech].role === "unrated"
+                                ? `Only ${roleOf[t.tech].jobs} job(s) in this period — too few to say what kind of work he does`
+                                : undefined}
+                              className={`text-[10px] rounded px-1.5 py-0.5 font-normal ${
+                                roleOf[t.tech].role === "planned" ? "bg-sky-100 text-sky-800"
+                                : roleOf[t.tech].role === "mixed" ? "bg-violet-100 text-violet-800"
+                                : roleOf[t.tech].role === "unrated" ? "bg-slate-100 text-slate-500 italic"
+                                : "bg-slate-100 text-slate-600"}`}>
+                              {roleOf[t.tech].role === "unrated" ? "too few to say" : roleOf[t.tech].role}
                             </span>
                           )}
                         </button>
@@ -251,7 +256,15 @@ export default function Monthly({ knownDates, propertyMaster }) {
                             {t.major} major, {t.minor} minor — across{" "}
                             {t.trades.length} trade{t.trades.length === 1 ? "" : "s"}:
                           </div>
-                          {roleOf[t.tech] && (
+                          {roleOf[t.tech] && roleOf[t.tech].role === "unrated" && (
+                            <div className="text-xs text-slate-600 mb-2 pb-2 border-b border-slate-200">
+                              Only {roleOf[t.tech].jobs} job{roleOf[t.tech].jobs === 1 ? "" : "s"} in
+                              this period, so there is nothing to say about what kind of work he
+                              does — one job is 100% of whatever it happened to be. Widen the
+                              period to see him properly.
+                            </div>
+                          )}
+                          {roleOf[t.tech] && roleOf[t.tech].role !== "unrated" && (
                             <div className="text-xs text-slate-600 mb-2 pb-2 border-b border-slate-200">
                               {roleOf[t.tech].plannedPct}% of his work is planned,{" "}
                               {roleOf[t.tech].reactivePct}% is faults — so he is judged on{" "}

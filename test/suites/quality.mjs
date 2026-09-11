@@ -295,5 +295,41 @@ t("the real workbook splits the department the way the data does", () => {
   assert.ok(byName.Jabbar.judgeOn.includes("firstTimeFix"));
 });
 
+t("too few jobs means no role at all, not a confident wrong one", () => {
+  /* Live on 11 September this read "Shafeeq — project" off ONE job. The
+     role was technically correct and practically misleading: one project
+     job is 100% project work. A percentage needs a denominator worth
+     dividing by. */
+  const one = rolesByTech([job({ team: "Shafeeq", description: "Onboarding - Approved Quotation" })]);
+  const s1 = one.find((r) => r.tech === "Shafeeq");
+  assert.equal(s1.role, "unrated");
+  assert.deepEqual(s1.judgeOn, [], "nothing can be judged from one job");
+  assert.equal(s1.jobs, 1);
+
+  const four = rolesByTech(Array.from({ length: 4 }, () =>
+    job({ team: "Shafeeq", description: "AC PPM" })));
+  assert.equal(four[0].role, "unrated", "four is still below the floor");
+});
+
+t("the floor is the smallest sample the 20% threshold can divide", () => {
+  /* Five, because one job in five IS twenty per cent. Not a new magic
+     number — it falls out of the threshold already there. */
+  const five = rolesByTech(Array.from({ length: 5 }, (_, i) =>
+    job({ team: "Resty", description: "Pool Cleaning", property: "Palm Villa", unit: `E${i}` })));
+  assert.equal(five[0].role, "planned", "five is enough to say what he does");
+  assert.ok(five[0].judgeOn.includes("consistency"));
+});
+
+t("a real roster is unaffected by the floor", () => {
+  const roles = rolesByTech(dated);
+  const byName = Object.fromEntries(roles.map((r) => [r.tech, r]));
+  assert.equal(byName.Shafeeq.role, "mixed", "41 jobs in August, 37% planned");
+  assert.equal(byName.Resty.role, "planned");
+  assert.equal(byName.Jabbar.role, "reactive");
+  /* Anyone genuinely below the floor must say so rather than guess. */
+  roles.filter((r) => r.jobs < 5).forEach((r) =>
+    assert.equal(r.role, "unrated", `${r.tech} has ${r.jobs} jobs and should be unrated`));
+});
+
 console.log(ok.map((n) => `  ok  ${n}`).join("\n"));
 console.log(`\n${ok.length} checks passed.`);
