@@ -1,6 +1,7 @@
 # What "not done" is being asked to mean, and how the day should close
 
-Design, 11 September 2026. Built and deployed the same day — commit 4eb3192.
+Design, 11 September 2026. Built and deployed the same day — commits 4eb3192
+and 566fa33.
 
 ## The question that was asked
 
@@ -279,3 +280,59 @@ Two consequences follow, and both belong in the build:
    name, under attended-nothing-produced. Asserted directly.
 6. Every productive-time figure must render its coverage. A productive-time
    figure with no coverage shown is a failed build, not a cosmetic issue.
+
+
+## Added during the build, 11 September
+
+Four things the department asked for once it could see the first version
+working. They are the same argument as everything above: **an estimate and
+an observation are different claims and must not share a number.**
+
+### Handover is one control
+
+Not a technician picker and a separate move. One question — *assigned to,
+and on what date* — with three outcomes the dialog names before the button
+is pressed:
+
+| Assigned to | Date | What happens |
+|---|---|---|
+| A technician | the same day | Stays on the day under its new owner. He still owes the answer. |
+| A technician | a later day | Handover **and** a move, with the tombstone every move leaves. |
+| Housekeeping, a contractor, building management | either | Off the board. It has left the department. |
+
+### The load bar shows what happened
+
+The pale track is the coordinator's estimate. The solid bar inside it is
+arrival to departure. A day with nothing timed shows the plan alone and
+says *nothing timed yet* — it does not let an estimate pass as a
+measurement.
+
+### Travel is measured where it can be
+
+Half an hour per extra building was a standing guess. `averageTravelMinutes`
+takes the mean of the real gaps between leaving one building and arriving
+at the next — the same quantity, observed. Under eight moves it returns the
+old half hour and the board says **assumed**, because eight is where a mean
+stops being one bad afternoon.
+
+### The benchmark
+
+`feed.js` scores every day on the three things that must be true before
+anything downstream means anything:
+
+| | What it asks | 10 September |
+|---|---|---|
+| **Answered** | every row ended in something | **100%** — 1 of only 3 days in 63 |
+| **Explained** | every move says what took the slot | **92%** — 12 of 13 |
+| **Timed** | every visit has arrival and departure | **3%** — 1 of 38 |
+
+10 September is the standard because the coordinator filled it himself and
+vouches for it. The third row is the honest limit of that standard: the
+best-fed day in the department still cannot say how long the work took.
+The table reports it rather than grading on what is currently achievable.
+
+### And a correction to the denominators
+
+`rolesByTech`, `qualityReport` and `poolAdherence` were still counting
+cancelled rows. A duplicate shifted a technician's work mix, dragged
+coverage down, and could have shown a pool contract met that was not.
