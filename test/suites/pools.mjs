@@ -195,5 +195,50 @@ t("the seeded tiers put Palm Villa and Jumeirah Golf on six a week", () => {
   assert.deepEqual(small.expected, [4, 6], "a small pool stays on 2-3 a week");
 });
 
+t("every pool in the real fortnight has its terms recorded", () => {
+  /* He gave the complete tiering on 11 September: Palm Villa and Jumeirah
+     Golf Estates are big, everything else small. So no pool should be
+     running on an unrecorded fallback, and the warning about unreliable
+     verdicts should have nothing to warn about. */
+  const r = poolAdherence(real, SEEDED_POOL_CONTRACTS, { from: "2026-08-18", to: "2026-08-31" });
+  const unknown = r.pools.filter((p) => !p.hasContract);
+  assert.deepEqual(unknown.map((p) => p.label), [],
+    "these pools still have no terms recorded");
+  assert.equal(r.summary.withoutContractRecord, 0);
+});
+
+t("recording the small pools changes no verdict", () => {
+  /* The cadence was already right by fallback. This is about the warning,
+     not the arithmetic — so the numbers must be identical either way. */
+  const before = poolAdherence(real, { byProperty: {
+    "palm villa": { perWeek: [6, 6] }, "jumeirah golf estates": { perWeek: [6, 6] },
+  } }, { from: "2026-08-18", to: "2026-08-31" });
+  const after = poolAdherence(real, SEEDED_POOL_CONTRACTS, { from: "2026-08-18", to: "2026-08-31" });
+  assert.equal(after.summary.totalShortfall, before.summary.totalShortfall);
+  assert.equal(after.summary.under, before.summary.under);
+  assert.equal(after.summary.over, before.summary.over);
+});
+
+t("a pool at an untiered property still flags as unknown", () => {
+  /* The warning has to keep working for the next pool nobody has tiered. */
+  const r = poolAdherence(
+    [clean({ scheduledDate: "2026-08-18", property: "Somewhere New", unit: "1" })],
+    SEEDED_POOL_CONTRACTS, FORTNIGHT);
+  assert.equal(r.pools[0].hasContract, false);
+  assert.equal(r.summary.withoutContractRecord, 1);
+});
+
+t("both spellings of Binghatti Royale carry the tier", () => {
+  /* The typo is currently the canonical name, and would flip the day the
+     correct spelling reaches the property master. */
+  ["Binghatti Royale", "Bingatti Royale"].forEach((name) => {
+    const r = poolAdherence(
+      [clean({ scheduledDate: "2026-08-18", property: name, unit: "605" })],
+      SEEDED_POOL_CONTRACTS, FORTNIGHT);
+    assert.equal(r.pools[0].hasContract, true, `${name} lost its terms`);
+    assert.deepEqual(r.pools[0].expected, [4, 6]);
+  });
+});
+
 console.log(ok.map((n) => `  ok  ${n}`).join("\n"));
 console.log(`\n${ok.length} checks passed.`);

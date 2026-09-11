@@ -81,10 +81,38 @@ export const STANDARD_POOL_CONTRACT = {
  * no terms. When the contracts are collected properly this becomes the
  * starting value for that register rather than the answer.
  * ---------------------------------------------------------------------- */
+const BIG = { perWeek: [6, 6], annualPrice: 950 * 12, inspectionsPerYear: 4 };
+const SMALL = { perWeek: [2, 3], annualPrice: 9600, inspectionsPerYear: 12 };
+
 export const SEEDED_POOL_CONTRACTS = {
   byProperty: {
-    "palm villa": { perWeek: [6, 6], annualPrice: 950 * 12, inspectionsPerYear: 4 },
-    "jumeirah golf estates": { perWeek: [6, 6], annualPrice: 950 * 12, inspectionsPerYear: 4 },
+    /* Big pools, six cleans a week — confirmed 11 September. */
+    "palm villa": BIG,
+    "jumeirah golf estates": BIG,
+
+    /* And the small pools, recorded EXPLICITLY rather than left to fall
+       through to the default.
+       
+       The cadence is the same either way, so this changes no verdict. What
+       it changes is that the report stops saying "terms not recorded" about
+       six pools whose terms he has actually given — and, more usefully,
+       keeps that warning meaningful for a pool at a property nobody has
+       tiered yet. Recorded by PROPERTY, so a second pool at Binghatti
+       Tulip inherits the tier instead of arriving unknown. */
+    "binghatti tulip": SMALL,
+    "binghatti azure": SMALL,
+    "gemz by danube": SMALL,
+    "acacia a": SMALL,
+
+    /* Both spellings, on purpose. "Bingatti" is the misspelling and it is
+       currently the CANONICAL name, because propertyName.js picks the
+       most-used spelling and the typo is used twice to the correct name's
+       once. The day somebody adds Binghatti Royale to the property master
+       the canonical form flips, and a single-spelling key here would
+       silently stop matching and the pool would fall back to unknown
+       terms. Two lines is cheaper than that failure. */
+    "binghatti royale": SMALL,
+    "bingatti royale": SMALL,
   },
   byAsset: {},
 };
