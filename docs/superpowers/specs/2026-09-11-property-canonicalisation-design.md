@@ -36,7 +36,10 @@ equivalent despite a `property-master` existing to resolve against.
 | Distinct raw strings | 188 |
 | After `canonProperty` | 178 |
 | Pure case/space variants it already collapses | 10 |
-| Genuine duplicates it still misses | **4 pairs** |
+| Genuine duplicates it still misses | **5 pairs** |
+
+The fifth — `Roawda Parkviews` against `Rawda Parkviews` — was found by the
+rule rather than by eye, which is the point of having one.
 
 Small, and worth doing precisely because it is small and the damage is
 invisible.
@@ -65,8 +68,16 @@ different building. Any similarity threshold merges Azizi Riviera 1 with
    `tower`/`twr`, `residences` → `residence`.
 2. Punctuation becomes spaces.
 3. Split into **numeric** tokens and **word** tokens.
-4. **Numeric tokens must match exactly, in order.** They identify the
-   building. This is the whole safety mechanism.
+4. **Identifier tokens must match exactly, in order.** An identifier is
+   all digits (`1`, `305`), a single character (`A`, `B`, `D`), or anything
+   mixing letters and digits (`B2`, `G01`). They identify the building.
+   This is the whole safety mechanism.
+
+   *Widened during implementation, 11 September.* A numbers-only guard
+   merged `Celestia A` with `Celestia B`, and `Damac Towers by Paramount A`
+   with `... Paramount D` — two pairs of real towers, each one edit apart.
+   A single letter is a designator, not a spelling. The "exactly the known
+   duplicates, no more" assertion is what caught it.
 5. Word counts must match.
 6. Words are compared **positionally** — first against first, second
    against second, which is why step 5 comes before it. Each pair passes if
