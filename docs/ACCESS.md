@@ -222,6 +222,60 @@ That is the worse failure of the two. The first version broke the app
 loudly. This one would have left it wide open quietly, with a document
 saying it was closed.
 
+### Before any of it: does a user exist?
+
+`sendCode` in `src/lib/auth.js` calls `signInWithOtp` with
+`shouldCreateUser: false`. That is the allowlist, and it is also the way
+this locks you out: **an address that is not already a user in Supabase can
+never receive a code.** No email problem, no rate limit — the request is
+simply refused, and the app says "that address is not set up for this app".
+
+So the first question is not whether email works. It is whether there is a
+user at all:
+
+> Supabase → Authentication → Users. There must be a row for the address
+> you intend to sign in with. If the list is empty, **stop** — enabling the
+> gate now locks everybody out of an app with no way back in except this
+> SQL editor.
+
+Add yourself there first (Add user → send invite, or create with a
+password), and confirm the invite email actually arrives. That single test
+covers both failure modes at once.
+
+While in that screen, turn **public sign-ups off**. `shouldCreateUser:
+false` stops the app creating users, but it is the app being polite —
+anybody can call the Supabase API directly. With sign-ups open, a stranger
+can register and land in the `authenticated` role, which the policies below
+trust completely.
+
+### Then do it in two stages, not one
+
+The gate and the policies are separable, and separating them removes the
+risk entirely.
+
+**Stage one — the gate only.** Reversible with one statement, and it tests
+the only thing that can lock you out:
+
+```sql
+insert into kv_store (key, value, updated_at)
+values ('auth-required', 'true', now())
+on conflict (key) do update set value = 'true', updated_at = now();
+```
+
+Now open the app. It should show the sign-in screen. Request a code, receive
+it, get in. If anything fails, put it back and nothing has been lost:
+
+```sql
+update kv_store set value = 'false' where key = 'auth-required';
+```
+
+Row level security is still off at this point, so the app keeps working for
+everybody either way. Nothing is at stake.
+
+**Stage two — the policies.** Only once stage one has worked. This is the
+half that takes the anon key's access away, and it is the half that cannot
+be undone by a single UPDATE.
+
 **First, see what is actually there.** The live database is 55 days old and
 may not match `schema.sql`:
 
