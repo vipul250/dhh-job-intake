@@ -12,7 +12,7 @@ import {
   actualDuration, clockMinutes, nowClock, fmtMins, makeFollowUp, needsFollowUp, isResolved,
   STATE_META, NOT_DONE_REASONS, MOVE_REASONS, MOVE_REASON_LABEL, SAY_WHAT_HAPPENED,
   splitTaskParts,
-  moveReasonDisplaces, CANCEL_REASONS, EVENT_LABEL,
+  moveReasonDisplaces, OFF_BOARD_REASONS, OFF_BOARD_LABEL, isOffBoard, reassign, EVENT_LABEL,
   OUTCOME_OPTIONS, JOB_SOURCES, SOURCE_LABEL, HOW_REPORTED, pasteAdditions
 } from "../lib/job.js";
 import { parseWorkReport, fmtMin } from "../lib/workReport.js";
@@ -168,6 +168,7 @@ export default function LiveBoard({
   const [trailFor, setTrailFor] = useState(null);
   const [moveFor, setMoveFor] = useState(null);
   const [outcomeFor, setOutcomeFor] = useState(null);
+  const [accountFor, setAccountFor] = useState(null);
   const [liveNote, setLiveNote] = useState("");
   const [returnPrompts, setReturnPrompts] = useState([]);
   const [closeOutFor, setCloseOutFor] = useState(null);
@@ -560,8 +561,11 @@ export default function LiveBoard({
     )), `${misread.length} mis-read row(s) closed off. They stay on record. Now paste the sheet in again.`);
   }
 
+  /* What the header button counts must be what the review lists, or the
+     two disagree in front of the person trying to clear them. Not done is
+     an answer; off the board is an answer. Neither is outstanding. */
   const unanswered = useMemo(
-    () => jobs.filter((j) => !isResolved(j.state) && j.state !== "cancelled").length,
+    () => jobs.filter((j) => !isResolved(j.state) && j.state !== "not_done" && !isOffBoard(j)).length,
     [jobs]
   );
 
@@ -686,8 +690,33 @@ export default function LiveBoard({
      the linked job that carries the work forward — the same containment
      path used for made-safe, for the same reason: nothing contained is left
      with nobody coming back. */
-  async function markNotDone(job, kind, reason, rebook) {
-    const state = kind === "cancel" ? "cancelled" : "not_done";
+  /* Reassignment keeps the row live under its new owner; the other answers
+     take it off the board. Both are one write and neither deletes
+     anything — see OFF_BOARD_REASONS in job.js for why this exists. */
+  async function accountForRow(job, payload) {
+    await change(selectedDate, (cur) => {
+      const target = cur.find((r) => !isTombstone(r) && r.id === job.id) || job;
+      if (payload.kind === "reassign") {
+        return upsert(cur, reassign(target, payload.tech, who, payload.why));
+      }
+      return upsert(cur, setJobState(target, "cancelled", who, {
+        reason: OFF_BOARD_LABEL[payload.offBoard] || payload.offBoard,
+        offBoard: payload.offBoard,
+        duplicateOf: payload.duplicateOf,
+        handedTo: payload.handedTo,
+        ...(lock.locked ? { lock: lock.kind } : {}),
+      }));
+    });
+    showToast(
+      payload.kind === "reassign"
+        ? `Handed to ${payload.tech}. It still needs his answer today.`
+        : "Off the board. It counts against nobody, and it is still on record.",
+      "ok"
+    );
+  }
+
+  async function markNotDone(job, reason, rebook) {
+    const state = "not_done";
     const extra = { reason };
     if (rebook) extra.rebook = rebook.rebook === "none" ? "none" : rebook.date;
 
@@ -700,10 +729,7 @@ export default function LiveBoard({
     }
     await change(selectedDate, (cur) => {
       const target = cur.find((r) => !isTombstone(r) && r.id === job.id) || job;
-      const closed = setJobState(target, state, who, {
-        ...extra,
-        ...(state === "cancelled" && lock.locked ? { lock: lock.kind } : {}),
-      });
+      const closed = setJobState(target, state, who, extra);
       return upsert(cur, child ? { ...closed, followUpJobId: child.id } : closed);
     });
     if (child) {
@@ -912,9 +938,16 @@ export default function LiveBoard({
       .sort((a, b) => (a.team === "Unassigned" ? 1 : b.team === "Unassigned" ? -1 : b.loadPct - a.loadPct));
   }, [jobs]);
 
+  /* `total` counts jobs, not rows. A row taken off the board — a duplicate,
+     work handed to housekeeping — was never a job, and counting it here
+     made the day's summary disagree with the end-of-day review sitting one
+     click away. */
   const counts = useMemo(() => {
-    const c = { total: jobs.length, done: 0, not_done: 0, in_progress: 0, scheduled: 0, cancelled: 0 };
-    jobs.forEach((j) => { c[j.state] = (c[j.state] || 0) + 1; });
+    const c = { total: 0, done: 0, not_done: 0, in_progress: 0, scheduled: 0, cancelled: 0 };
+    jobs.forEach((j) => {
+      c[j.state] = (c[j.state] || 0) + 1;
+      if (!isOffBoard(j)) c.total++;
+    });
     return c;
   }, [jobs]);
 
@@ -1089,7 +1122,9 @@ export default function LiveBoard({
                   className={`flex items-center gap-1.5 text-xs rounded-md px-2.5 py-1.5 ${
                     unanswered ? "bg-amber-600 text-white" : "border border-slate-300 hover:bg-slate-50"}`}>
             <ListChecks className="w-3.5 h-3.5" />
-            {unanswered ? `End-of-day review — ${unanswered} without an outcome` : "End-of-day review — all answered"}
+            {unanswered
+              ? `End-of-day review — ${unanswered} still ${unanswered === 1 ? "needs" : "need"} an answer`
+              : "End-of-day review — all answered"}
           </button>
         )}
         <button onClick={() => setNightLog(true)}
@@ -1151,7 +1186,7 @@ export default function LiveBoard({
         <TeamGroup
           key={g.team} group={g} me={me} allJobs={jobs} selectedDate={selectedDate}
           onAdvance={advance} onEdit={edit} onOpenNote={setNoteFor}
-          onMove={setMoveFor} onOutcome={setOutcomeFor} onTrail={setTrailFor}
+          onMove={setMoveFor} onOutcome={setOutcomeFor} onAccountFor={setAccountFor} onTrail={setTrailFor}
           onEditFull={onEditFull} showToast={showToast} onCloseOut={setCloseOutFor}
           staffIdx={staffIdx} candidates={candidates}
           onMoveMany={(list, reason) => moveStranded(list, addDays(selectedDate, 1), reason)}
@@ -1177,12 +1212,19 @@ export default function LiveBoard({
       )}
       {outcomeFor && (
         <OutcomeDialog
-          job={outcomeFor.job} kind={outcomeFor.kind} selectedDate={selectedDate}
+          job={outcomeFor.job} selectedDate={selectedDate}
           onCancel={() => setOutcomeFor(null)}
           onConfirm={(reason, rebook) => {
-            markNotDone(outcomeFor.job, outcomeFor.kind, reason, rebook);
+            markNotDone(outcomeFor.job, reason, rebook);
             setOutcomeFor(null);
           }}
+        />
+      )}
+      {accountFor && (
+        <AccountForDialog
+          job={accountFor} dayJobs={jobs} candidates={candidates}
+          onCancel={() => setAccountFor(null)}
+          onConfirm={(payload) => { accountForRow(accountFor, payload); setAccountFor(null); }}
         />
       )}
       {changeReasonFor && (
@@ -1236,6 +1278,7 @@ export default function LiveBoard({
           onCancel={() => setDayReview(false)}
           onCloseOut={(job) => { setDayReview(false); setCloseOutFor(job); }}
           onQuick={(job, state) => advance(job, state, {})}
+          onAccountFor={(job) => { setDayReview(false); setAccountFor(job); }}
         />
       )}
       {nightLog && (
@@ -1319,6 +1362,9 @@ function TopBar({ me, onChangeMe, selectedDate, setSelectedDate, counts, busy, l
 
         <div className="flex items-center gap-3 text-xs text-slate-600">
           <span><span className="font-semibold text-slate-900">{counts.total}</span> jobs</span>
+          {counts.cancelled > 0 && (
+            <span className="text-slate-400">{counts.cancelled} off the board</span>
+          )}
           {counts.scheduled > 0 && <span>{counts.scheduled} scheduled</span>}
           {counts.in_progress > 0 && <span className="text-blue-700">{counts.in_progress} started</span>}
           {counts.done > 0 && <span className="text-emerald-700">{counts.done} done</span>}
@@ -1652,7 +1698,7 @@ function ParsePreview({ fields }) {
 
 /* ========================= team group ========================= */
 
-function TeamGroup({ group, me, allJobs, selectedDate, onAdvance, onEdit, onOpenNote, onMove, onOutcome, onTrail, onEditFull, showToast, onMoveMany, onCloseOut, staffIdx, candidates }) {
+function TeamGroup({ group, me, allJobs, selectedDate, onAdvance, onEdit, onOpenNote, onMove, onOutcome, onAccountFor, onTrail, onEditFull, showToast, onMoveMany, onCloseOut, staffIdx, candidates }) {
   const [open, setOpen] = useState(true);
   const [showPlan, setShowPlan] = useState(false);
   const g = group;
@@ -1755,7 +1801,7 @@ function TeamGroup({ group, me, allJobs, selectedDate, onAdvance, onEdit, onOpen
             <JobRow
               key={job.id} job={job} me={me}
               onAdvance={onAdvance} onEdit={onEdit} onOpenNote={onOpenNote}
-              onMove={onMove} onOutcome={onOutcome} onTrail={onTrail}
+              onMove={onMove} onOutcome={onOutcome} onAccountFor={onAccountFor} onTrail={onTrail}
               onEditFull={onEditFull} showToast={showToast} onCloseOut={onCloseOut}
               staffIdx={staffIdx} candidates={candidates}
               suggestFrom={g.team === "Unassigned" ? allJobs : null}
@@ -2147,7 +2193,7 @@ const STATE_CHIP = {
   cancelled: "bg-slate-100 text-slate-400 line-through",
 };
 
-function JobRow({ job, me, onAdvance, onEdit, onOpenNote, onMove, onOutcome, onTrail, onEditFull, showToast, suggestFrom, onCloseOut, staffIdx, candidates }) {
+function JobRow({ job, me, onAdvance, onEdit, onOpenNote, onMove, onOutcome, onAccountFor, onTrail, onEditFull, showToast, suggestFrom, onCloseOut, staffIdx, candidates }) {
   const crew = useMemo(() => checkCrew(job, staffIdx), [job, staffIdx]);
   const [expanded, setExpanded] = useState(false);
   const [suggestions, setSuggestions] = useState(null);
@@ -2394,9 +2440,9 @@ function JobRow({ job, me, onAdvance, onEdit, onOpenNote, onMove, onOutcome, onT
                 about the day and there is no route in the app that removes it —
                 the whole point of the design is that nothing disappears. */}
             {job.state !== "cancelled" && !isResolved(job.state) && (
-              <button onClick={() => onOutcome({ job, kind: "cancel" })}
-                      className="text-xs text-red-700 border border-red-200 rounded-md px-2 py-1 hover:bg-red-50 flex items-center gap-1">
-                <Ban className="w-3 h-3" /> Cancel this job
+              <button onClick={() => onAccountFor(job)}
+                      className="text-xs text-slate-700 border border-slate-300 rounded-md px-2 py-1 hover:bg-slate-50 flex items-center gap-1">
+                <Ban className="w-3 h-3" /> Account for this row
               </button>
             )}
             {isResolved(job.state) && (
@@ -2617,8 +2663,8 @@ function MoveDialog({ job, fromDate, dayJobs, onCancel, onMove }) {
   );
 }
 
-function OutcomeDialog({ job, kind, selectedDate, onCancel, onConfirm }) {
-  const list = kind === "cancel" ? CANCEL_REASONS : NOT_DONE_REASONS;
+function OutcomeDialog({ job, selectedDate, onCancel, onConfirm }) {
+  const list = NOT_DONE_REASONS;
   const [reason, setReason] = useState(list[0]);
   const [other, setOther] = useState("");
   /* "" means the coordinator has not answered yet; "none" is a deliberate
@@ -2628,15 +2674,15 @@ function OutcomeDialog({ job, kind, selectedDate, onCancel, onConfirm }) {
   const [when, setWhen] = useState(addDays(selectedDate, 1));
   const saying = reason === SAY_WHAT_HAPPENED;
   const final = saying ? squash(other) : reason;
-  const asking = kind !== "cancel";
-  const ready = !!final && (!asking || rebook !== "");
+  const asking = true;
+  const ready = !!final && rebook !== "";
 
   return (
-    <Modal title={kind === "cancel" ? `Cancel ${job.property} ${job.unit}` : `Not done — ${job.property} ${job.unit}`} onCancel={onCancel}>
+    <Modal title={`Not done — ${job.property} ${job.unit}`} onCancel={onCancel}>
       <p className="text-xs text-slate-600">
-        {kind === "cancel"
-          ? "The job stays on the day with the reason attached, so it is visible rather than gone."
-          : "The reason is what turns a missed job into something you can act on later."}
+        Not done means the work did not happen. If somebody else did it, if the row is a
+        duplicate, or if it went to another team, close it with <em>Account for this row</em>
+        instead — those are not failures and should not be recorded as one.
       </p>
       <select value={reason} onChange={(e) => setReason(e.target.value)}
               className="mt-3 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm">
@@ -2691,8 +2737,144 @@ function OutcomeDialog({ job, kind, selectedDate, onCancel, onConfirm }) {
                   ? { rebook, date: rebook === "next" ? addDays(selectedDate, 1) : rebook === "pick" ? when : null }
                   : null)}
                 disabled={!ready}
-                className={`text-sm text-white px-3 py-1.5 rounded-md disabled:opacity-40 ${kind === "cancel" ? "bg-slate-700" : "bg-red-600"}`}>
-          {kind === "cancel" ? "Cancel job" : "Mark not done"}
+                className="text-sm text-white px-3 py-1.5 rounded-md disabled:opacity-40 bg-red-600">
+          Mark not done
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+/* ====================================================================== *
+ * Account for this row.
+ *
+ * The question the board never asked. Until now a coordinator with a
+ * duplicate, a job somebody else picked up, or work that went to
+ * housekeeping had exactly one place to put it — "not done" — and it was
+ * filed as a failure against the technician originally named. He typed
+ * seventeen different reasons by hand over two months trying to say
+ * otherwise; twelve of them were the single word "duplicate".
+ *
+ * Two of these answers take the row off the board. The first does not: a
+ * job handed to another technician is still owed an answer, by its new
+ * owner, and saying so is the whole point.
+ * ====================================================================== */
+function AccountForDialog({ job, dayJobs, candidates, onCancel, onConfirm }) {
+  const [choice, setChoice] = useState("reassign");
+  const [tech, setTech] = useState("");
+  const [why, setWhy] = useState("");
+  const [dupOf, setDupOf] = useState("");
+  const [handedTo, setHandedTo] = useState("Housekeeping");
+
+  const picked = OFF_BOARD_REASONS.find((r) => r.id === choice);
+  const others = (dayJobs || []).filter(
+    (j) => !isTombstone(j) && j.id !== job.id && !isOffBoard(j)
+  );
+
+  const ready =
+    choice === "reassign" ? !!squash(tech) && squash(tech) !== squash(job.team) :
+    picked && picked.picksRow ? !!dupOf :
+    picked && picked.picksTeam ? !!squash(handedTo) :
+    !!picked;
+
+  return (
+    <Modal title={`Account for — ${job.property} ${job.unit}`} onCancel={onCancel} wide>
+      <p className="text-xs text-slate-600">
+        Not every row is a job that failed. Say what this one really is, so it stops
+        counting against {squash(job.team) || "the technician"}.
+      </p>
+
+      <div className="mt-3 space-y-1.5">
+        <label className="flex items-start gap-2 text-xs text-slate-800 cursor-pointer">
+          <input type="radio" name="acct" className="mt-0.5"
+                 checked={choice === "reassign"} onChange={() => setChoice("reassign")} />
+          <span>
+            <span className="font-medium">Somebody else did it — today</span>
+            <span className="block text-[11px] text-slate-500">
+              The job stays on this day under its new owner and still needs his answer.
+            </span>
+          </span>
+        </label>
+        {OFF_BOARD_REASONS.map((r) => (
+          <label key={r.id} className="flex items-start gap-2 text-xs text-slate-800 cursor-pointer">
+            <input type="radio" name="acct" className="mt-0.5"
+                   checked={choice === r.id} onChange={() => setChoice(r.id)} />
+            <span>{r.label}</span>
+          </label>
+        ))}
+      </div>
+
+      {choice === "reassign" && (
+        <div className="mt-3 border-t border-slate-200 pt-3">
+          <div className="text-xs font-medium text-slate-800">Who has it now?</div>
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {(candidates || []).filter((c) => squash(c) !== squash(job.team)).map((c) => (
+              <button key={c} onClick={() => setTech(c)}
+                      className={`text-xs px-2 py-1 rounded-md border ${
+                        squash(tech) === squash(c)
+                          ? "bg-slate-900 text-white border-slate-900"
+                          : "bg-white border-slate-300 hover:bg-slate-50"}`}>
+                {c}
+              </button>
+            ))}
+          </div>
+          <input value={tech} onChange={(e) => setTech(e.target.value)}
+                 placeholder="or type a name"
+                 className="mt-2 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
+          <input value={why} onChange={(e) => setWhy(e.target.value)}
+                 placeholder="Why it moved — optional, e.g. Vitalis went to a guest complaint"
+                 className="mt-1.5 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
+        </div>
+      )}
+
+      {picked && picked.picksRow && (
+        <div className="mt-3 border-t border-slate-200 pt-3">
+          <div className="text-xs font-medium text-slate-800">Which row holds the work?</div>
+          <select value={dupOf} onChange={(e) => setDupOf(e.target.value)}
+                  className="mt-1.5 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm">
+            <option value="">Pick the row this duplicates…</option>
+            {others.map((j) => (
+              <option key={j.id} value={j.id}>
+                {j.property} {j.unit} · {squash(j.team) || "unassigned"} · {squash(j.description).slice(0, 50)}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1.5 text-[11px] text-slate-500">
+            Recorded, not deleted. If the call was wrong this is what undoes it.
+          </p>
+        </div>
+      )}
+
+      {picked && picked.picksTeam && (
+        <div className="mt-3 border-t border-slate-200 pt-3">
+          <div className="text-xs font-medium text-slate-800">Who has it now?</div>
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {["Housekeeping", "Contractor", "Building management"].map((x) => (
+              <button key={x} onClick={() => setHandedTo(x)}
+                      className={`text-xs px-2 py-1 rounded-md border ${
+                        handedTo === x
+                          ? "bg-slate-900 text-white border-slate-900"
+                          : "bg-white border-slate-300 hover:bg-slate-50"}`}>
+                {x}
+              </button>
+            ))}
+          </div>
+          <input value={handedTo} onChange={(e) => setHandedTo(e.target.value)}
+                 className="mt-2 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
+        </div>
+      )}
+
+      <div className="flex justify-end gap-2 mt-4">
+        <button onClick={onCancel} className="text-sm border border-slate-300 px-3 py-1.5 rounded-md">Back</button>
+        <button
+          onClick={() => onConfirm(
+            choice === "reassign"
+              ? { kind: "reassign", tech: squash(tech), why: squash(why) }
+              : { kind: "offboard", offBoard: choice, duplicateOf: dupOf, handedTo: squash(handedTo) }
+          )}
+          disabled={!ready}
+          className="text-sm text-white px-3 py-1.5 rounded-md disabled:opacity-40 bg-slate-900">
+          {choice === "reassign" ? "Hand it over" : "Take it off the board"}
         </button>
       </div>
     </Modal>
@@ -3352,54 +3534,113 @@ function TaskPasteDialog({ date, seed, knownTechs, onCancel, onCommit }) {
  * because "made safe" and "not done" both have a question behind them that
  * must not be skipped — what is still needed, and when it happens instead.
  * ====================================================================== */
-function DayReview({ date, jobs, onCancel, onCloseOut, onQuick }) {
-  const open = jobs.filter((j) => !isResolved(j.state) && j.state !== "cancelled");
-  const done = jobs.filter((j) => isResolved(j.state) || j.state === "cancelled");
+function DayReview({ date, jobs, onCancel, onCloseOut, onQuick, onAccountFor }) {
+  /* The day split the way it actually happened. Before this, everything
+     that was not a recorded outcome counted as "without an outcome" — and
+     on 10 September that read seven failures where there was one. A
+     duplicate, a job handed to another technician and work passed to
+     housekeeping are not failures and are no longer counted as though
+     they were. */
+  const live = jobs.filter((j) => !isOffBoard(j));
+  const offBoard = jobs.filter(isOffBoard);
+  const open = live.filter((j) => !isResolved(j.state) && j.state !== "not_done");
+  const fixed = live.filter((j) => j.state === "fixed");
+  const returning = live.filter((j) => j.state === "made_safe" || j.state === "diagnosed");
+  const notDone = live.filter((j) => j.state === "not_done");
+
+  const byKind = {};
+  offBoard.forEach((j) => {
+    const k = j.offBoard || "other";
+    byKind[k] = (byKind[k] || 0) + 1;
+  });
+  const OFF_WORD = {
+    duplicate: ["duplicate", "duplicates"],
+    "wrong-entry": ["raised in error", "raised in error"],
+    "other-team": ["handed to another team", "handed to other teams"],
+    "no-visit": ["resolved without a visit", "resolved without a visit"],
+    "called-off": ["called off", "called off"],
+    other: ["off the board", "off the board"],
+  };
+  const offParts = Object.entries(byKind).map(([k, n]) => {
+    const w = OFF_WORD[k] || [k, k];
+    return `${n} ${n === 1 ? w[0] : w[1]}`;
+  });
+
+  const Stat = ({ n, label, tone }) => (
+    <span className={tone}>
+      <span className="font-semibold tabular-nums">{n}</span> {label}
+    </span>
+  );
 
   return (
     <Modal title={`How did ${date} actually go?`} onCancel={onCancel} wide>
       <p className="text-xs text-slate-600">
-        Every job needs an answer before the day closes. A clean fix is one click. Anything else —
-        made safe, diagnosed, not done — opens the full close-out, because each of those has a
-        question behind it that decides whether the work comes back.
+        Every job needs an answer before the day closes. A clean fix is one click. Anything
+        else — made safe, diagnosed, not done — opens the full close-out, because each of
+        those has a question behind it that decides whether the work comes back. A row that
+        is not a job at all has its own answer, and costs nobody a failure.
       </p>
 
-      <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs">
-        <span className={open.length ? "text-amber-800 font-medium" : "text-emerald-700 font-medium"}>
-          {open.length} still without an outcome
-        </span>
-        <span className="text-slate-500">{done.length} of {jobs.length} answered</span>
+      <div className="mt-3 rounded-md border border-slate-200 bg-slate-50 px-2.5 py-2">
+        <div className="text-xs text-slate-500">
+          <span className="tabular-nums">{jobs.length}</span> rows ·{" "}
+          <span className="tabular-nums font-medium text-slate-700">{live.length}</span> jobs
+        </div>
+        <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-700">
+          <Stat n={fixed.length} label="fixed" tone="text-emerald-700" />
+          <Stat n={returning.length} label="need a return" tone="text-amber-700" />
+          <Stat n={notDone.length} label="did not happen" tone="text-red-700" />
+          {open.length > 0 && <Stat n={open.length} label="still open" tone="text-blue-700" />}
+        </div>
+        {offParts.length > 0 && (
+          <div className="mt-1.5 text-xs text-slate-500 border-t border-slate-200 pt-1.5">
+            <span className="tabular-nums">{offBoard.length}</span> rows accounted for:{" "}
+            {offParts.join(" · ")}
+          </div>
+        )}
       </div>
 
       {open.length === 0 ? (
-        <p className="mt-4 text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-2 py-2">
-          Every job on this day has an outcome. Nothing here will quietly disappear.
+        <p className="mt-3 text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-2 py-2">
+          Every job on this day has an answer. Nothing here will quietly disappear.
         </p>
       ) : (
-        <div className="mt-3 max-h-[26rem] overflow-y-auto border border-slate-200 rounded-md divide-y divide-slate-100">
-          {open.map((j) => (
-            <div key={j.id} className="px-2.5 py-2 flex flex-wrap items-center gap-2">
-              <div className="min-w-0 flex-1">
-                <div className="text-xs font-medium text-slate-900">
-                  {j.property} {j.unit}
-                  {j.team && <span className="font-normal text-slate-400"> · {j.team}</span>}
-                  {j.timeOfVisit && <span className="font-normal text-slate-400"> · {j.timeOfVisit}</span>}
+        <>
+          <p className="mt-3 text-xs text-slate-500">
+            {open.length === 1 ? "One row still needs an answer." : `${open.length} rows still need an answer.`}
+          </p>
+          <div className="mt-1.5 max-h-[26rem] overflow-y-auto border border-slate-200 rounded-md divide-y divide-slate-100">
+            {open.map((j) => (
+              <div key={j.id} className="px-2.5 py-2 flex flex-wrap items-center gap-2">
+                <div className="min-w-0 flex-1">
+                  <div className="text-xs font-medium text-slate-900">
+                    {j.property} {j.unit}
+                    {j.team && <span className="font-normal text-slate-400"> · {j.team}</span>}
+                    {j.timeOfVisit && <span className="font-normal text-slate-400"> · {j.timeOfVisit}</span>}
+                    {j.reassignedFrom && (
+                      <span className="font-normal text-blue-600"> · taken over from {j.reassignedFrom}</span>
+                    )}
+                  </div>
+                  <div className="text-xs text-slate-600 truncate">{j.description}</div>
                 </div>
-                <div className="text-xs text-slate-600 truncate">{j.description}</div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button onClick={() => onQuick(j, "fixed")}
+                          className="text-xs bg-emerald-600 text-white px-2.5 py-1 rounded-md">
+                    Fixed
+                  </button>
+                  <button onClick={() => onCloseOut(j)}
+                          className="text-xs border border-slate-300 bg-white px-2.5 py-1 rounded-md">
+                    Something else…
+                  </button>
+                  <button onClick={() => onAccountFor(j)}
+                          className="text-xs border border-slate-300 bg-white px-2.5 py-1 rounded-md text-slate-600">
+                    Not a job
+                  </button>
+                </div>
               </div>
-              <div className="flex items-center gap-1.5 shrink-0">
-                <button onClick={() => onQuick(j, "fixed")}
-                        className="text-xs bg-emerald-600 text-white px-2.5 py-1 rounded-md">
-                  Fixed
-                </button>
-                <button onClick={() => onCloseOut(j)}
-                        className="text-xs border border-slate-300 bg-white px-2.5 py-1 rounded-md">
-                  Something else…
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        </>
       )}
 
       <div className="flex justify-end gap-2 mt-4">

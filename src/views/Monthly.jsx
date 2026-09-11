@@ -9,6 +9,7 @@ import {
 import { buildPropertyIndex } from "../lib/propertyName.js";
 import { returnsByUnit, rolesByTech } from "../lib/quality.js";
 import { poolAdherence, SEEDED_POOL_CONTRACTS } from "../lib/pools.js";
+import { timeByTech } from "../lib/quality.js";
 
 /* ---------------------------------------------------------------------- *
  * Monthly.jsx — one span, one table, no interpretation.
@@ -105,6 +106,14 @@ export default function Monthly({ knownDates, propertyMaster }) {
     () => (resolved && range ? poolAdherence(resolved, SEEDED_POOL_CONTRACTS, range) : null),
     [resolved, range]
   );
+  /* Productive time runs on arrival and departure only — see timeByTech.
+     Same input as every other table here; a visit that ended in nothing is
+     not filtered out, because showing it is the point. */
+  const time = useMemo(
+    () => (resolved ? timeByTech(resolved, periodFor(grain, active)) : []),
+    [resolved, grain, active]
+  );
+
   const label = periodLabel(grain, active);
 
   function exportCsv() {
@@ -361,6 +370,58 @@ export default function Monthly({ knownDates, propertyMaster }) {
                     </td>
                     <td className="px-3 py-2 text-right tabular-nums text-slate-500">
                       {u.recurring || "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div>
+        <h3 className="text-sm font-medium text-slate-700 mb-2">Productive time</h3>
+        <p className="text-xs text-slate-500 mb-2">
+          A visit counts here only if the technician wrote his arrival and departure time.
+          A typed total is a recollection, not a measurement. Work that produced nothing —
+          no access, called off — is shown apart and never added to productive hours, even
+          where the technician reached the property.
+        </p>
+        {time.filter((t) => t.measured > 0).length === 0 ? (
+          <div className="rounded-lg border border-dashed border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
+            <div className="font-medium">No visit in this period has both an arrival and a departure time.</div>
+            <div className="mt-1 text-xs">
+              {time.reduce((n, t) => n + t.jobs, 0)} visits, none measured. Until the times are
+              written at close-out there is no honest productive-time figure — and a figure built
+              on typed totals would read as though there were.
+            </div>
+          </div>
+        ) : (
+          <div className="overflow-x-auto border border-slate-200 rounded-lg bg-white">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-slate-600 text-xs">
+                <tr>
+                  {["Technician", "Productive", "Attended, nothing produced", "Measured", "Coverage"].map((c, i) => (
+                    <th key={c} className={`px-3 py-2 font-medium ${i ? "text-right" : "text-left"}`}>{c}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {time.map((t) => (
+                  <tr key={t.tech} className="border-t border-slate-200">
+                    <td className="px-3 py-2 text-slate-900">{t.tech}</td>
+                    <td className="px-3 py-2 text-right tabular-nums text-slate-900 font-medium">
+                      {t.productiveHours == null ? "—" : `${t.productiveHours}h`}
+                    </td>
+                    <td className="px-3 py-2 text-right tabular-nums text-amber-700">
+                      {t.attendedHours == null ? "—" : `${t.attendedHours}h`}
+                    </td>
+                    <td className="px-3 py-2 text-right tabular-nums text-slate-700">
+                      {t.measured} of {t.jobs}
+                    </td>
+                    <td className={`px-3 py-2 text-right tabular-nums ${t.coverage.provisional ? "text-amber-700" : "text-slate-700"}`}>
+                      {t.coverage.coverage == null ? "—" : `${t.coverage.coverage}%`}
+                      {t.coverage.provisional && <span className="ml-1 text-[11px]">provisional</span>}
                     </td>
                   </tr>
                 ))}

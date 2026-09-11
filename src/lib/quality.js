@@ -27,7 +27,7 @@
  * next time.
  * ---------------------------------------------------------------------- */
 
-import { actualDuration, RESOLVED_STATES, readClock } from "./job.js";
+import { actualDuration, RESOLVED_STATES, readClock, isOffBoard } from "./job.js";
 import { isOurFault } from "./faultFamily.js";
 import {
   assetKey, canonProperty, canonUnit, squash, workType, daysBetween,
@@ -103,6 +103,12 @@ export function returnsByUnit(jobs, period) {
   const byAsset = new Map();
   (jobs || []).forEach((j) => {
     if (!j || j._tomb) return;
+    /* A row that is off the board was never a visit. Leaving them in
+       inflates `visits`, which is the denominator of the headline figure,
+       and so quietly flatters the units that are worst affected — the
+       exact units this table exists to find. Dubai Marina Mall Hotel 2111
+       read four visits on 10 September for one piece of work. */
+    if (isOffBoard(j)) return;
     if (!inPeriod(j, period)) return;
     const k = assetKey(j.property, j.unit);
     if (!k) return;                                  // counted by qualityReport
@@ -437,4 +443,78 @@ export function rolesByTech(jobs, period) {
   });
 
   return rows.sort((a, b) => b.jobs - a.jobs);
+}
+
+/* ---------------------------------------------------------------------- *
+ * Productive time.
+ *
+ * The rule the department set on 11 September: a job counts toward
+ * productive time ONLY if the technician wrote his arrival and departure
+ * time, and a visit that produced nothing does not count even when he
+ * reached the property.
+ *
+ * That is the only definition of the day that cannot be inflated by a
+ * coordinator's recollection — and it is expensive. Measured across all
+ * 1,593 rows to 12 September: 2 carried both times; 194 carried a typed
+ * total instead. So this runs on two jobs today and stays near zero until
+ * the field team logs arrival and departure. It is reported with its
+ * coverage attached for exactly that reason. A productive-time figure
+ * quoted without its coverage is the failure this whole file exists to
+ * prevent.
+ * ---------------------------------------------------------------------- */
+const clockMinutes = (j) => {
+  const d = actualDuration(j);
+  return d.source === "clock" && d.minutes > 0 ? d.minutes : null;
+};
+
+export function timeByTech(jobs, period) {
+  const rows = new Map();
+  const touch = (tech) => {
+    if (!rows.has(tech)) {
+      rows.set(tech, {
+        tech, productiveMin: 0, attendedMin: 0,
+        productive: 0, attended: 0, unmeasured: 0, jobs: 0,
+      });
+    }
+    return rows.get(tech);
+  };
+
+  (jobs || []).forEach((j) => {
+    if (!j || j._tomb) return;
+    if (!inPeriod(j, period)) return;
+    const crew = splitCrew(j.team).map(canonTech).filter(Boolean);
+    if (!crew.length) return;
+
+    const mins = clockMinutes(j);
+    /* An off-board row is not a visit at all, so it is not even unmeasured
+       — it does not belong to anybody's day. A row that WAS attended and
+       then cancelled is the one case where minutes exist and produce
+       nothing, and that is what `attended` is for. */
+    const counted = RESOLVED_STATES.includes(j.state);
+    const attendedOnly = !counted && mins != null;
+
+    crew.forEach((tech) => {
+      const r = touch(tech);
+      if (isOffBoard(j) && mins == null) return;     // never happened, for anyone
+      r.jobs++;
+      if (mins == null) { r.unmeasured++; return; }
+      /* Shared jobs: the minutes are the visit's, not each man's. Split so
+         two names on one job do not double the department's day. */
+      const share = Math.round(mins / crew.length);
+      if (counted) { r.productiveMin += share; r.productive++; }
+      else if (attendedOnly) { r.attendedMin += share; r.attended++; }
+    });
+  });
+
+  return [...rows.values()]
+    .map((r) => ({
+      ...r,
+      measured: r.productive + r.attended,
+      /* Null, never zero: a technician with no measured visit has no
+         productive hours figure, and 0h would read as idleness. */
+      productiveHours: r.productive ? Math.round((r.productiveMin / 60) * 10) / 10 : null,
+      attendedHours: r.attended ? Math.round((r.attendedMin / 60) * 10) / 10 : null,
+      coverage: measure(null, r.productive + r.attended, r.jobs),
+    }))
+    .sort((a, b) => b.productiveMin - a.productiveMin || b.jobs - a.jobs);
 }

@@ -80,7 +80,7 @@ export const STATE_META = {
 export const OUTCOME_OPTIONS = [
   { id: "fixed",     label: "Fixed",      hint: "Nothing left to do on this one", needsFollowUp: false },
   { id: "made_safe", label: "Made safe",  hint: "Contained — valve closed, power isolated. It comes back without a return visit", needsFollowUp: true },
-  { id: "diagnosed", label: "Diagnosed",  hint: "Looked at only — needs a part, a quote, or a contractor", needsFollowUp: true },
+  { id: "diagnosed", label: "Diagnosed",  hint: "Attended and assessed — needs a part, a quote, or a contractor. Out of scope belongs here, not in Not done", needsFollowUp: true },
   { id: "not_done",  label: "Not done",   hint: "The visit did not happen", needsFollowUp: false },
 ];
 
@@ -145,14 +145,20 @@ export const HOW_REPORTED = [
    These are what roll over — and what the next coordinator must clear. */
 export const OPEN_STATES = ["scheduled", "in_progress"];
 
+/* Only reasons that mean THE WORK DID NOT HAPPEN belong here.
+   Two were removed on 11 September after measuring what the list was
+   actually being used for. Of 96 rows marked not done, 26 meant the work
+   did not happen; "Wrong unit or wrong information on the job" accounted
+   for 24 of the rest and the coordinators confirmed they used it to mean
+   "delete this row", and "Needs contractor / out of scope" describes a
+   technician who attended and assessed, which is `diagnosed`. Both now
+   live where they belong — see OFF_BOARD_REASONS and OUTCOME_OPTIONS. */
 export const NOT_DONE_REASONS = [
   "No access / guest refused",
   "Guest not reachable",
   "Material not available",
   "Ran out of time",
-  "Needs contractor / out of scope",
   "Technician did not reach the unit",
-  "Wrong unit or wrong information on the job",
 ];
 
 /* `displaces: true` means something else took this job's place. Those are
@@ -189,14 +195,43 @@ export function normaliseMoveReason(reason) {
   return byLabel ? byLabel.id : r;
 }
 
-export const CANCEL_REASONS = [
-  "Duplicate of another job",
-  "Resolved without a visit",
-  "Cancelled by owner / PM",
-  "Cancelled by the guest",
-  "Raised in error",
-  "No longer our responsibility",
+/* ---------------------------------------------------------------------- *
+ * Rows that are not jobs.
+ *
+ * The close-out asked one question where there are two. "Did the work
+ * happen" is about the work; "is this row a job at all" is about the row.
+ * Only the first had answers, so every answer to the second was forced
+ * into "not done" — and landed on a named technician as a failure.
+ *
+ * Measured over 1,593 rows and 63 days: 46 of the 96 rows marked not done
+ * were the coordinator saying this row should not exist, and 11 more were
+ * him saying somebody else did the work. He typed seventeen different
+ * reasons by hand because none of the canned ones fit; twelve of them were
+ * the single word "duplicate".
+ *
+ * These use the `cancelled` state, which already existed and is already
+ * excluded from every filter in the app. What was missing was a reachable
+ * button and a structured word for why.
+ * ---------------------------------------------------------------------- */
+export const OFF_BOARD_REASONS = [
+  { id: "duplicate",   label: "Duplicate — this work is on another row",        picksRow: true },
+  { id: "wrong-entry", label: "Raised in error — wrong unit or wrong information" },
+  { id: "other-team",  label: "Another team's now — housekeeping or a contractor", picksTeam: true },
+  { id: "no-visit",    label: "Resolved without a visit" },
+  { id: "called-off",  label: "Called off by the owner, PM or guest" },
 ];
+
+export const OFF_BOARD_LABEL = Object.fromEntries(OFF_BOARD_REASONS.map((r) => [r.id, r.label]));
+
+/* A row that is off the board is not work done and not work failed. It
+   counts in no technician's total, no monthly figure and no returns
+   denominator — but it is never deleted, which is the rule the whole
+   schema is built on. */
+export const isOffBoard = (j) => !!j && j.state === "cancelled";
+
+/* Kept for the paste-repair path, which cancels mis-read rows with a
+   sentence rather than a chosen reason. */
+export const CANCEL_REASONS = OFF_BOARD_REASONS.map((r) => r.label);
 
 export const uid = () =>
   Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
@@ -369,6 +404,11 @@ export function newJob(fields, date, by) {
     outcomeReason: "",
     actualMinutes: null,
 
+    /* Set only when the row leaves the board — see OFF_BOARD_REASONS. */
+    offBoard: "",
+    duplicateOf: "",
+    handedTo: "",
+
     /* The technician's real arrival and departure time, as a clock reading.
        This is the only honest measure of how long the work took: the
        estimate is a coordinator's guess, and the Started/Done clicks only
@@ -466,6 +506,16 @@ export function setState(job, state, by, extra = {}) {
   }
   if (extra.stillNeeded !== undefined) patch.stillNeeded = squash(extra.stillNeeded);
 
+  /* Why the row left the board, as an id rather than a sentence, so the
+     day can report "2 duplicates, 1 handed over" instead of a count of
+     free text nobody reads. `duplicateOf` is the audit trail if the call
+     was wrong — it is what lets the merge be undone. */
+  if (state === "cancelled") {
+    if (extra.offBoard) patch.offBoard = extra.offBoard;
+    if (extra.duplicateOf) patch.duplicateOf = extra.duplicateOf;
+    if (extra.handedTo) patch.handedTo = squash(extra.handedTo);
+  }
+
   /* Every outcome that means the technician was on site and finished emits
      a "done" event, whatever came of the visit. Duration is measured from
      started -> done, and a job that was made safe still took an hour of
@@ -509,6 +559,32 @@ export function moveJob(job, toDate, by, reason, displacedBy, lock) {
     { from: job.scheduledDate, to: toDate, reason: reasonId, displacedBy: link, lock: lockKind(lock) }
   );
   return { moved, tomb: makeTombstone(job, toDate, by, reasonId, link, lock) };
+}
+
+/* ---------------------------------------------------------------------- *
+ * Moved to another technician, same day.
+ *
+ * The single most common thing the board could not say. Eleven rows in the
+ * database record it in free text — "fixed by Yousuf he was busy",
+ * "completed by rizwan same day since anthony is off" — every one of them
+ * filed as a failure against the technician who was originally named.
+ *
+ * It needs no new state. The job goes back to scheduled under its new
+ * owner and still owes an answer; what changes is that the answer is now
+ * owed by the person who actually has the work. applyEdit already emits an
+ * `assigned` event when the technician is the only field that moved, so
+ * the day's log shows who handed it over and when, for free.
+ * ---------------------------------------------------------------------- */
+export function reassign(job, toTech, by, why) {
+  const next = applyEdit(job, { team: squash(toTech) }, by);
+  return {
+    ...next,
+    state: "scheduled",
+    outcomeReason: "",
+    stillNeeded: "",
+    reassignedFrom: squash(job.team) || "",
+    reassignReason: squash(why) || "",
+  };
 }
 
 /* Which fields, when changed, are worth a line in the history. Changing a
