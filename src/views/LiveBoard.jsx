@@ -1860,10 +1860,9 @@ function TeamGroup({ group, me, allJobs, selectedDate, onAdvance, onEdit, onOpen
         {g.team !== "Unassigned" && (
           <div className="flex items-center gap-2 min-w-[190px]">
             <div className="flex-1 h-2 rounded-full bg-slate-100 overflow-hidden relative"
-                 title={`Planned ${formatMinutes(g.committed)} of ${formatMinutes(g.shiftMin)}${
-                   g.actualPct != null
-                     ? ` · actual ${formatMinutes(g.actualMin)} from ${g.attended} of ${g.work.length} jobs, ${g.actualBasis}`
-                     : ""}`}>
+                 title={g.actualPct != null
+                   ? `${formatMinutes(g.actualMin)} inside the units, ${g.actualBasis}, from ${g.attended} of ${g.work.length} jobs. Travel is estimated at ${formatMinutes(g.travel)} and is NOT in this figure. Planned ${formatMinutes(g.committed)} of ${formatMinutes(g.shiftMin)}.`
+                   : `Planned ${formatMinutes(g.committed)} of ${formatMinutes(g.shiftMin)}. Nothing recorded yet.`}>
               <div className={`h-full rounded-full ${barCls} opacity-30`}
                    style={{ width: `${Math.min(100, g.loadPct)}%` }} />
               {g.actualPct != null && (
@@ -1878,10 +1877,15 @@ function TeamGroup({ group, me, allJobs, selectedDate, onAdvance, onEdit, onOpen
           </div>
         )}
 
+        {/* The bar answers one question — how much of the shift was spent
+            inside a unit doing work. Travel is an estimate and sits beside
+            it, never inside it: folding two unobserved hours into Jabbar's
+            4h 15m read 69% of his shift when the truth was 47%. */}
         <span className="text-[11px] text-slate-400">
           {g.actualPct != null ? (
             <>
-              <span className="text-slate-600">{formatMinutes(g.actualMin)} actual</span>
+              <span className="text-slate-700 font-medium">{formatMinutes(g.actualMin)}</span>
+              {" in the units"}
               {` from ${g.attended} of ${g.work.length} · `}
               <span className={g.actualBasis === "measured" ? "text-emerald-700" : "text-amber-600"}
                     title={g.actualBasis === "measured"
@@ -1889,12 +1893,18 @@ function TeamGroup({ group, me, allJobs, selectedDate, onAdvance, onEdit, onOpen
                       : `His own totals, not clock times. ${g.measured} of ${g.attended} were actually timed.`}>
                 {g.actualBasis}
               </span>
+              {g.travel > 0 && (
+                <span title={`${g.buildings} buildings, ${g.moves} move(s) at ${Math.round(g.travel / g.moves)}m each. Estimated — there is no route data. Not counted in the figure on the left.`}>
+                  {` · + ${formatMinutes(g.travel)} travel (est)`}
+                </span>
+              )}
               {` · ${formatMinutes(g.committed)} planned`}
             </>
           ) : (
             <>
               {formatMinutes(g.committed)} planned of {formatMinutes(g.shiftMin)}
               <span className="text-amber-600"> · nothing recorded yet</span>
+              {g.travel > 0 && ` · incl. ${formatMinutes(g.travel)} travel (est)`}
             </>
           )}
           {g.travel > 0 && ` · ${g.buildings} buildings`}

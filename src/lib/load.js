@@ -1,13 +1,22 @@
 /* ---------------------------------------------------------------------- *
  * What a technician's day adds up to.
  *
- * Two figures that must never share a number:
+ * Three figures that must never share a number:
  *
- *   planned — the coordinator's estimates plus travel between buildings.
- *             A forecast, made before the day happened.
- *   actual  — what the day took, and on whose word:
- *               measured  arrival and departure — observed
- *               reported  his own total — what exists today
+ *   planned  — the coordinator's estimates plus travel between buildings.
+ *              A forecast, made before the day happened.
+ *   actual   — time INSIDE THE UNITS, and on whose word:
+ *                measured  arrival and departure — observed
+ *                reported  his own total — what exists today
+ *   travel   — an estimate, always. There is no route data and there is
+ *              not going to be.
+ *
+ * Travel is deliberately NOT folded into the actual figure. It was, and it
+ * flattered: Jabbar's 4h 15m inside units became 6h 15m against a nine-hour
+ * shift on the strength of two hours nobody observed. The bar now answers
+ * the question the department actually asks — how much of the shift was
+ * spent in a unit doing work — and the travel estimate sits beside it where
+ * it can be argued with.
  *
  * And one rule that had to be written down because getting it wrong put
  * work on a man's record that he never did:
@@ -61,12 +70,14 @@ export function groupLoad(list, travelMin, shiftMin = DEFAULT_SHIFT_MIN) {
 
     attended: withTime.length,
     measured: onClock.length,
-    /* Travel rides on the actual figure too, on the same averaged basis as
-       the plan — otherwise the two bars are not comparing the same day. */
-    actualMin: workedMin ? workedMin + travel : 0,
+    /* Inside the units only. `travel` is reported separately, above. */
+    actualMin: workedMin,
     /* Null, never zero: a day with nothing recorded has no actual figure,
        and 0% would read as a man who did nothing. */
-    actualPct: workedMin ? Math.round(((workedMin + travel) / shiftMin) * 100) : null,
+    actualPct: workedMin ? Math.round((workedMin / shiftMin) * 100) : null,
+    /* Work plus the travel estimate, for the one place that wants the whole
+       day in a single number. Named so nobody mistakes it for observed. */
+    actualPlusTravelMin: workedMin ? workedMin + travel : 0,
     actualBasis: !withTime.length ? null
       : onClock.length === withTime.length ? "measured" : "reported",
   };

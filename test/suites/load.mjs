@@ -46,10 +46,13 @@ t("the board's own figure is reproduced — 7 jobs, 5 buildings, 109%", () => {
   assert.equal(g.loadPct, 109);
 });
 
-t("his recorded work is 4h 15m, and the board was showing none of it", () => {
+t("his recorded work is 4h 15m, inside the units, travel excluded", () => {
   const g = groupLoad(JABBAR, 30);
   assert.equal(g.attended, 6, "six of the seven have a duration");
-  assert.equal(g.actualMin - g.travel, 255, "10 + 20 + 70 + 30 + 115 + 10");
+  assert.equal(g.actualMin, 255, "10 + 20 + 70 + 30 + 115 + 10");
+  assert.equal(g.actualPct, 47, "4h 15m of a nine-hour shift — not 69%");
+  assert.equal(g.travel, 120, "two hours of travel, estimated, reported apart");
+  assert.equal(g.actualPlusTravelMin, 375, "available, but never the headline");
 });
 
 t("those are his own totals, not clock times, and it says so", () => {
@@ -73,14 +76,15 @@ t("once Sobha Hartland is accounted for, he has six jobs and four buildings", ()
   assert.equal(g.loadPct, 98, "down from 109%");
 });
 
-t("and his actual day reads 5h 45m against 8h 48m planned", () => {
+t("with Sobha accounted for he is 4h 15m in the units, 1h 30m travelling", () => {
   const fixed = JABBAR.map((j, i) =>
     i === 0
       ? setState(j, "cancelled", "Vipul", { offBoard: "other-team", handedTo: "Housekeeping" })
       : j);
   const g = groupLoad(fixed, 30);
-  assert.equal(g.actualMin, 345, "4h 15m of work plus 1h 30m of travel");
-  assert.equal(g.actualPct, 64);
+  assert.equal(g.actualMin, 255, "the work does not change — he did the same six jobs");
+  assert.equal(g.actualPct, 47);
+  assert.equal(g.travel, 90, "one building fewer is one move fewer");
   assert.ok(g.actualPct < g.loadPct, "he took less than was planned for him");
 });
 
@@ -105,6 +109,17 @@ t("clock times make the figure measured, not reported", () => {
   assert.equal(g.measured, 1);
 });
 
+t("travel never inflates the time inside the units", () => {
+  const two = [
+    job({ property: "A", arrivedAt: "09:00", leftAt: "10:00" }),
+    job({ property: "B", arrivedAt: "10:30", leftAt: "11:00" }),
+  ];
+  const g = groupLoad(two, 30);
+  assert.equal(g.actualMin, 90, "an hour and a half in units, and that is all");
+  assert.equal(g.travel, 30, "the move is reported, not absorbed");
+  assert.equal(g.actualPlusTravelMin, 120);
+});
+
 t("one typed total among clock times drops the whole figure to reported", () => {
   const g = groupLoad([
     job({ property: "A", arrivedAt: "09:00", leftAt: "10:00" }),
@@ -127,15 +142,7 @@ t("travel uses whatever average it is given", () => {
   assert.equal(groupLoad(three, 18).travel, 36, "two moves at a measured eighteen minutes");
 });
 
-t("travel rides on both figures or neither, so the bars compare like with like", () => {
-  const two = [
-    job({ property: "A", arrivedAt: "09:00", leftAt: "10:00" }),
-    job({ property: "B", arrivedAt: "10:30", leftAt: "11:00" }),
-  ];
-  const g = groupLoad(two, 30);
-  assert.equal(g.actualMin, 120, "90 minutes of work plus one 30-minute move");
-  assert.equal(g.travel, 30);
-});
+
 
 t("a card of nothing but accounted-for rows charges him nothing", () => {
   const g = groupLoad([
