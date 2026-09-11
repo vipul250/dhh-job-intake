@@ -566,7 +566,7 @@ function Header({ selectedDate, setSelectedDate, knownDates, activeTab, setActiv
      yesterday, then read the numbers. */
   /* The Live Board is the day. Everything else is a lens on it or a
      reference table, so it leads and the rest follow. */
-  /* Six tabs, down from eight, and the Dashboard is back among them.
+  /* Seven tabs, down from eight. The Dashboard is back and so is Properties.
    *
    * It was deleted outright on 10 September — views/Dashboard.jsx,
    * lib/metrics.js and components/charts.jsx, about 3,800 lines — on the
@@ -576,9 +576,13 @@ function Header({ selectedDate, setSelectedDate, knownDates, activeTab, setActiv
    * pruning can happen a measure at a time with the thing in front of us
    * rather than from memory.
    *
-   * Insights, Fault Codes and Properties are still routed but unlisted —
-   * add { id: "insights" }, { id: "faultcodes" } or { id: "properties" }
-   * back to this list to reach them.
+   * Properties is listed again as of 11 September: Monthly now reports every
+   * property-name merge it made, and "say so on the Properties tab" needs
+   * somewhere to go. That partly undoes the pruning, deliberately.
+   *
+   * Insights and Fault Codes are still routed but unlisted — add
+   * { id: "insights" } or { id: "faultcodes" } back to this list to reach
+   * them.
    */
   const tabs = [
     { id: "live", label: "Live Board", icon: Radio },
@@ -587,6 +591,7 @@ function Header({ selectedDate, setSelectedDate, knownDates, activeTab, setActiv
     { id: "backlog", label: "Queue", icon: Inbox },
     { id: "jobcards", label: "Projects", icon: Briefcase },
     { id: "roster", label: "Roster", icon: Users },
+    { id: "properties", label: "Properties", icon: Building2 },
   ];
   return (
     <div className="bg-slate-900 text-slate-100 sticky top-0 z-20">
