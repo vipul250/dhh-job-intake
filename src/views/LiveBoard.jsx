@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import {
   newJob, moveJob, setState as setJobState, applyEdit, withEvent, uid, makeEvent,
-  isTombstone, liveJobs, tombstones, jobMinutes, isOpen, pushSeverity,
+  isTombstone, liveJobs, tombstones, latestTombstones, jobMinutes, isOpen, pushSeverity,
   needsGuestConfirm, pmsText, techSheetForDay, parseQuickAdd, splitQuickAddLines, findReturn,
   actualDuration, clockMinutes, nowClock, fmtMins, makeFollowUp, needsFollowUp, isResolved,
   STATE_META, NOT_DONE_REASONS, MOVE_REASONS, MOVE_REASON_LABEL, SAY_WHAT_HAPPENED,
@@ -201,7 +201,9 @@ export default function LiveBoard({
   const watcher = useRef(null);
 
   const jobs = useMemo(() => (rows ? liveJobs(rows) : []), [rows]);
-  const tombs = useMemo(() => (rows ? tombstones(rows) : []), [rows]);
+  /* One per job, not one per move — see latestTombstones. Moving a job
+     twice used to make the day report more departures than it had jobs. */
+  const tombs = useMemo(() => (rows ? latestTombstones(rows) : []), [rows]);
 
   /* ------------------------------ load ------------------------------- *
    * Four things went wrong here, and together they are why the board
@@ -908,7 +910,10 @@ export default function LiveBoard({
   async function doMove(job, toDate, reason, displacedBy) {
     const { moved, tomb } = moveJob(job, toDate, who, reason, displacedBy, lock.kind);
     await change(selectedDate, (cur) => {
-      let next = [...removeJob(cur, job.id), tomb];
+      /* Idempotent. Two clicks, a double submit, or a re-move of a job that
+         is already gone must not add a second departure to the day. */
+      const already = cur.some((r) => isTombstone(r) && r.jobId === job.id && r.toDate === toDate);
+      let next = already ? removeJob(cur, job.id) : [...removeJob(cur, job.id), tomb];
       // Record the other half on the job that took the slot, so the pair
       // can be read from either end.
       if (displacedBy && displacedBy.jobId) {

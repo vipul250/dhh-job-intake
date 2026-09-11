@@ -486,6 +486,28 @@ export function makeTombstone(job, toDate, by, reason, displacedBy, lock) {
 }
 
 export const isTombstone = (r) => !!(r && r._tomb);
+
+/* ---------------------------------------------------------------------- *
+ * One tombstone per job that left.
+ *
+ * Moving a job that has already been moved writes a second tombstone, and
+ * the day then reports more departures than it had jobs. 1 September holds
+ * eight tombstones for two jobs; 10 September reports thirteen departures
+ * for twelve. That is the figure the twenty-day plan-versus-actual study
+ * turns on, so it cannot be left to be corrected in the reader's head.
+ *
+ * The last one wins: a coordinator who moves a job twice has changed his
+ * mind, and the later record is the one that is true. Nothing is deleted —
+ * the earlier attempts stay in the row and in the job's own history.
+ * ---------------------------------------------------------------------- */
+export function latestTombstones(rows) {
+  const byJob = new Map();
+  (rows || []).filter(isTombstone).forEach((t) => {
+    const prev = byJob.get(t.jobId);
+    if (!prev || (t.at || 0) >= (prev.at || 0)) byJob.set(t.jobId, t);
+  });
+  return [...byJob.values()];
+}
 export const liveJobs = (rows) => (rows || []).filter((r) => !isTombstone(r));
 export const tombstones = (rows) => (rows || []).filter(isTombstone);
 

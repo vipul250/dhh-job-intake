@@ -26,7 +26,7 @@
  *   timed     — every visit has arrival and departure. Without it there is
  *               no productive time, only recollection.
  * ---------------------------------------------------------------------- */
-import { RESOLVED_STATES, isOffBoard } from "./job.js";
+import { RESOLVED_STATES, isOffBoard, latestTombstones } from "./job.js";
 import { squash } from "./normalize.js";
 
 /* The day the department agreed to measure itself against. Its scores are
@@ -51,7 +51,7 @@ export function feedQuality(byDay, period) {
     if (!Array.isArray(all) || !all.length) return;
     if (period && !inPeriod(date, period)) return;
     const jobs = all.filter((r) => r && !r._tomb);
-    const moves = all.filter((r) => r && r._tomb);
+    const moves = latestTombstones(all);
     if (!jobs.length) return;
 
     /* Off-board rows are answered by definition and were never visits, so
