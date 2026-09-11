@@ -526,7 +526,7 @@ export default function App() {
             setActiveTab={setActiveTab} showToast={showToast}
           />
         )}
-        {activeTab === "monthly" && <Monthly knownDates={knownDates} />}
+        {activeTab === "monthly" && <Monthly knownDates={knownDates} propertyMaster={propertyMaster} />}
         {activeTab === "dashboard" && (
           <Dashboard
             selectedDate={selectedDate}

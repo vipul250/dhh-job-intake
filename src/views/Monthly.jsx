@@ -1,9 +1,11 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Loader2, Download, ChevronRight } from "lucide-react";
+import { Loader2, Download, ChevronRight, Merge } from "lucide-react";
 import { storageGet } from "../lib/storage.js";
 import { parseDay, migrateDay } from "../lib/jobStore.js";
 import { liveJobs } from "../lib/job.js";
 import { monthlyReport, periodsPresent, periodFor, periodLabel } from "../lib/monthly.js";
+import { buildPropertyIndex } from "../lib/propertyName.js";
+import { returnsByUnit } from "../lib/quality.js";
 
 /* ---------------------------------------------------------------------- *
  * Monthly.jsx — one span, one table, no interpretation.
@@ -30,7 +32,7 @@ const mins = (v) => (v == null ? "—" : v >= 60
   ? `${Math.floor(v / 60)}h ${String(v % 60).padStart(2, "0")}m`
   : `${v}m`);
 
-export default function Monthly({ knownDates }) {
+export default function Monthly({ knownDates, propertyMaster }) {
   const [jobs, setJobs] = useState(null);
   const [grain, setGrain] = useState("month");
   /* Per grain, so switching Month -> Week -> Month returns you to the month
@@ -62,11 +64,27 @@ export default function Monthly({ knownDates }) {
     setJobs(collected);
   }
 
-  const options = useMemo(() => (jobs ? periodsPresent(jobs, grain) : []), [jobs, grain]);
+  /* One property, one name — before anything is grouped by property.
+     "Binghatti Tulip 305" and "Binghatti tulips 305" are one pool, and left
+     apart they each carry half the visits. See propertyName.js. */
+  const index = useMemo(() => (jobs ? buildPropertyIndex(jobs, propertyMaster) : null), [jobs, propertyMaster]);
+  const resolved = useMemo(
+    () => (jobs && index ? jobs.map((j) => ({ ...j, property: index.resolve(j.property) })) : jobs),
+    [jobs, index]
+  );
+
+  const options = useMemo(() => (resolved ? periodsPresent(resolved, grain) : []), [resolved, grain]);
   const active = picked[grain] || options[0] || "";
   const r = useMemo(
-    () => (jobs ? monthlyReport(jobs, periodFor(grain, active)) : null),
-    [jobs, grain, active]
+    () => (resolved ? monthlyReport(resolved, periodFor(grain, active)) : null),
+    [resolved, grain, active]
+  );
+  /* Returns per unit — the headline quality measure, and the one that needs
+     no close-out. Recurring work is excluded inside returnsByUnit, or every
+     pool Resty cleans on its cycle ranks top and the table is worthless. */
+  const units = useMemo(
+    () => (resolved ? returnsByUnit(resolved, periodFor(grain, active)) : []),
+    [resolved, grain, active]
   );
   const label = periodLabel(grain, active);
 
@@ -243,6 +261,48 @@ export default function Monthly({ knownDates }) {
         </div>
       </div>
 
+      <div>
+        <h3 className="text-sm font-medium text-slate-700 mb-2">Per unit — returns</h3>
+        <p className="text-xs text-slate-500 mb-2">
+          A return is the same fault back at the same unit between 2 and 14 days later.
+          Same-day and next-day visits are the job carrying on, and recurring work — a pool
+          on its cycle — is never a return. A unit visited once has no rate, not a rate of
+          zero.
+        </p>
+        {units.filter((u) => u.returns > 0).length === 0 ? (
+          <div className="rounded-lg border border-dashed border-slate-300 bg-white p-6 text-center text-sm text-slate-500">
+            No unit had the same fault come back in this period.
+          </div>
+        ) : (
+          <div className="overflow-x-auto border border-slate-200 rounded-lg bg-white">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-slate-600 text-xs">
+                <tr>
+                  {["Unit", "Visits", "Returns", "Return rate", "On a cycle"].map((c, i) => (
+                    <th key={c} className={`px-3 py-2 font-medium ${i ? "text-right" : "text-left"}`}>{c}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {units.filter((u) => u.returns > 0).slice(0, 20).map((u) => (
+                  <tr key={u.asset} className="border-t border-slate-200">
+                    <td className="px-3 py-2 text-slate-900">{u.property} {u.unit}</td>
+                    <td className="px-3 py-2 text-right tabular-nums text-slate-700">{u.visits}</td>
+                    <td className="px-3 py-2 text-right tabular-nums text-slate-900 font-medium">{u.returns}</td>
+                    <td className={`px-3 py-2 text-right tabular-nums ${u.returnPct >= 50 ? "text-red-700" : "text-slate-700"}`}>
+                      {u.returnPct == null ? "—" : `${u.returnPct}%`}
+                    </td>
+                    <td className="px-3 py-2 text-right tabular-nums text-slate-500">
+                      {u.recurring || "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
       <Table
         caption="Per trade"
         cols={["Trade", "Size", "Jobs", "Typical", "Timed"]}
@@ -250,6 +310,31 @@ export default function Monthly({ knownDates }) {
           t.label, t.size, t.jobs, mins(t.allMinutes), `${t.timedPct}%`,
         ])}
       />
+
+      {index && index.merges.length > 0 && (
+        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+          <h3 className="text-sm font-medium text-slate-700 flex items-center gap-1.5">
+            <Merge className="w-3.5 h-3.5 text-slate-400" />
+            {index.merges.length} property name{index.merges.length === 1 ? "" : "s"} read as
+            another spelling
+          </h3>
+          <p className="text-xs text-slate-500 mt-1 max-w-3xl">
+            Numbers and single letters have to match exactly, so Azizi Riviera 1 and 10 stay
+            apart and so do Celestia A and B. Only the spelling of the name itself is
+            forgiven. If any of these are genuinely different buildings, say so on the
+            Properties tab and it will stop.
+          </p>
+          <ul className="mt-2 space-y-0.5">
+            {index.merges.map((m) => (
+              <li key={m.from} className="text-xs text-slate-700">
+                <span className="tabular-nums text-slate-500">{m.jobs} job{m.jobs === 1 ? "" : "s"}</span>
+                {" · "}<span className="text-slate-500">{m.from}</span>
+                {" → "}<b className="text-slate-900">{m.to}</b>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }
