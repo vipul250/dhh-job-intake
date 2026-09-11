@@ -53,7 +53,7 @@ the six are the same property:
 | `azizi riviera 10` ↔ `azizi riviera 1` | 1 | **different buildings** |
 | `azizi riviera 13` ↔ `azizi riviera 1` | 1 | **different** |
 | `azizi riviera 31` ↔ `azizi riviera 1` | 1 | **different** |
-| `elite residence 4` ↔ `elite residence` | 2 | different towers |
+| `elite residence 4` ↔ `elite residence` | 2 | **different buildings — confirmed by Vipul, 11 Sep** |
 
 In a portfolio of numbered buildings a one-character difference is usually a
 different building. Any similarity threshold merges Azizi Riviera 1 with
@@ -178,11 +178,18 @@ Node only, no browser, against the real workbook in `test/harness/`.
 2. `Azizi Riviera 1`, `10`, `13` and `31` remain **four** properties. This
    is the assertion that matters most; a regression here misstates an
    owner's bill.
-3. Against the 474-row workbook, the merge list is **exactly** the four
+3. `Elite Residence` and `Elite Residence 4` remain **two** properties.
+   Confirmed as different buildings by Vipul on 11 September — this is
+   product truth, not an inference from the rule, and the rule happens to
+   agree with it. Anybody later tempted to relax step 4 so that a missing
+   trailing number is tolerated would break this and should read this line
+   first. Note `canonProperty` already maps `Elite Residences 4` onto
+   `elite residence 4`, so the plural spelling is not a third building.
+4. Against the 474-row workbook, the merge list is **exactly** the four
    genuine duplicates — no more. An over-eager rule shows up as a fifth.
-4. A `keepApart` entry overrides the rule.
-5. Canonical spelling prefers a `property-master` entry over frequency.
-6. The twelve real pools resolve to **twelve**, not sixteen, and
+5. A `keepApart` entry overrides the rule.
+6. Canonical spelling prefers a `property-master` entry over frequency.
+7. The twelve real pools resolve to **twelve**, not sixteen, and
    `Jumeirah Golf Estates W019` reports 7 visits rather than 6 + 1.
 
 ## What this does not do
