@@ -19,6 +19,7 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   monthlyReport, monthsPresent, periodsPresent, periodFor, periodLabel, weekStart,
+  periodRange,
 } from "../../src/lib/monthly.js";
 import { parseSheetPaste } from "../../src/lib/importSheet.js";
 import { matchCatalogue, seedCatalogue, applyCatalogue } from "../../src/lib/catalogue.js";
@@ -286,6 +287,35 @@ const job = (over) => ({
     assert.equal(jobSize(typed), jobSize(after),
       `snapping "${typed}" to "${after}" changed it from ${jobSize(typed)} to ${jobSize(after)}`);
   }
+}
+
+/* -------------------- the range, clamped to today --------------------
+ * Anything measured against a RATE needs the true length of the window. On
+ * the 12th, "September" is twelve days of data; expecting a full month of
+ * pool cleans against it reports every pool as catastrophically short.
+ * ------------------------------------------------------------------ */
+{
+  const r = periodRange("month", "2026-09", "2026-09-12");
+  assert.deepEqual({ from: r.from, to: r.to }, { from: "2026-09-01", to: "2026-09-12" },
+    "an unfinished month ends today");
+  assert.equal(r.truncated, true, "and it must say so");
+
+  const past = periodRange("month", "2026-08", "2026-09-12");
+  assert.deepEqual({ from: past.from, to: past.to }, { from: "2026-08-01", to: "2026-08-31" });
+  assert.equal(past.truncated, false, "a finished month is left alone");
+
+  const wk = periodRange("week", "2026-09-07", "2026-09-30");
+  assert.deepEqual({ from: wk.from, to: wk.to }, { from: "2026-09-07", to: "2026-09-13" },
+    "Monday to Sunday inclusive");
+  assert.equal(periodRange("week", "2026-09-07", "2026-09-09").to, "2026-09-09",
+    "a week in progress ends today too");
+
+  const day = periodRange("day", "2026-09-11", "2026-09-30");
+  assert.deepEqual({ from: day.from, to: day.to }, { from: "2026-09-11", to: "2026-09-11" });
+
+  /* February, because a month end computed by adding thirty days is a bug
+     waiting for a leap year. */
+  assert.equal(periodRange("month", "2026-02", "2026-12-31").to, "2026-02-28");
 }
 
 console.log("monthly.mjs OK");

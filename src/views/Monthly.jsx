@@ -3,9 +3,12 @@ import { Loader2, Download, ChevronRight, Merge } from "lucide-react";
 import { storageGet } from "../lib/storage.js";
 import { parseDay, migrateDay } from "../lib/jobStore.js";
 import { liveJobs } from "../lib/job.js";
-import { monthlyReport, periodsPresent, periodFor, periodLabel } from "../lib/monthly.js";
+import {
+  monthlyReport, periodsPresent, periodFor, periodLabel, periodRange,
+} from "../lib/monthly.js";
 import { buildPropertyIndex } from "../lib/propertyName.js";
 import { returnsByUnit, rolesByTech } from "../lib/quality.js";
+import { poolAdherence, SEEDED_POOL_CONTRACTS } from "../lib/pools.js";
 
 /* ---------------------------------------------------------------------- *
  * Monthly.jsx — one span, one table, no interpretation.
@@ -93,6 +96,15 @@ export default function Monthly({ knownDates, propertyMaster }) {
     [resolved, grain, active]
   );
   const roleOf = useMemo(() => Object.fromEntries(roles.map((r) => [r.tech, r])), [roles]);
+
+  /* Pools are measured against a RATE, so the window has to be its true
+     length: periodRange clamps an unfinished month to today, or every pool
+     reads short on the 12th against a full month's expectation. */
+  const range = useMemo(() => periodRange(grain, active), [grain, active]);
+  const ponds = useMemo(
+    () => (resolved && range ? poolAdherence(resolved, SEEDED_POOL_CONTRACTS, range) : null),
+    [resolved, range]
+  );
   const label = periodLabel(grain, active);
 
   function exportCsv() {
@@ -365,6 +377,78 @@ export default function Monthly({ knownDates, propertyMaster }) {
           t.label, t.size, t.jobs, mins(t.allMinutes), `${t.timedPct}%`,
         ])}
       />
+
+      {ponds && ponds.pools.length > 0 && (
+        <div>
+          <h3 className="text-sm font-medium text-slate-700 mb-2">
+            Pools — recorded against contracted
+          </h3>
+          <p className="text-xs text-slate-500 mb-2 max-w-3xl">
+            {ponds.weeks} week{ponds.weeks === 1 ? "" : "s"}
+            {range.truncated && " so far"} · Palm Villa and Jumeirah Golf Estates are
+            contracted at 6 cleans a week, the small pools at 2–3. Two cleans logged on one
+            day count as one — a pool is cleaned or it is not.
+          </p>
+          <p className="text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 mb-2 max-w-3xl">
+            <b>This counts cleans that reached the board, not cleans delivered.</b> A shortfall
+            here is either a pool that went unserved or a clean nobody wrote down, and nothing
+            on this page can tell those apart.
+            {ponds.summary.withoutContractRecord > 0 && (
+              <> {ponds.summary.withoutContractRecord} of {ponds.summary.pools} pools have no
+                terms recorded and are shown on the small-pool cadence — those verdicts are
+                the least reliable here.</>
+            )}
+          </p>
+          <div className="overflow-x-auto border border-slate-200 rounded-lg bg-white">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-slate-600 text-xs">
+                <tr>
+                  {["Pool", "Per week", "Recorded", "Contracted", "", "Short"].map((c, i) => (
+                    <th key={c || i} className={`px-3 py-2 font-medium ${i ? "text-right" : "text-left"}`}>{c}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {ponds.pools.map((p) => (
+                  <tr key={p.asset} className="border-t border-slate-200">
+                    <td className="px-3 py-2 text-slate-900">
+                      {p.label}
+                      {!p.hasContract && (
+                        <span className="ml-1.5 text-[10px] text-slate-500 italic">terms not recorded</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 text-right tabular-nums text-slate-700">{p.perWeekActual ?? "—"}</td>
+                    <td className="px-3 py-2 text-right tabular-nums text-slate-900 font-medium">{p.recorded}</td>
+                    <td className="px-3 py-2 text-right tabular-nums text-slate-700">
+                      {p.expected[0] === p.expected[1] ? p.expected[0] : `${p.expected[0]}–${p.expected[1]}`}
+                    </td>
+                    <td className="px-3 py-2 text-right">
+                      <span className={`text-[10px] rounded px-1.5 py-0.5 ${
+                        p.verdict === "under" ? "bg-red-100 text-red-800"
+                        : p.verdict === "over" ? "bg-amber-100 text-amber-900"
+                        : p.verdict === "on contract" ? "bg-emerald-100 text-emerald-800"
+                        : "bg-slate-100 text-slate-600"}`}>
+                        {p.verdict}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 text-right tabular-nums text-slate-700">
+                      {p.shortfall || (p.surplus ? `+${p.surplus}` : "—")}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="text-xs text-slate-600 mt-2">
+            {ponds.summary.under} under · {ponds.summary.onContract} on contract ·{" "}
+            {ponds.summary.over} over · <b className="text-slate-900">
+              {ponds.summary.totalShortfall} clean{ponds.summary.totalShortfall === 1 ? "" : "s"} short
+            </b>{" "}
+            across {ponds.summary.pools} pools worth AED{" "}
+            {ponds.summary.annualValue.toLocaleString()} a year.
+          </p>
+        </div>
+      )}
 
       {index && index.merges.length > 0 && (
         <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">

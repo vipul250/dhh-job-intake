@@ -86,6 +86,31 @@ const dayLabel = (iso) => {
   return `${Number(d)} ${SHORT[Number(m)]} ${y}`;
 };
 
+/* ---------------------------------------------------------------------- *
+ * A period as an explicit range, CLAMPED TO TODAY.
+ *
+ * Anything measured against a rate — a pool contracted for six cleans a
+ * week — has to know how long the window really was. On the 12th of a
+ * month, "September" is twelve days of data against an expectation built
+ * from thirty: every pool would read catastrophically short and the table
+ * would be worthless on its first day of use.
+ *
+ * So the window ends at today when the period has not finished. A past
+ * month is untouched.
+ * ---------------------------------------------------------------------- */
+export function periodRange(grain, value, today) {
+  if (!value) return null;
+  const t = today || new Date().toISOString().slice(0, 10);
+  let from, to;
+  if (grain === "week") { from = value; to = shiftDays(value, 6); }
+  else if (grain === "month") {
+    from = `${value}-01`;
+    const [y, m] = value.split("-").map(Number);
+    to = new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10);
+  } else { from = value; to = value; }
+  return { from, to: to > t ? t : to, truncated: to > t };
+}
+
 export function periodLabel(grain, value) {
   if (!value) return "";
   if (grain === "month") {
