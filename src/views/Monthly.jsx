@@ -5,7 +5,7 @@ import { parseDay, migrateDay } from "../lib/jobStore.js";
 import { liveJobs } from "../lib/job.js";
 import { monthlyReport, periodsPresent, periodFor, periodLabel } from "../lib/monthly.js";
 import { buildPropertyIndex } from "../lib/propertyName.js";
-import { returnsByUnit } from "../lib/quality.js";
+import { returnsByUnit, rolesByTech } from "../lib/quality.js";
 
 /* ---------------------------------------------------------------------- *
  * Monthly.jsx — one span, one table, no interpretation.
@@ -86,6 +86,13 @@ export default function Monthly({ knownDates, propertyMaster }) {
     () => (resolved ? returnsByUnit(resolved, periodFor(grain, active)) : []),
     [resolved, grain, active]
   );
+  /* Role comes from each man's own work mix, so nobody is judged on a
+     yardstick for work they do not do. Resty has zero reactive jobs. */
+  const roles = useMemo(
+    () => (resolved ? rolesByTech(resolved, periodFor(grain, active)) : []),
+    [resolved, grain, active]
+  );
+  const roleOf = useMemo(() => Object.fromEntries(roles.map((r) => [r.tech, r])), [roles]);
   const label = periodLabel(grain, active);
 
   function exportCsv() {
@@ -219,6 +226,14 @@ export default function Monthly({ knownDates, propertyMaster }) {
                             className={`text-slate-400 transition-transform duration-150 ${open ? "rotate-90" : ""}`}
                           />
                           {t.tech}
+                          {roleOf[t.tech] && roleOf[t.tech].role !== "reactive" && (
+                            <span className={`text-[10px] rounded px-1.5 py-0.5 font-normal ${
+                              roleOf[t.tech].role === "planned" ? "bg-sky-100 text-sky-800"
+                              : roleOf[t.tech].role === "mixed" ? "bg-violet-100 text-violet-800"
+                              : "bg-slate-100 text-slate-600"}`}>
+                              {roleOf[t.tech].role}
+                            </span>
+                          )}
                         </button>
                       </td>
                       <td className="px-3 py-2 text-right tabular-nums text-slate-900">{t.jobs}</td>
@@ -236,6 +251,27 @@ export default function Monthly({ knownDates, propertyMaster }) {
                             {t.major} major, {t.minor} minor — across{" "}
                             {t.trades.length} trade{t.trades.length === 1 ? "" : "s"}:
                           </div>
+                          {roleOf[t.tech] && (
+                            <div className="text-xs text-slate-600 mb-2 pb-2 border-b border-slate-200">
+                              {roleOf[t.tech].plannedPct}% of his work is planned,{" "}
+                              {roleOf[t.tech].reactivePct}% is faults — so he is judged on{" "}
+                              <b className="text-slate-900">
+                                {roleOf[t.tech].judgeOn.length
+                                  ? roleOf[t.tech].judgeOn.join(", ")
+                                  : "neither returns nor consistency"}
+                              </b>
+                              {roleOf[t.tech].judgeOn.length === 0 &&
+                                " — a job card is measured on the Projects tab against its quoted amount"}
+                              {roleOf[t.tech].consistency.n >= 3 && (
+                                <>. His planned round runs{" "}
+                                  <b className="text-slate-900">{mins(roleOf[t.tech].consistency.median)}</b>
+                                  {" "}typically, varying by up to{" "}
+                                  {mins(roleOf[t.tech].consistency.spreadMins)}, on{" "}
+                                  {roleOf[t.tech].perDay.median} a day
+                                </>
+                              )}
+                            </div>
+                          )}
                           <ul className="space-y-1">
                             {t.trades.map((x) => (
                               <li key={x.family} className="flex items-baseline gap-2 text-xs">

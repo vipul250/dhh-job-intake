@@ -198,5 +198,102 @@ t("property name variants do not split a unit in two", () => {
   assert.equal(tulip305[0].visits, 6, "five visits plus the misspelt one");
 });
 
+/* ---------------------------------------------------------------------- *
+ * Role, derived from the work — sub-project C.
+ *
+ * Resty has ZERO reactive jobs in the real data: 51 of his 56 are pool
+ * cleans. Judging him on first-time fix is not unfair, it is judging him on
+ * an empty set — the metric returns null or, worse, 100%.
+ *
+ * And it is not a two-way split. Shafeeq is 37% planned and Bijaya 29% —
+ * the duct-cleaning pair — while Adi and Khaled are neither, being the
+ * project crew. So role is DERIVED from the mix over the period rather than
+ * configured, which also means it stays right when somebody's job changes.
+ * ---------------------------------------------------------------------- */
+
+import { rolesByTech } from "../../src/lib/quality.js";
+
+t("a man with no reactive work is not judged on first-time fix", () => {
+  const pools = Array.from({ length: 10 }, (_, i) =>
+    job({ team: "Resty", description: "Pool Cleaning",
+          property: "Palm Villa", unit: `E${i}`, scheduledDate: "2026-09-02" }));
+  const roles = rolesByTech(pools);
+  const resty = roles.find((r) => r.tech === "Resty");
+  assert.equal(resty.role, "planned");
+  assert.equal(resty.plannedPct, 100);
+  assert.equal(resty.judgeOn.includes("firstTimeFix"), false,
+    "he has no reactive work to be judged on");
+  assert.ok(resty.judgeOn.includes("consistency"), "a planned round is judged on consistency");
+});
+
+t("a man doing faults is judged on whether they came back", () => {
+  const reactive = Array.from({ length: 10 }, (_, i) =>
+    job({ team: "Jabbar", description: "Leakage in the bathroom",
+          property: "Bella Rose", unit: `${100 + i}` }));
+  const jabbar = rolesByTech(reactive).find((r) => r.tech === "Jabbar");
+  assert.equal(jabbar.role, "reactive");
+  assert.ok(jabbar.judgeOn.includes("firstTimeFix"));
+  assert.ok(jabbar.judgeOn.includes("returns"));
+});
+
+t("a genuinely mixed technician is called mixed, not forced into one", () => {
+  /* Shafeeq is 37% planned in the real data. Calling him one or the other
+     throws away a third of what he does. */
+  const mix = [
+    ...Array.from({ length: 4 }, () => job({ team: "Shafeeq", description: "AC PPM" })),
+    ...Array.from({ length: 6 }, () => job({ team: "Shafeeq", description: "Leakage in the bathroom" })),
+  ];
+  const s = rolesByTech(mix).find((r) => r.tech === "Shafeeq");
+  assert.equal(s.role, "mixed");
+  assert.equal(s.plannedPct, 40);
+  assert.ok(s.judgeOn.includes("firstTimeFix"), "he does enough reactive work to judge");
+  assert.ok(s.judgeOn.includes("consistency"), "and enough planned work to judge");
+});
+
+t("the project crew is neither, and is not judged on either", () => {
+  const crew = Array.from({ length: 8 }, () =>
+    job({ team: "Adi", description: "Onboarding - Approved Quotation PC-2026-08-08" }));
+  const adi = rolesByTech(crew).find((r) => r.tech === "Adi");
+  assert.equal(adi.role, "project");
+  assert.equal(adi.judgeOn.includes("firstTimeFix"), false);
+  assert.equal(adi.judgeOn.includes("consistency"), false);
+});
+
+t("a crew job counts for both men, and role is per man", () => {
+  const roles = rolesByTech([
+    job({ team: "Resty & Shafeeq", description: "Pool Cleaning", property: "Palm Villa", unit: "E41" }),
+  ]);
+  assert.equal(roles.length, 2);
+  roles.forEach((r) => assert.equal(r.jobs, 1));
+});
+
+t("consistency is the spread of a planned round, not its speed", () => {
+  /* Five identical pool cleans, one of them a third of the time. That is
+     the signal worth having on a planned round: not slowness, variance. */
+  const steady = Array.from({ length: 4 }, (_, i) =>
+    job({ team: "Resty", description: "Pool Cleaning", property: "Palm Villa", unit: `E${i}`,
+          arrivedAt: "09:00", leftAt: "10:00" }));
+  const r1 = rolesByTech(steady).find((r) => r.tech === "Resty");
+  assert.equal(r1.consistency.spreadMins, 0, "an identical round has no spread");
+
+  const ragged = [...steady, job({ team: "Resty", description: "Pool Cleaning",
+    property: "Palm Villa", unit: "E9", arrivedAt: "11:00", leftAt: "11:20" })];
+  const r2 = rolesByTech(ragged).find((r) => r.tech === "Resty");
+  assert.ok(r2.consistency.spreadMins >= 30, "a 20-minute clean among hours of 60 shows up");
+  assert.equal(r2.consistency.n, 5);
+});
+
+t("the real workbook splits the department the way the data does", () => {
+  const roles = rolesByTech(dated);
+  const byName = Object.fromEntries(roles.map((r) => [r.tech, r]));
+  assert.equal(byName.Resty.role, "planned", "51 of 56 jobs are pool cleans");
+  ["Anthony", "Jabbar", "Bright", "Vitalis", "Abdul Riyaz", "Yousoufu"].forEach((n) =>
+    assert.equal(byName[n].role, "reactive", `${n} should read reactive`));
+  assert.equal(byName.Shafeeq.role, "mixed", "37% planned");
+  /* Nobody is judged on a yardstick for work they do not do. */
+  assert.equal(byName.Resty.judgeOn.includes("firstTimeFix"), false);
+  assert.ok(byName.Jabbar.judgeOn.includes("firstTimeFix"));
+});
+
 console.log(ok.map((n) => `  ok  ${n}`).join("\n"));
 console.log(`\n${ok.length} checks passed.`);

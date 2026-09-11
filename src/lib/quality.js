@@ -31,7 +31,7 @@ import { actualDuration, RESOLVED_STATES, readClock } from "./job.js";
 import { isOurFault } from "./faultFamily.js";
 import {
   assetKey, canonProperty, canonUnit, squash, workType, daysBetween,
-  parseDurationMinutes,
+  parseDurationMinutes, splitCrew, canonTech,
 } from "./normalize.js";
 
 /* A return inside this window is the same fault coming back. Beyond it, it
@@ -306,4 +306,121 @@ export function qualityReport(jobs, period, opts = {}) {
     gaps,
     byUnit: units,
   };
+}
+
+/* ---------------------------------------------------------------------- *
+ * Role, derived from the work rather than configured — sub-project C.
+ *
+ * Resty has ZERO reactive jobs: 51 of his 56 are pool cleans. Judging him
+ * on first-time fix is not unfair, it is judging him on an empty set, and
+ * the metric answers null or — worse, if written carelessly — 100%.
+ *
+ * Measured across the real fortnight:
+ *
+ *     Anthony      67 jobs    0 ppm   49 reactive     0% planned
+ *     Jabbar       59          0      43              0%
+ *     Resty        56         51       0             91%
+ *     Shafeeq      41         15      13             37%
+ *     Bijaya       34         10      11             29%
+ *     Adi/Khaled   11 each     0       0              — project crew
+ *
+ * So it is not a two-way split, and a hard-coded "Resty is the pool man"
+ * rule would also be wrong: Acacia A G01's pool is cleaned by Anthony.
+ * Role comes from the mix over the period, which keeps it right when
+ * somebody's job changes and needs nobody to maintain a list.
+ *
+ * What each role is judged on:
+ *
+ *   reactive   did the fault come back — returns, first-time fix
+ *   planned    was the round delivered evenly — consistency, coverage
+ *   mixed      both, because throwing away a third of what Shafeeq does to
+ *              fit him in one box is worse than reporting two figures
+ *   project    neither. A job card runs for days and is measured on the
+ *              Projects tab against its quoted amount, not here.
+ * ---------------------------------------------------------------------- */
+
+/* Enough of a kind of work to be judged on it. Below this the sample is too
+   small to mean anything, which is the same argument the tier split makes. */
+const ROLE_FLOOR_PCT = 20;
+
+const median = (nums) => {
+  if (!nums.length) return null;
+  const s = [...nums].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 ? s[mid] : Math.round((s[mid - 1] + s[mid]) / 2);
+};
+
+export function rolesByTech(jobs, period) {
+  const byTech = new Map();
+  (jobs || []).forEach((j) => {
+    if (!j || j._tomb) return;
+    if (!inPeriod(j, period)) return;
+    const crew = splitCrew(j.team);
+    (crew.length ? crew : ["Unassigned"]).forEach((raw) => {
+      const tech = canonTech(raw);
+      if (!tech) return;
+      if (!byTech.has(tech)) byTech.set(tech, []);
+      byTech.get(tech).push(j);
+    });
+  });
+
+  const rows = [];
+  byTech.forEach((list, tech) => {
+    const kinds = list.map((j) => workType(j.description, j.faultCode));
+    const planned = kinds.filter((k) => k === "ppm").length;
+    const reactive = kinds.filter((k) => k === "reactive").length;
+    const project = kinds.filter((k) => k === "project").length;
+    const n = list.length;
+    const pct = (x) => Math.round((x / n) * 100);
+
+    const plannedPct = pct(planned);
+    const reactivePct = pct(reactive);
+
+    /* Project first: a job card runs for days and is measured against its
+       quoted amount on the Projects tab, not by returns or by consistency. */
+    let role;
+    if (project > planned && project > reactive) role = "project";
+    else if (plannedPct >= ROLE_FLOOR_PCT && reactivePct >= ROLE_FLOOR_PCT) role = "mixed";
+    else if (plannedPct > reactivePct) role = "planned";
+    else if (reactivePct >= ROLE_FLOOR_PCT) role = "reactive";
+    else role = "other";
+
+    const judgeOn = [];
+    if (role === "reactive" || role === "mixed") judgeOn.push("returns", "firstTimeFix");
+    if (role === "planned" || role === "mixed") judgeOn.push("consistency", "coverage");
+
+    /* Consistency is the SPREAD of a planned round, not its speed. A round
+       of hour-long cleans with one twenty-minute outlier is the signal
+       worth having; a uniformly slower round is a different conversation. */
+    const durations = list
+      .filter((j) => workType(j.description, j.faultCode) === "ppm")
+      .map((j) => actualDuration(j).minutes)
+      .filter((m) => m != null);
+    const mid = median(durations);
+    const spreadMins = durations.length
+      ? Math.max(...durations.map((d) => Math.abs(d - mid)))
+      : null;
+
+    rows.push({
+      tech, jobs: n,
+      planned, reactive, project,
+      plannedPct, reactivePct,
+      role, judgeOn,
+      consistency: { median: mid, spreadMins, n: durations.length },
+      /* Days worked and the busiest, for a planned round where the
+         question is whether the cycle was delivered at all. */
+      days: [...new Set(list.map(jobDate).filter(Boolean))].length,
+      perDay: (() => {
+        const byDate = new Map();
+        list.forEach((j) => {
+          const d = jobDate(j);
+          byDate.set(d, (byDate.get(d) || 0) + 1);
+        });
+        const counts = [...byDate.values()];
+        return { median: median(counts), max: counts.length ? Math.max(...counts) : 0 };
+      })(),
+    });
+  });
+
+  return rows.sort((a, b) => b.jobs - a.jobs);
 }
