@@ -907,8 +907,39 @@ export default function LiveBoard({
 
   /* The move. Two writes: a tombstone on the day it leaves, the job itself
      on the day it lands. Deliberately not a delete anywhere. */
-  async function doMove(job, toDate, reason, displacedBy, winnerPriority) {
-    const { moved, tomb } = moveJob(job, toDate, who, reason, displacedBy, lock.kind);
+  async function doMove(job, toDate, reason, displacedBy, winnerPriority, team) {
+    /* Staying on the day is not a move. No tombstone, no push count, no
+       fiction that the work was deferred — only the name changes, and the
+       `assigned` event records it. This is the commonest thing the
+       coordinator does: at nine he does not know what the afternoon holds. */
+    if (toDate === selectedDate) {
+      await change(selectedDate, (cur) => {
+        const target = cur.find((r) => !isTombstone(r) && r.id === job.id) || job;
+        return upsert(cur, reassign(target, team, who, MOVE_REASON_LABEL[reason] || reason));
+      });
+      showToast(
+        squash(team)
+          ? `${squash(team)} has it. Still on ${selectedDate}, and it still needs his answer.`
+          : `Unassigned on ${selectedDate}, for whoever is free.`,
+        "ok"
+      );
+      setMoveFor(null);
+      return;
+    }
+
+    /* A job pushed to another day used to keep whoever had it, silently.
+       When the work had actually been given to somebody else, the new day
+       showed the wrong man and nothing on it said so.
+     *
+       The tombstone is built from the job AS IT WAS, so the day that lost
+       it still records who was planned to do it — that is what the
+       plan-versus-actual study reads. The handover rides on the copy that
+       travels, carrying the `assigned` event with it. */
+    const { moved: movedAsIs, tomb } = moveJob(job, toDate, who, reason, displacedBy, lock.kind);
+    const handOver = team !== undefined && squash(team) !== squash(job.team);
+    const moved = handOver
+      ? reassign(movedAsIs, team, who, MOVE_REASON_LABEL[reason] || reason)
+      : movedAsIs;
     await change(selectedDate, (cur) => {
       /* Idempotent. Two clicks, a double submit, or a re-move of a job that
          is already gone must not add a second departure to the day. */
@@ -934,7 +965,12 @@ export default function LiveBoard({
       return next;
     });
     await mutateDay(toDate, (cur) => [...cur, moved]);
-    showToast(`Moved to ${toDate}. The trail stays on ${selectedDate}.`, "ok");
+    showToast(
+      squash(moved.team) && squash(moved.team) !== squash(job.team)
+        ? `Moved to ${toDate}, on ${squash(moved.team)}'s list. The trail stays on ${selectedDate}.`
+        : `Moved to ${toDate}. The trail stays on ${selectedDate}.`,
+      "ok"
+    );
     setMoveFor(null);
   }
 
@@ -1303,10 +1339,10 @@ export default function LiveBoard({
       {trailFor && <TrailDrawer job={trailFor} onClose={() => setTrailFor(null)} />}
       {moveFor && (
         <MoveDialog
-          job={moveFor} fromDate={selectedDate} dayJobs={jobs}
+          job={moveFor} fromDate={selectedDate} dayJobs={jobs} candidates={candidates}
           onCancel={() => setMoveFor(null)}
-          onMove={(to, reason, displacedBy, winnerPriority) =>
-            doMove(moveFor, to, reason, displacedBy, winnerPriority)}
+          onMove={(to, reason, displacedBy, winnerPriority, team) =>
+            doMove(moveFor, to, reason, displacedBy, winnerPriority, team)}
         />
       )}
       {outcomeFor && (
@@ -2708,7 +2744,7 @@ function LeftThisDay({ tombs, cancelled, onOpenDate, onTrail }) {
 
 /* ========================= dialogs ========================= */
 
-function MoveDialog({ job, fromDate, dayJobs, onCancel, onMove }) {
+function MoveDialog({ job, fromDate, dayJobs, candidates, onCancel, onMove }) {
   /* The arriving job usually has no priority — it was added mid-day and
      nothing asked. That is why "was the call right" could be answered for
      2 of 70 departures in two months: both halves are stored, but the
@@ -2719,6 +2755,13 @@ function MoveDialog({ job, fromDate, dayJobs, onCancel, onMove }) {
   const [reason, setReason] = useState(MOVE_REASONS[0].id);
   const [winnerId, setWinnerId] = useState("");
   const [winnerText, setWinnerText] = useState("");
+
+  /* Who has it on the new day. It defaulted silently to whoever had it
+     before, so a job pushed to the 12th landed back on the same
+     technician's list even when the work had been given to somebody else —
+     and nothing on the 12th said otherwise. */
+  const [team, setTeam] = useState(squash(job.team) || "");
+  const movedOn = squash(team) !== squash(job.team);
 
   const displaces = moveReasonDisplaces(reason);
 
@@ -2742,13 +2785,20 @@ function MoveDialog({ job, fromDate, dayJobs, onCancel, onMove }) {
       }
     : null;
 
-  const canMove = !displaces || !!(winnerId || squash(winnerText));
+  /* Staying on the day is not a move. The coordinator does not know at
+     nine in the morning what the afternoon holds, and handing a job to
+     somebody else TODAY is the commonest thing he does — it needs no
+     tombstone, no push, and no fiction that the work was deferred. */
+  const sameDay = to === fromDate;
+  const nothingToDo = sameDay && !movedOn;
+  const canMove = !nothingToDo && (sameDay || !displaces || !!(winnerId || squash(winnerText)));
 
   return (
     <Modal title={`Move ${job.property} ${job.unit}`} onCancel={onCancel} wide>
       <p className="text-xs text-slate-600">
-        {fromDate} keeps a record that this job left and where it went. The job carries its
-        history with it — it will show as pushed {(job.pushCount || 0) + 1}× on the new day.
+        {sameDay
+          ? `It stays on ${fromDate}. Only who is doing it changes, and that is recorded in the job's history.`
+          : `${fromDate} keeps a record that this job left and where it went. The job carries its history with it — it will show as pushed ${(job.pushCount || 0) + 1}× on the new day.`}
       </p>
 
       <label className="block text-xs text-slate-600 mt-3">
@@ -2756,7 +2806,13 @@ function MoveDialog({ job, fromDate, dayJobs, onCancel, onMove }) {
         <input type="date" value={to} onChange={(e) => setTo(e.target.value)}
                className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
       </label>
-      <div className="flex gap-1.5 mt-1.5">
+      <div className="flex flex-wrap gap-1.5 mt-1.5">
+        <button onClick={() => setTo(fromDate)}
+                className={`text-xs rounded px-2 py-1 border ${
+                  sameDay ? "bg-slate-900 text-white border-slate-900"
+                          : "border-slate-300 hover:bg-slate-50"}`}>
+          Stay on {fromDate} — just change who
+        </button>
         {[1, 2, 7].map((n) => (
           <button key={n} onClick={() => setTo(addDays(fromDate, n))}
                   className="text-xs border border-slate-300 rounded px-2 py-1 hover:bg-slate-50">
@@ -2765,7 +2821,42 @@ function MoveDialog({ job, fromDate, dayJobs, onCancel, onMove }) {
         ))}
       </div>
 
-      <label className="block text-xs text-slate-600 mt-3">
+      <div className="mt-3">
+        <div className="text-xs text-slate-600">Who does it on {to || "the new day"}?</div>
+        <div className="mt-1 flex flex-wrap gap-1.5">
+          {squash(job.team) && (
+            <button onClick={() => setTeam(job.team)}
+                    className={`text-xs px-2 py-1 rounded-md border ${
+                      !movedOn ? "bg-slate-900 text-white border-slate-900"
+                               : "bg-white border-slate-300 hover:bg-slate-50"}`}>
+              {job.team} <span className={!movedOn ? "text-slate-300" : "text-slate-400"}>· same</span>
+            </button>
+          )}
+          {(candidates || []).filter((c) => squash(c) !== squash(job.team)).map((c) => (
+            <button key={c} onClick={() => setTeam(c)}
+                    className={`text-xs px-2 py-1 rounded-md border ${
+                      squash(team) === squash(c)
+                        ? "bg-slate-900 text-white border-slate-900"
+                        : "bg-white border-slate-300 hover:bg-slate-50"}`}>
+              {c}
+            </button>
+          ))}
+        </div>
+        <input value={team} onChange={(e) => setTeam(e.target.value)}
+               placeholder="or type a name — leave blank to decide on the day"
+               className="mt-1.5 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
+        {/* On the same day the paragraph at the top already says this;
+            saying it twice reads as two different things happening. */}
+        {movedOn && !sameDay && (
+          <p className="mt-1.5 text-[11px] text-blue-800 bg-blue-50 border border-blue-200 rounded px-2 py-1">
+            {squash(team)
+              ? `It lands on ${squash(team)}'s list on ${to}, not ${job.team}'s. The handover is recorded on this day.`
+              : `It lands unassigned on ${to}, for whoever is free.`}
+          </p>
+        )}
+      </div>
+
+      <label className={`block text-xs text-slate-600 mt-3 ${sameDay ? "hidden" : ""}`}>
         Why is it moving?
         <select value={reason} onChange={(e) => { setReason(e.target.value); setWinnerId(""); setWinnerText(""); }}
                 className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm">
@@ -2773,7 +2864,7 @@ function MoveDialog({ job, fromDate, dayJobs, onCancel, onMove }) {
         </select>
       </label>
 
-      {displaces && (
+      {displaces && !sameDay && (
         <div className="mt-3 rounded-md border border-blue-300 bg-blue-50 p-2.5">
           <h4 className="text-xs font-medium text-blue-900">What took the slot?</h4>
           <p className="text-[11px] text-blue-800 mt-0.5 mb-2">
@@ -2839,14 +2930,19 @@ function MoveDialog({ job, fromDate, dayJobs, onCancel, onMove }) {
       <div className="flex justify-end gap-2 mt-4">
         <button onClick={onCancel} className="text-sm border border-slate-300 px-3 py-1.5 rounded-md">Cancel</button>
         <button disabled={!canMove}
-                onClick={() => onMove(to, reason, displacedBy, winnerId ? winnerPriority : "")}
+                onClick={() => onMove(to, reason, displacedBy, winnerId ? winnerPriority : "", team)}
                 className="text-sm bg-slate-900 text-white px-3 py-1.5 rounded-md disabled:opacity-40">
-          Move to {to}
+          {sameDay ? `Hand it to ${squash(team) || "nobody"}` : `Move to ${to}`}
         </button>
       </div>
-      {displaces && !canMove && (
+      {displaces && !sameDay && !canMove && (
         <p className="text-[11px] text-blue-700 mt-1.5 text-right">
           Say what took the slot before moving it.
+        </p>
+      )}
+      {nothingToDo && (
+        <p className="text-[11px] text-slate-500 mt-1.5 text-right">
+          Same day, same technician — pick another day, or somebody else.
         </p>
       )}
     </Modal>

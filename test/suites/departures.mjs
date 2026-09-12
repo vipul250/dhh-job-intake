@@ -17,7 +17,7 @@
  * ---------------------------------------------------------------------- */
 
 import assert from "node:assert/strict";
-import { latestTombstones, makeTombstone, moveJob, isTombstone } from "../../src/lib/job.js";
+import { latestTombstones, makeTombstone, moveJob, isTombstone, reassign } from "../../src/lib/job.js";
 import { feedQuality } from "../../src/lib/feed.js";
 
 const ok = [];
@@ -85,6 +85,83 @@ t("the feed's moves-explained figure counts jobs, not records", () => {
   const [d] = feedQuality({ "2026-09-10": [job({ id: "live", state: "fixed" }), withWhy, dupe, noWhy] });
   assert.equal(d.moves, 2, "two jobs left, though three records exist");
   assert.equal(d.explainedPct, 50, "one of the two says what took the slot");
+});
+
+/* ---------------- moved to another day AND another man ---------------- *
+ * Raised 12 September: "lets say i move the task for 12th, and when i open
+ * 12th it lands on the same technincan but in reality its assigned to
+ * someone else."
+ * --------------------------------------------------------------------- */
+
+t("the moved job carries the new technician", () => {
+  const { moved: asIs, tomb } = moveJob(job({ team: "Anthony" }), "2026-09-12", "Vipul", "guest-complaint");
+  const moved = reassign(asIs, "Vitalis", "Vipul", "New guest complaint took the slot");
+  assert.equal(moved.team, "Vitalis", "the 12th shows who actually has it");
+  assert.equal(moved.scheduledDate, "2026-09-12");
+  assert.equal(moved.state, "scheduled");
+  assert.equal(moved.reassignedFrom, "Anthony");
+});
+
+t("the day it left still records who was PLANNED to do it", () => {
+  /* This is what the plan-versus-actual study reads. If the tombstone took
+     the new name, the 11th would claim Vitalis was scheduled that day and
+     the whole comparison would be against a plan nobody wrote. */
+  const { tomb } = moveJob(job({ team: "Anthony" }), "2026-09-12", "Vipul", "guest-complaint");
+  assert.equal(tomb.snapshot.team, "Anthony");
+});
+
+t("the handover is in the job's own history, not only in the move", () => {
+  const { moved: asIs } = moveJob(job({ team: "Anthony" }), "2026-09-12", "Vipul", "guest-complaint");
+  const moved = reassign(asIs, "Vitalis", "Vipul");
+  const kinds = moved.events.map((e) => e.kind);
+  assert.ok(kinds.includes("moved_in"), "it moved");
+  assert.equal(kinds[kinds.length - 1], "assigned", "and then it changed hands");
+});
+
+t("moving without changing the technician leaves him on it", () => {
+  const { moved } = moveJob(job({ team: "Anthony" }), "2026-09-12", "Vipul", "guest-complaint");
+  assert.equal(moved.team, "Anthony");
+  assert.ok(!moved.reassignedFrom, "nothing to record — nobody handed it over");
+});
+
+t("moving it to nobody leaves it unassigned, not wrongly assigned", () => {
+  const { moved: asIs } = moveJob(job({ team: "Anthony" }), "2026-09-12", "Vipul", "guest-complaint");
+  const moved = reassign(asIs, "", "Vipul");
+  assert.equal(moved.team, "", "for whoever is free on the day");
+  assert.equal(moved.reassignedFrom, "Anthony");
+});
+
+/* -------------- handed over WITHOUT leaving the day ------------------- *
+ * 12 September: "i should have the option to choose the same date along
+ * with the person whom it should be assigned to and its logical because as
+ * the day progresses the coordinators does not know what is going to
+ * happen."
+ *
+ * Staying on the day is not a move. The distinction matters beyond tidiness:
+ * a tombstone here would be counted as a displacement by the study, and a
+ * push count would make the job look deferred when it was simply handed to
+ * the man who was free.
+ * --------------------------------------------------------------------- */
+
+t("a same-day handover writes no departure and no push", () => {
+  const before = job({ team: "Anthony", pushCount: 0 });
+  const after = reassign(before, "Vitalis", "Vipul", "New guest complaint took the slot");
+  assert.equal(latestTombstones([after]).length, 0, "nothing left the day");
+  assert.equal(after.pushCount, 0, "it was not deferred");
+  assert.equal(after.scheduledDate, "2026-09-10", "and it did not move");
+  assert.equal(after.team, "Vitalis");
+});
+
+t("the study does not see a same-day handover as a displacement", () => {
+  const after = reassign(job({ team: "Anthony" }), "Vitalis", "Vipul");
+  const [d] = feedQuality({ "2026-09-10": [after] });
+  assert.equal(d.moves, 0, "no move to explain");
+  assert.equal(d.jobs, 1);
+});
+
+t("a same-day handover still owes an answer", () => {
+  const after = reassign(job({ team: "Anthony", state: "scheduled" }), "Vitalis", "Vipul");
+  assert.equal(after.state, "scheduled", "Vitalis has not done it yet");
 });
 
 console.log(ok.map((n) => `  ok  ${n}`).join("\n"));
