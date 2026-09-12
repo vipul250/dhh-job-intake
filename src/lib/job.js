@@ -1096,12 +1096,22 @@ export function splitTaskParts(description) {
   const lines = raw.split(/\n/).map((l) => squash(l.replace(/^\s*[-•*]\s*/, ""))).filter(Boolean);
   if (lines.length >= 2) return tidy(lines);
 
-  /* 3. a dash used as a separator mid-line. Three parts or more only: a
-     single dash is far more often punctuation than a list — "Water leak
-     from the ceiling — trace and stop" is one job described in two
-     clauses, and splitting it would invent a second. */
-  const dashed = squash(raw).split(/\s+[-–—]\s+/).map(squash).filter(Boolean);
-  if (dashed.length >= 3) return tidy(dashed);
+  /* 3. A dash used as a separator USED TO SPLIT HERE. It does not any more.
+     Measured on 1,582 real descriptions: the rule fired on 72 of them and
+     not one was a list of jobs. Every single case was a materials line or
+     a reference string —
+         "P-247 – 1 pc (Bottle Trap) Magic Pipe – 1 pc (Purchased from Shop)"
+         "Materials Used: C440 – 2 pcs Cleaning Chamois – Car Stock"
+         "Approved - PC-2026-08-13 - along with general Inspection - ..."
+     — and the close-out was offering them as five separate jobs to tick
+     off, on a screen whose entire purpose is saying what really got done.
+     A technician's dash is punctuation and a bill of materials. When he
+     means a list he numbers it, and branch 1 catches that.
+
+     Deleted rather than tightened: every rule that could tell "Fix the tap
+     - replace the head - clear the drain" from a materials line also had
+     to be wrong about something, and the good case does not occur in two
+     months of real descriptions. */
 
   // 4. semicolons
   const semis = squash(raw).split(/\s*;\s*/).map(squash).filter(Boolean);

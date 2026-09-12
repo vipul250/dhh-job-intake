@@ -1,5 +1,5 @@
 import fs from 'fs';
-import { splitTrailingUnit } from '/home/user/dhh-job-intake/src/lib/normalize.js';
+import { splitTrailingUnit } from '../../src/lib/normalize.js';
 const d = JSON.parse(fs.readFileSync(process.env.SP + '/real.json','utf8'));
 const blank = d.filter(r => !(r.unit||'').trim());
 const seen = new Map();

@@ -1,5 +1,5 @@
 import fs from 'fs';
-import { discoverProjects, candidateProjects, projectMarkers, readQuotationRef, projectTitleFrom } from '/home/user/dhh-job-intake/src/lib/project.js';
+import { discoverProjects, candidateProjects, projectMarkers, readQuotationRef, projectTitleFrom } from '../../src/lib/project.js';
 const rows = JSON.parse(fs.readFileSync(process.env.SP + '/real.json','utf8'));
 const jobs = rows.map((r,i)=>({ ...r, id: 'j'+i, events: [], scheduledDate: r._date }));
 const found = discoverProjects(jobs);

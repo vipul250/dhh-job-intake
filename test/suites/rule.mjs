@@ -1,5 +1,5 @@
 import fs from 'fs';
-const B = await import('/home/user/dhh-job-intake/src/lib/backlog.js');
+const B = await import('../../src/lib/backlog.js');
 const TODAY = '2026-09-01';
 const text = fs.readFileSync(process.env.SP + '/pms-issues.tsv','utf8');
 const { items, skipped, error } = B.parseIssuePaste(text, TODAY);
