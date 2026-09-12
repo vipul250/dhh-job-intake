@@ -12,6 +12,8 @@ import Backlog from "./views/Backlog.jsx";
 import Monthly from "./views/Monthly.jsx";
 import Dashboard from "./views/Dashboard.jsx";
 import SignIn from "./views/SignIn.jsx";
+import Passcode from "./views/Passcode.jsx";
+import { isUnlocked } from "./lib/passcode.js";
 import { isAuthRequired, currentSession, onAuthChange, signOut } from "./lib/auth.js";
 import { mutateDay } from "./lib/jobStore.js";
 
@@ -164,6 +166,12 @@ export default function App() {
    * statement if email delivery breaks. A login screen nobody can get past
    * would take the whole department's day with it, and a redeploy is not
    * an acceptable recovery path for that. */
+  /* The door, ahead of everything else. See src/lib/passcode.js for what
+     it does and does not protect — it stops somebody who merely has the
+     link, which is what happened on 12 September, and it does not replace
+     Row Level Security. */
+  const [unlocked, setUnlocked] = useState(isUnlocked);
+
   const [authRequired, setAuthRequired] = useState(null);
   const [session, setSession] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
@@ -439,6 +447,10 @@ export default function App() {
     jobs.forEach((j) => { if (c[j.priority] !== undefined) c[j.priority]++; });
     return c;
   }, [jobs]);
+
+  if (!unlocked) {
+    return <Passcode onUnlocked={() => setUnlocked(true)} />;
+  }
 
   if (loading) {
     return (
