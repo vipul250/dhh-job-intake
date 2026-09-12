@@ -278,9 +278,26 @@ const pasteRefKey = (j) => canonKey(j.pmsRef);
    is recognised by its content rather than its reference; that is enough,
    because the content key is the one that catches rows without a
    reference in the first place. */
+/* The lead-ins this application puts on a description when it carries work
+   forward. They are ours, so the list is exact rather than a guess.
+ *
+   They defeated our own duplicate check. On 11 September Azizi Riviera 4
+   521 appeared twice on Anthony's list: once as the follow-up the app
+   created from the 10th, and once from the coordinators' printable
+   schedule, because they had scheduled the same work themselves. The two
+   descriptions are the same sentence — one of them just begins "Retry:".
+   A job that was plainly MOVED deduplicated correctly; only the ones the
+   app had relabelled slipped through.
+ *
+   This matters more than a tidy board. The pasted row counts as planned
+   and the follow-up counts as arrived, so every duplicate quietly widens
+   the gap between the plan and the day in the twenty-day study. */
+const CARRIED_PREFIX = /^\s*(?:retry|finish|follow[\s-]?up|pending work|continuation)\s*[:\-–—]\s*/i;
+
 const pasteBodyKey = (j) => {
   const src = j && j._tomb && j.snapshot ? j.snapshot : (j || {});
-  return `${canonKey(src.property)}|${canonKey(src.unit)}|${canonKey(src.description).slice(0, 40)}`;
+  const desc = String(src.description || "").replace(CARRIED_PREFIX, "");
+  return `${canonKey(src.property)}|${canonKey(src.unit)}|${canonKey(desc).slice(0, 40)}`;
 };
 
 /**

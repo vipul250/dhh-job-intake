@@ -130,4 +130,65 @@ const others = [
   ok("a tombstone is ignored for a manual paste and counted for the sync");
 }
 
+/* ---------------------------------------------------------------------- *
+ * 11 September: Azizi Riviera 4 521, twice on Anthony's list.
+ *
+ * Once as the follow-up the app created when the job was closed out on the
+ * 10th, and once from the coordinators' printable schedule — because they
+ * had scheduled the same work themselves. Two rows, one job.
+ *
+ * The two descriptions are the same sentence. One of them begins "Retry:",
+ * which is a prefix THIS APPLICATION adds, and which defeated its own
+ * duplicate check. A job that was plainly moved deduplicated correctly;
+ * only the ones the app had relabelled slipped through.
+ *
+ * It will happen on every day of the twenty-day plan-versus-actual study,
+ * because the process is: paste the coordinators' plan, then record what
+ * really happened. Anything already carried forward meets their version of
+ * itself. And it does not merely untidy the board — the pasted row counts
+ * as planned while the follow-up counts as arrived, so each duplicate
+ * widens the measured gap between plan and day.
+ * ---------------------------------------------------------------------- */
+{
+  const P = "Azizi Riviera 4", U = "521";
+  const SENTENCE = "Balcony light is faulty and requires complete replacement of 1 LED downlight";
+  const pasted = { property: P, unit: U, description: SENTENCE };
+
+  const alone = (existing) => pasteAdditions([existing], [pasted]);
+
+  assert.equal(alone({ property: P, unit: U, description: `Retry: ${SENTENCE}.` }).add.length, 0);
+  ok("the coordinators' row does not land on top of our own Retry follow-up");
+
+  assert.equal(alone({ property: P, unit: U, description: `Finish: ${SENTENCE}` }).add.length, 0);
+  ok("nor on top of a Finish follow-up");
+
+  assert.equal(alone({ property: P, unit: U, description: `Follow-up: ${SENTENCE}` }).add.length, 0);
+  assert.equal(alone({ property: P, unit: U, description: `Pending work - ${SENTENCE}` }).add.length, 0);
+  ok("nor the other lead-ins the department writes by hand");
+
+  assert.equal(alone({ property: P, unit: U, description: SENTENCE }).add.length, 0);
+  ok("a plainly moved job still deduplicates, as it always did");
+
+  assert.equal(alone({ property: P, unit: U, description: "Bedroom tv cabinet broken" }).add.length, 1);
+  ok("a genuinely different job at the same unit is still added");
+
+  /* The prefix is stripped for COMPARISON only. Anthony still reads
+     "Retry:" on his card, which is how he knows he is going back. */
+  const kept = { property: P, unit: U, description: `Retry: ${SENTENCE}` };
+  pasteAdditions([kept], [pasted]);
+  assert.equal(kept.description, `Retry: ${SENTENCE}`);
+  ok("the technician still sees Retry on the card — nothing is rewritten");
+
+  /* Two different units at the same property must not collapse into one,
+     which is the failure this whole file was written for. */
+  const two = pasteAdditions(
+    [{ property: P, unit: "521", description: `Retry: ${SENTENCE}` }],
+    [{ property: P, unit: "521", description: SENTENCE },
+     { property: P, unit: "306", description: SENTENCE }]
+  );
+  assert.equal(two.add.length, 1);
+  assert.equal(two.add[0].unit, "306");
+  ok("the same fault at a different unit is still its own job");
+}
+
 console.log(`\n${checks} checks passed.`);
