@@ -70,6 +70,34 @@ const BULLET = /^\s*[-•*–—]\s*/;
 const CONTAINED = /\b(temporar\w*|for now|closed the valve|valve closed|isolated|shut(?:\s*off)?|turned off the|stopped the leak|arranged temporar\w*|as a temporary|until (?:the )?(?:material|part|quotation))\b/i;
 const NEEDS_MORE = /\b(pending|need(?:s|ed)? to be (?:replaced|fixed|done)|require\w*|to be replaced|needs? replacement|further repair|quotation|contractor|third party|3rd party|not (?:yet )?(?:available|possible)|material required)\b/i;
 
+/* ---------------------------------------------------------------------- *
+ * Somebody wrote that work is still owed.
+ *
+ * 43 jobs were closed as Fixed while their own text said otherwise —
+ * "Need to follow up ASAP", "PENDING - Materials", "RESCHEDULED - To be
+ * attended tomorrow". Fixed means nothing left to do, and in those 43
+ * cases the person clicking it had the contradiction on screen.
+ *
+ * This does not decide anything. It returns the phrase so the close-out
+ * can quote it back and let the coordinator answer. A technician who
+ * writes "no pending work" is not caught, because the negation is checked.
+ * ---------------------------------------------------------------------- */
+const NO_PENDING = [
+  /\b(?:no|nil|none|without|zero)\s+(?:further\s+|outstanding\s+|other\s+)?(?:pending|follow[\s-]?up|material|work)\b/i,
+  /* "Pending Work: None." — the department's own house style, and the
+     commonest way of saying there is nothing left. Read the other way
+     round it is the strongest possible false positive. */
+  /\bpending[^.\n]{0,24}?[:\-–—]\s*(?:none|nil|no\b|n\/a)/i,
+];
+
+export function pendingLanguage(text) {
+  const s = String(text || "");
+  if (!squash(s)) return null;
+  if (NO_PENDING.some((re) => re.test(s))) return null;
+  const m = s.match(/[^.\n]*\b(?:pending|still (?:needs?|required|to be)|need(?:s|ed)? to follow ?up|follow ?up (?:required|needed|asap)|to be (?:attended|completed|replaced|done)|awaiting|rescheduled)\b[^.\n]*/i);
+  return m ? squash(m[0]).slice(0, 120) : null;
+}
+
 /**
  * @param {string} text  the technician's report, pasted from PMS
  * @returns {{

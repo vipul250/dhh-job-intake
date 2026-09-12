@@ -15,7 +15,7 @@ import {
   moveReasonDisplaces, OFF_BOARD_REASONS, OFF_BOARD_LABEL, isOffBoard, reassign, EVENT_LABEL,
   OUTCOME_OPTIONS, JOB_SOURCES, SOURCE_LABEL, HOW_REPORTED, pasteAdditions
 } from "../lib/job.js";
-import { parseWorkReport, fmtMin } from "../lib/workReport.js";
+import { parseWorkReport, fmtMin, pendingLanguage } from "../lib/workReport.js";
 import { parseAnyPaste } from "../lib/backlog.js";
 import { looksLikeSheetText, isMisread, misreadSigns } from "../lib/sheetText.js";
 import { dayActivity, attributionLine } from "../lib/activity.js";
@@ -796,6 +796,10 @@ export default function LiveBoard({
        so it can be chased. */
     let child = null, queued = null;
     if (followUp && needsFollowUp(outcome)) {
+      /* "Nothing — it just needs scheduling" is an answer, not a blocker.
+         Stored as blank so the queue card does not read "waiting on
+         nothing", while still taking the list route rather than a date. */
+      const blocker = /^nothing\b/i.test(squash(followUp.waitingOn)) ? "" : squash(followUp.waitingOn);
       if (squash(followUp.waitingOn)) {
         queued = {
           id: uid(),
@@ -814,9 +818,9 @@ export default function LiveBoard({
           addedAt: Date.now(),
           scheduledFor: "",
           scheduledJobId: "",
-          waitingOn: squash(followUp.waitingOn),
+          waitingOn: blocker,
           followUpOf: { jobId: job.id, date: selectedDate, outcome },
-          events: [makeEvent("queued", who, { reason: squash(followUp.waitingOn) })],
+          events: [makeEvent("queued", who, { reason: blocker || "needs scheduling" })],
         };
       } else {
         child = makeFollowUp(job, followUp.date, who, {
@@ -850,7 +854,9 @@ export default function LiveBoard({
     setCloseOutFor(null);
     showToast(
       child ? `Closed as ${outcome.replace("_", " ")} — follow-up booked for ${followUp.date}.`
-        : queued ? `Closed. The rest is in the queue, waiting on ${queued.waitingOn.toLowerCase()}.`
+        : queued ? (queued.waitingOn
+            ? `Closed. The rest is on the list, waiting on ${queued.waitingOn.toLowerCase()}.`
+            : "Closed. The rest is on the list, ready to schedule.")
         : `Closed as ${outcome.replace("_", " ")}.`,
       "ok"
     );
@@ -3207,12 +3213,16 @@ function CloseOutDialog({ job, selectedDate, onCancel, onConfirm }) {
   const [fuDate, setFuDate] = useState(addDays(selectedDate, 1));
   const [fuTeam, setFuTeam] = useState(job.team || "");
   const [fuScope, setFuScope] = useState("");
-  /* "book" is a date the coordinator can actually commit to. "waiting" is
-     the honest answer when he cannot: a contractor who has not confirmed,
-     a quote nobody has approved, a part with no delivery date. Before this
-     the dialog demanded a date he did not have, and the department's only
-     way out was to invent one or to file the job as Not done. */
-  const [fuMode, setFuMode] = useState("book");
+  /* The list is the default, on the department's own instruction: "it
+     should land in a list, not on a day."
+   *
+     The evidence behind that: of 39 follow-ups the app booked onto days,
+     three were ever finished. Seventeen were marked not done. A follow-up
+     put on a date before the material or the contractor exists is a job
+     that will fail on that date, and then be moved, and then be moved
+     again. A date is now the exception a coordinator chooses when he
+     genuinely has one. */
+  const [fuMode, setFuMode] = useState("waiting");
   const [waitingOn, setWaitingOn] = useState("");
 
   /* One row, several jobs. The coordinator writes what the guest reported
@@ -3272,6 +3282,18 @@ function CloseOutDialog({ job, selectedDate, onCancel, onConfirm }) {
   }
 
   const requiresFollowUp = needsFollowUp(outcome);
+
+  /* 43 jobs were closed as Fixed while their own text said work was still
+     owed. Fixed means nothing left to do, and in every one of those cases
+     the contradiction was on screen at the moment it was clicked. So it is
+     quoted back — not blocked, not overridden. The coordinator knows things
+     the text does not. */
+  const [contradictionDismissed, setContradictionDismissed] = useState(false);
+  const contradiction = useMemo(
+    () => (outcome !== "fixed" || contradictionDismissed ? null
+      : pendingLanguage(report) || pendingLanguage(job.description) || pendingLanguage(job.notes)),
+    [outcome, contradictionDismissed, report, job.description, job.notes]
+  );
   const waiting = requiresFollowUp && fuMode === "waiting";
   const canConfirm = outcome && (!requiresFollowUp ||
     (squash(stillNeeded) && (waiting ? !!squash(waitingOn) : !!fuDate)));
@@ -3390,6 +3412,29 @@ function CloseOutDialog({ job, selectedDate, onCancel, onConfirm }) {
         </label>
       )}
 
+      {contradiction && (
+        <div className="mt-3 rounded-md border border-amber-300 bg-amber-50 p-2.5">
+          <h4 className="text-xs font-medium text-amber-900">This says work is still owed</h4>
+          <p className="text-[11px] text-amber-800 mt-0.5">
+            “{contradiction}”
+          </p>
+          <p className="text-[11px] text-amber-800 mt-1">
+            Fixed means nothing left to do on this one. If something is left, say so and it goes
+            on the list — otherwise it survives only in a comment nobody reads.
+          </p>
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            <button onClick={() => { setOutcome("diagnosed"); setStillNeeded(contradiction); setFuMode("waiting"); }}
+                    className="text-[11px] rounded-md px-2 py-1 border border-amber-400 bg-white hover:bg-amber-100">
+              Something is left — put it on the list
+            </button>
+            <button onClick={() => setContradictionDismissed(true)}
+                    className="text-[11px] rounded-md px-2 py-1 border border-amber-300 bg-white text-amber-800 hover:bg-amber-100">
+              No, it really is finished
+            </button>
+          </div>
+        </div>
+      )}
+
       {requiresFollowUp && (
         <div className="mt-3 rounded-md border border-amber-300 bg-amber-50 p-2.5">
           <h4 className="text-xs font-medium text-amber-900">
@@ -3402,7 +3447,7 @@ function CloseOutDialog({ job, selectedDate, onCancel, onConfirm }) {
           </p>
 
           <div className="flex flex-wrap gap-1.5 mb-2">
-            {[["book", "Book the return visit"], ["waiting", "Waiting on somebody else — no date yet"]].map(([id, label]) => (
+            {[["waiting", "Put it on the list"], ["book", "Book a day for it"]].map(([id, label]) => (
               <button key={id} onClick={() => setFuMode(id)}
                       className={`text-[11px] rounded-md px-2 py-1 border ${
                         fuMode === id
@@ -3422,7 +3467,8 @@ function CloseOutDialog({ job, selectedDate, onCancel, onConfirm }) {
             <div className="mt-2">
               <div className="text-[11px] text-amber-900">What is it waiting on?</div>
               <div className="flex flex-wrap gap-1.5 mt-1">
-                {["A contractor", "A quotation", "A part on order", "Building permission", "The owner's approval"].map((x) => (
+                {["Nothing — it just needs scheduling", "A contractor", "A quotation",
+                  "A part on order", "Building permission", "The owner's approval"].map((x) => (
                   <button key={x} onClick={() => setWaitingOn(x)}
                           className={`text-[11px] rounded-md px-2 py-1 border ${
                             waitingOn === x
@@ -3438,6 +3484,7 @@ function CloseOutDialog({ job, selectedDate, onCancel, onConfirm }) {
               <p className="text-[11px] text-amber-800 mt-1.5">
                 It goes to the queue with no date, not onto a day you would have had to invent.
                 It is chased from there, and it still counts as open on this unit.
+                Of 39 follow-ups booked onto a day, three were ever finished.
               </p>
             </div>
           ) : (
@@ -3538,7 +3585,7 @@ function CloseOutDialog({ job, selectedDate, onCancel, onConfirm }) {
                 })}
                 className="text-sm bg-slate-900 text-white px-3 py-1.5 rounded-md disabled:opacity-40">
           {!requiresFollowUp ? "Close out"
-            : waiting ? "Close it — the rest goes to the queue"
+            : waiting ? "Close it — the rest goes on the list"
             : `Close and book ${fuDate}`}
         </button>
       </div>
