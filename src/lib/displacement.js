@@ -38,18 +38,26 @@ export const VERDICTS = {
 };
 
 /* A label like "Bingatti Avenue 2201, bad smell" names the winner without
-   linking it. Matching it back is allowed ONLY when exactly one job on the
-   day is at that address — an ambiguous match is left unresolved rather
-   than guessed, because a wrong pairing here reads as a coordinator making
-   a bad call he did not make. */
+   linking it. It is matched back on the UNIT, not the property name: the
+   department writes "Bingatti" for Binghatti, "Palm villa" for Palm Villa,
+   and requiring the property to match lost most of the real labels to
+   spelling. The unit is the identifier and it is typed carefully.
+ *
+ * Allowed ONLY when exactly one job on the day carries that unit. Two jobs
+ * at 2201 and the label is ambiguous, so it resolves to nothing — a wrong
+ * pairing here reads as a coordinator making a bad call he did not make,
+ * which is worse than an unanswered one.
+ *
+ * Two characters minimum, on a word boundary: a one-character unit would
+ * match a clock reading or a list number in a free-text note. */
 function findByLabel(label, jobs) {
   const text = squash(label).toLowerCase();
   if (!text) return null;
   const hits = jobs.filter((j) => {
-    const unit = canonUnit(j.unit);
-    const prop = canonProperty(j.property).toLowerCase();
-    if (!unit || !prop) return false;
-    return text.includes(unit.toLowerCase()) && text.includes(prop.split(/\s+/)[0]);
+    const unit = canonUnit(j.unit).toLowerCase();
+    if (unit.length < 2) return false;
+    const esc = unit.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`(^|[^a-z0-9])${esc}([^a-z0-9]|$)`).test(text);
   });
   return hits.length === 1 ? hits[0] : null;
 }

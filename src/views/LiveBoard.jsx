@@ -907,7 +907,7 @@ export default function LiveBoard({
 
   /* The move. Two writes: a tombstone on the day it leaves, the job itself
      on the day it lands. Deliberately not a delete anywhere. */
-  async function doMove(job, toDate, reason, displacedBy) {
+  async function doMove(job, toDate, reason, displacedBy, winnerPriority) {
     const { moved, tomb } = moveJob(job, toDate, who, reason, displacedBy, lock.kind);
     await change(selectedDate, (cur) => {
       /* Idempotent. Two clicks, a double submit, or a re-move of a job that
@@ -919,9 +919,15 @@ export default function LiveBoard({
       if (displacedBy && displacedBy.jobId) {
         const winner = next.find((r) => !isTombstone(r) && r.id === displacedBy.jobId);
         if (winner) {
+          /* The priority the coordinator gave it in the move dialog lands on
+             the job itself, not just on this pairing — it is the same fact
+             wherever it is read, and the SLA and the queue want it too. */
+          const patched = winnerPriority && !canonPriority(winner.priority)
+            ? applyEdit(winner, { priority: winnerPriority }, who)
+            : winner;
           next = upsert(next, {
-            ...winner,
-            displaced: Array.from(new Set([...(winner.displaced || []), job.id])),
+            ...patched,
+            displaced: Array.from(new Set([...(patched.displaced || []), job.id])),
           });
         }
       }
@@ -1299,7 +1305,8 @@ export default function LiveBoard({
         <MoveDialog
           job={moveFor} fromDate={selectedDate} dayJobs={jobs}
           onCancel={() => setMoveFor(null)}
-          onMove={(to, reason, displacedBy) => doMove(moveFor, to, reason, displacedBy)}
+          onMove={(to, reason, displacedBy, winnerPriority) =>
+            doMove(moveFor, to, reason, displacedBy, winnerPriority)}
         />
       )}
       {outcomeFor && (
@@ -2702,6 +2709,12 @@ function LeftThisDay({ tombs, cancelled, onOpenDate, onTrail }) {
 /* ========================= dialogs ========================= */
 
 function MoveDialog({ job, fromDate, dayJobs, onCancel, onMove }) {
+  /* The arriving job usually has no priority — it was added mid-day and
+     nothing asked. That is why "was the call right" could be answered for
+     2 of 70 departures in two months: both halves are stored, but the
+     winner's half is blank. Asked here, once, at the moment the judgement
+     is actually being made. */
+  const [winnerPriority, setWinnerPriority] = useState("");
   const [to, setTo] = useState(addDays(fromDate, 1));
   const [reason, setReason] = useState(MOVE_REASONS[0].id);
   const [winnerId, setWinnerId] = useState("");
@@ -2785,13 +2798,38 @@ function MoveDialog({ job, fromDate, dayJobs, onCancel, onMove }) {
           )}
           {winnerId && (() => {
             const w = others.find((o) => o.id === winnerId);
-            const a = canonPriority(job.priority), bpr = w && canonPriority(w.priority);
+            if (!w || canonPriority(w.priority)) return null;
+            return (
+              <div className="mt-1.5 rounded border border-blue-300 bg-white px-2 py-1.5">
+                <div className="text-[11px] text-blue-900">
+                  How urgent is the job that took the slot?
+                  <span className="text-blue-700"> Without it nobody can weigh this call later.</span>
+                </div>
+                <div className="mt-1 flex flex-wrap gap-1">
+                  {["PRI-1", "PRI-2", "PRI-3", "PRI-4"].map((p) => (
+                    <button key={p} onClick={() => setWinnerPriority(p)}
+                            className={`text-[11px] rounded px-2 py-0.5 border ${
+                              winnerPriority === p
+                                ? "bg-blue-900 text-white border-blue-900"
+                                : "bg-white border-blue-300 hover:bg-blue-100"}`}>
+                      {p.replace("PRI-", "P")}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
+          {winnerId && (() => {
+            const w = others.find((o) => o.id === winnerId);
+            const a = canonPriority(job.priority);
+            const bpr = w && (canonPriority(w.priority) || winnerPriority);
             if (!w || !a || !bpr || a <= bpr) return null;
             // a <= bpr means the displaced job is the higher priority
             return (
               <p className="mt-1.5 text-[11px] text-amber-900 bg-amber-100 border border-amber-300 rounded px-2 py-1">
-                Worth a second look: you are moving a {job.priority} to make room for a {w.priority}.
-                That may still be right — it is recorded either way.
+                Worth a second look: you are moving a {job.priority} to make room for a{" "}
+                {canonPriority(w.priority) || winnerPriority}. That may still be right — it is
+                recorded either way.
               </p>
             );
           })()}
@@ -2801,7 +2839,7 @@ function MoveDialog({ job, fromDate, dayJobs, onCancel, onMove }) {
       <div className="flex justify-end gap-2 mt-4">
         <button onClick={onCancel} className="text-sm border border-slate-300 px-3 py-1.5 rounded-md">Cancel</button>
         <button disabled={!canMove}
-                onClick={() => onMove(to, reason, displacedBy)}
+                onClick={() => onMove(to, reason, displacedBy, winnerId ? winnerPriority : "")}
                 className="text-sm bg-slate-900 text-white px-3 py-1.5 rounded-md disabled:opacity-40">
           Move to {to}
         </button>

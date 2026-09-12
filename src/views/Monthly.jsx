@@ -11,6 +11,7 @@ import { returnsByUnit, rolesByTech } from "../lib/quality.js";
 import { poolAdherence, SEEDED_POOL_CONTRACTS } from "../lib/pools.js";
 import { timeByTech } from "../lib/quality.js";
 import { feedQuality, againstBenchmark, BENCHMARK_DATE } from "../lib/feed.js";
+import { displacementReport } from "../lib/displacement.js";
 
 /* ---------------------------------------------------------------------- *
  * Monthly.jsx — one span, one table, no interpretation.
@@ -132,6 +133,15 @@ export default function Monthly({ knownDates, propertyMaster }) {
     [byDay]
   );
   const vsBench = useMemo(() => againstBenchmark(feed, benchRow), [feed, benchRow]);
+
+  /* Was the call right? Both priorities have always been stored; nobody
+     had put them side by side. Coverage is poor and is shown, because the
+     arriving job's priority was almost never recorded before 12 September
+     — see displacement.js. */
+  const displaced = useMemo(
+    () => displacementReport(byDay, periodFor(grain, active)),
+    [byDay, grain, active]
+  );
 
   const label = periodLabel(grain, active);
 
@@ -397,6 +407,92 @@ export default function Monthly({ knownDates, propertyMaster }) {
           </div>
         )}
       </div>
+
+      {displaced.displacements > 0 && (
+        <div>
+          <h3 className="text-sm font-medium text-slate-700 mb-2">
+            Jobs displaced — was the call right?
+          </h3>
+          <p className="text-xs text-slate-500 mb-2">
+            A job that left the day to make room for another. Both priorities are compared, and a
+            lower priority winning is <em>not</em> a mistake — a P3 with a guest standing in the
+            unit beats a P1 nobody can get into. These are descriptions, not scores. The last
+            column is the only one worth reading closely.
+          </p>
+
+          <div className="mb-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs flex flex-wrap gap-x-5 gap-y-1">
+            <span className="text-slate-700">
+              <span className="font-semibold tabular-nums">{displaced.displacements}</span> displaced
+            </span>
+            <span className={displaced.coverage != null && displaced.coverage < 50 ? "text-amber-700" : "text-slate-500"}>
+              <span className="tabular-nums">{displaced.comparable}</span> comparable
+              {displaced.coverage != null && ` · ${displaced.coverage}%`}
+            </span>
+            {displaced.comparable > 0 && (
+              <>
+                <span className="text-emerald-700"><span className="tabular-nums">{displaced.higher}</span> higher priority won</span>
+                <span className="text-slate-500"><span className="tabular-nums">{displaced.same}</span> same</span>
+                <span className={displaced.lower ? "text-amber-800 font-medium" : "text-slate-500"}>
+                  <span className="tabular-nums">{displaced.lower}</span> lower priority won
+                </span>
+              </>
+            )}
+          </div>
+
+          {displaced.comparable === 0 ? (
+            <div className="rounded-lg border border-dashed border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
+              <div className="font-medium">Nothing in this period can be compared yet.</div>
+              <div className="mt-1 text-xs">
+                Both halves are needed: the displaced job's priority and the arriving job's. The
+                arriving job is usually added mid-day, and until 12 September nothing asked for its
+                priority. The move dialog asks now, so this fills from here on.
+              </div>
+            </div>
+          ) : (
+            <div className="overflow-x-auto border border-slate-200 rounded-lg bg-white">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50 text-slate-600 text-xs">
+                  <tr>
+                    {["Day", "Job that moved", "What took the slot", "Verdict"].map((c, i) => (
+                      <th key={c} className={`px-3 py-2 font-medium ${i === 3 ? "text-right" : "text-left"}`}>{c}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {displaced.rows.filter((r) => r.comparable).slice(0, 30).map((r) => (
+                    <tr key={`${r.date}-${r.jobId}`} className="border-t border-slate-200">
+                      <td className="px-3 py-2 text-slate-500 tabular-nums whitespace-nowrap">{r.date}</td>
+                      <td className="px-3 py-2 text-slate-900">
+                        {r.lost.property} {r.lost.unit}
+                        <span className="ml-1.5 text-[10px] rounded px-1 py-0.5 bg-slate-100 text-slate-600">
+                          {r.lost.priority.replace("PRI-", "P")}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 text-slate-700">
+                        {r.won.property} {r.won.unit}
+                        <span className="ml-1.5 text-[10px] rounded px-1 py-0.5 bg-slate-100 text-slate-600">
+                          {r.won.priority.replace("PRI-", "P")}
+                        </span>
+                        {r.resolvedBy === "label" && (
+                          <span className="ml-1.5 text-[10px] text-slate-400" title="Matched from the coordinator's own words, not a link. Only where exactly one job on the day was at that address.">
+                            matched
+                          </span>
+                        )}
+                      </td>
+                      <td className={`px-3 py-2 text-right whitespace-nowrap ${
+                        r.verdict === "lower" ? "text-amber-800 font-medium"
+                          : r.verdict === "same" ? "text-slate-500" : "text-emerald-700"}`}>
+                        {r.verdict === "lower" ? "lower priority won"
+                          : r.verdict === "same" ? "same priority" : "higher priority won"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
 
       {feed.length > 0 && (
         <div>
